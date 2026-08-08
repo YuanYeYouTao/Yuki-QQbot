@@ -129,7 +129,19 @@ class ToolLoopProvider(LLMProvider):
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
         if len(self.requests) == 1:
-            assert "call_onebot_api" in {tool.name for tool in request.tools}
+            assert "send_private_message" in {tool.name for tool in request.tools}
+            assert "call_onebot_api" not in {tool.name for tool in request.tools}
+            schemas = json.dumps(
+                [tool.parameters for tool in request.tools],
+                ensure_ascii=False,
+            )
+            for raw_key in (
+                '"user_id"',
+                '"group_id"',
+                '"message_id"',
+                '"platform_message_id"',
+            ):
+                assert raw_key not in schemas
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -138,14 +150,11 @@ class ToolLoopProvider(LLMProvider):
                     ToolCall(
                         id="call-1",
                         function=ToolFunction(
-                            name="call_onebot_api",
+                            name="send_private_message",
                             arguments=json.dumps(
                                 {
-                                    "action": "send_private_msg",
-                                    "params": {
-                                        "user_id": "12345678",
-                                        "message": "工具发送",
-                                    },
+                                    "user_ref": "q1",
+                                    "message": "工具发送",
                                 },
                                 ensure_ascii=False,
                             ),
@@ -185,7 +194,7 @@ async def test_superuser_direct_event_gets_generic_tool_and_sent_message_is_ledg
     harness = build_harness(database, make_settings(database.url), provider)
     sender = ToolGatewaySender()
     result = await harness.processor.handle(
-        inbound("帮我给他发消息", message_id="admin-agent", user_id="9000"),
+        inbound("帮我给 12345678 发消息", message_id="admin-agent", user_id="9000"),
         sender,
     )
     assert result.reason == "chat"

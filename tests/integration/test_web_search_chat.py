@@ -148,7 +148,8 @@ class WebThenOneBotLLM(LLMProvider):
                 ),
             )
         if len(self.requests) == 2:
-            assert "call_onebot_api" in {tool.name for tool in request.tools}
+            assert "send_private_message" in {tool.name for tool in request.tools}
+            assert "call_onebot_api" not in {tool.name for tool in request.tools}
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -156,11 +157,8 @@ class WebThenOneBotLLM(LLMProvider):
                     ToolCall(
                         id="authorized-onebot",
                         function=ToolFunction(
-                            name="call_onebot_api",
-                            arguments=(
-                                '{"action":"send_private_msg",'
-                                '"params":{"user_id":"12345678","message":"授权发送"}}'
-                            ),
+                            name="send_private_message",
+                            arguments='{"user_ref":"q1","message":"授权发送"}',
                         ),
                     ),
                 ),
@@ -641,7 +639,7 @@ async def test_web_lookup_can_be_followed_by_superuser_onebot_tool(database: Dat
     sender = ToolGatewaySender()
 
     result = await harness.processor.handle(
-        event("联网查看后回答", message_id="web-admin", user_id="9000"),
+        event("联网查看后给 12345678 发消息", message_id="web-admin", user_id="9000"),
         sender,
     )
 

@@ -130,14 +130,38 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
     assert len(payload_text) <= settings.max_context_characters * 55 // 100
     assert len(payload_text) + history_characters <= settings.max_context_characters
     current_history = request.messages[-1].content or ""
-    assert current_history == (
-        "[发送者:测试名片|QQ:1001|消息:bounded-context] 请根据已有信息简短回答"
-    )
-    assert payload_items["current_person"]["user_id"] == "1001"
+    assert current_history == ("[current_event|sender:u1=测试名片#1001] 请根据已有信息简短回答")
+    assert payload_items["current_person"]["user_ref"] == "u1"
+    assert "bounded-context" not in "\n".join(item.content or "" for item in request.messages)
     assert len(payload_items["current_person"]["facts"]) < 30
     assert len(payload_items["current_group"]["facts"]) < 30
     assert not any(key.startswith("person_memory.") for key in payload_items)
     assert not any(key.startswith("current_group.fact.") for key in payload_items)
+
+
+@pytest.mark.asyncio
+async def test_reference_envelope_feature_flag_restores_legacy_prompt_and_gateway(
+    database: Database,
+) -> None:
+    settings = make_settings(
+        database.url,
+        main_agent_reference_envelope_enabled=False,
+    )
+    harness = build_harness(database, settings)
+    message = InboundMessage(
+        message_id="legacy-envelope",
+        event_type="message:private:friend",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id="9000", nickname="管理员"),
+        text="测试回滚",
+        bot_user_id="9999",
+    )
+
+    await harness.processor.handle(message, MemorySender())
+
+    request = harness.provider.requests[0]  # type: ignore[attr-defined]
+    assert request.messages[-1].content == ("[发送者:管理员|QQ:9000|消息:legacy-envelope] 测试回滚")
+    assert "call_onebot_api" in {tool.name for tool in request.tools}
 
 
 @pytest.mark.asyncio
@@ -608,7 +632,8 @@ async def test_recent_delivery_is_trusted_and_exact_conversation_only(
     request = harness.provider.requests[0]  # type: ignore[attr-defined]
     prompt = "\n".join(message.content or "" for message in request.messages)
     assert '"id":"runtime.recent_delivery"' in prompt
-    assert "same-group" in prompt
+    assert "same-group" not in prompt
+    assert '"message_ref":"m1"' in prompt
     assert "other-group" not in prompt
     assert "emoji_image" in prompt
     assert "hidden-2001" not in prompt

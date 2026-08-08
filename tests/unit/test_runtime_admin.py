@@ -842,7 +842,8 @@ async def test_single_chat_agent_keeps_persona_and_context_across_missing_target
             ]
             assert any("奶龙的好感度改成88" in text for text in history)
             assert any("奶龙的 QQ 号" in text for text in history)
-            assert any("1808058482" in text for text in history)
+            assert any("q1" in text for text in history)
+            assert not any("1808058482" in text for text in history)
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -856,7 +857,7 @@ async def test_single_chat_agent_keeps_persona_and_context_across_missing_target
                                     "action": "relationship.set_affection",
                                     "arguments": {
                                         "target": "explicit_user_id",
-                                        "user_id": "1808058482",
+                                        "user_ref": "q1",
                                         "value": 88,
                                     },
                                 }

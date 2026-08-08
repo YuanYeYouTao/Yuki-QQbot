@@ -138,7 +138,7 @@ async def test_private_pure_image_flows_vision_text_into_deepseek(database) -> N
     assert vision.requests[0][1].startswith("请描述图片主要内容")
     current = llm.requests[-1].messages[-1].content or ""
     assert current == (
-        "[发送者:测试用户|QQ:1001|消息:image-1] "
+        "[current_event|sender:u1=测试用户#1001] "
         "[当前消息仅包含图片；后端视觉识别已成功，请根据本轮视觉观察直接回应图片内容]"
     )
 

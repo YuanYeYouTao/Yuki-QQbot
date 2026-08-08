@@ -20,6 +20,7 @@ from qq_ai_bot.prompting import (
 )
 from qq_ai_bot.prompting.contributors import static_text
 from qq_ai_bot.prompting.models import PromptMetrics
+from qq_ai_bot.references.models import TurnReferenceRegistry
 from qq_ai_bot.services.context_assembler import AssembledContext
 from qq_ai_bot.services.prompt_registry import PromptRegistry, PromptTarget
 from qq_ai_bot.vision.models import VisualObservation
@@ -91,6 +92,17 @@ class PromptComposer:
                 required=True,
             ),
         ]
+        if context.references is not None:
+            contributions.append(
+                PromptContribution(
+                    id="runtime.trusted_references",
+                    channel=PromptChannel.RUNTIME,
+                    trust=PromptTrust.TRUSTED,
+                    priority=100,
+                    payload=context.references.model_context(),
+                    required=True,
+                )
+            )
         if inbound.sender.user_id in self._settings.superusers:
             contributions.append(
                 PromptContribution(
@@ -130,7 +142,11 @@ class PromptComposer:
                     trust=PromptTrust.TRUSTED,
                     priority=94,
                     payload={
-                        "recent_delivery": list(context.recent_delivery),
+                        "recent_delivery": (
+                            context.references.project_value(list(context.recent_delivery))
+                            if context.references is not None
+                            else list(context.recent_delivery)
+                        ),
                         "purpose": "delivery_status_only",
                     },
                     required=True,
@@ -155,7 +171,11 @@ class PromptComposer:
                     channel=PromptChannel.PLUGIN,
                     trust=PromptTrust.UNTRUSTED,
                     priority=30,
-                    payload=list(plugin_context),
+                    payload=(
+                        context.references.project_value(list(plugin_context))
+                        if context.references is not None
+                        else list(plugin_context)
+                    ),
                     source="plugins",
                 )
             )
@@ -166,10 +186,20 @@ class PromptComposer:
                     channel=PromptChannel.MODALITY,
                     trust=PromptTrust.UNTRUSTED,
                     priority=90,
-                    payload=visual_observation.model_dump(
-                        mode="json",
-                        exclude={"provider", "model", "latency_seconds"},
-                        exclude_none=True,
+                    payload=(
+                        context.references.project_value(
+                            visual_observation.model_dump(
+                                mode="json",
+                                exclude={"provider", "model", "latency_seconds"},
+                                exclude_none=True,
+                            )
+                        )
+                        if context.references is not None
+                        else visual_observation.model_dump(
+                            mode="json",
+                            exclude={"provider", "model", "latency_seconds"},
+                            exclude_none=True,
+                        )
                     ),
                     required=True,
                 )
@@ -186,7 +216,9 @@ class PromptComposer:
                 )
             )
         if planned_turn is not None:
-            contributions.append(self._plan_contribution(planned_turn))
+            contributions.append(
+                self._plan_contribution(planned_turn, references=context.references)
+            )
         if runtime.speech.enabled:
             contributions.append(
                 PromptContribution(
@@ -296,7 +328,11 @@ class PromptComposer:
         return compiled.messages
 
     @staticmethod
-    def _plan_contribution(planned_turn: PlannedTurn) -> PromptContribution:
+    def _plan_contribution(
+        planned_turn: PlannedTurn,
+        *,
+        references: TurnReferenceRegistry | None = None,
+    ) -> PromptContribution:
         plan = planned_turn.plan
         payload: dict[str, object] = {
             "decision": plan.decision.value,
@@ -306,7 +342,12 @@ class PromptComposer:
             "tools": plan.tool_selection.model_dump(mode="json", exclude_defaults=True),
         }
         if plan.reply_to_message_id is not None:
-            payload["reply_to"] = plan.reply_to_message_id
+            reply = (
+                references.message_for_platform_id(plan.reply_to_message_id)
+                if references is not None
+                else None
+            )
+            payload["reply_to"] = reply.ref if reply is not None else "outside_window"
         if plan.emoji.mode.value != "none":
             payload["emoji"] = plan.emoji.model_dump(mode="json", exclude_defaults=True)
         if plan.voice.mode.value != "text" or plan.voice.intent.value != "neutral":
@@ -315,6 +356,8 @@ class PromptComposer:
                 exclude_defaults=True,
                 exclude_none=True,
             )
+        if references is not None:
+            payload = references.project_value(payload)
         return PromptContribution(
             id="plan.turn",
             channel=PromptChannel.PLAN,

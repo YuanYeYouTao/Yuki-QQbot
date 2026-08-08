@@ -33,6 +33,11 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
 )
 from qq_ai_bot.prompting import ContextBudgeter, ContextContribution
+from qq_ai_bot.references import (
+    MainAgentHistoryProjector,
+    ReferenceEpochManager,
+    TurnReferenceRegistry,
+)
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
 
@@ -49,6 +54,15 @@ class ContextMetrics:
     history_messages: int
     current_message_characters: int
     history_window_rolled: bool
+    history_event_count: int = 0
+    history_block_count: int = 0
+    history_envelope_characters: int = 0
+    history_body_characters: int = 0
+    reference_registry_user_count: int = 0
+    reference_registry_message_count: int = 0
+    reference_registry_group_count: int = 0
+    reference_epoch_rolled: bool = False
+    reference_epoch_rolls: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +77,7 @@ class AssembledContext:
     current_relationship: RelationshipSnapshot | None
     metrics: ContextMetrics
     external_events: tuple[dict[str, object], ...] = ()
+    references: TurnReferenceRegistry | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +88,10 @@ class _BoundedMessages:
     current_message: ChatMessage
     history_anchor_event_id: int | None
     history_window_rolled: bool
+    references: TurnReferenceRegistry | None = None
+    history_event_count: int = 0
+    history_envelope_characters: int = 0
+    history_body_characters: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +123,7 @@ class ContextAssembler:
         self._relationships = relationships
         self._time = time_service
         self._history_window_anchors: OrderedDict[str, int] = OrderedDict()
+        self._reference_epochs = ReferenceEpochManager(maximum_states=_HISTORY_WINDOW_STATE_LIMIT)
 
     async def assemble(
         self,
@@ -241,12 +261,33 @@ class ContextAssembler:
                 context["referenced_people"] = list(referenced.values())
 
         total_budget = self._settings.max_context_characters
+        reference_registry: TurnReferenceRegistry | None = None
+        raw_context = context
+        if self._settings.main_agent_reference_envelope_enabled:
+            current_anchor = self._history_window_anchor(history_window_key)
+            current_row = next(
+                (row for row in reversed(recent) if row.platform_message_id == inbound.message_id),
+                None,
+            )
+            reference_registry = self._reference_epochs.prepare(
+                conversation_key=history_window_key,
+                events=tuple(
+                    row
+                    for row in recent
+                    if row.platform_message_id != inbound.message_id
+                    and (current_anchor is None or row.id >= current_anchor)
+                ),
+                inbound=inbound,
+                current_event_id=current_row.id if current_row is not None else -1,
+                anchor_event_id=current_anchor,
+                reset_marker=reset.isoformat() if reset is not None else "none",
+            )
+            context = reference_registry.project_value(context)
         metadata_budget = max(
             1,
             int(total_budget * self._settings.context_metadata_budget_ratio),
         )
         metadata_payload, selected_fact_ids = self._fit_metadata(context, metadata_budget)
-        await self._memory_context.mark_used(retrieval, selected_fact_ids)
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -254,15 +295,43 @@ class ContextAssembler:
             default=str,
         )
         history_budget = max(0, total_budget - len(metadata_json))
-        bounded_messages = self._bounded_history(
-            recent,
-            inbound=inbound,
-            content=content,
-            character_budget=history_budget,
-            event_limit=runtime.context.local_event_limit,
-            low_watermark_ratio=self._settings.history_window_low_watermark_ratio,
-            anchor_event_id=self._history_window_anchor(history_window_key),
-        )
+        if reference_registry is not None:
+            bounded_messages = self._bounded_main_history(
+                recent,
+                inbound=inbound,
+                content=content,
+                character_budget=history_budget,
+                event_limit=runtime.context.local_event_limit,
+                low_watermark_ratio=self._settings.history_window_low_watermark_ratio,
+                anchor_event_id=self._history_window_anchor(history_window_key),
+                conversation_key=history_window_key,
+                reset_marker=reset.isoformat() if reset is not None else "none",
+                registry=reference_registry,
+            )
+            if (
+                bounded_messages.references is not None
+                and bounded_messages.references.epoch_id != reference_registry.epoch_id
+            ):
+                reference_registry = bounded_messages.references
+                context = reference_registry.project_value(raw_context)
+                metadata_payload, selected_fact_ids = self._fit_metadata(context, metadata_budget)
+                metadata_json = json.dumps(
+                    metadata_payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                )
+        else:
+            bounded_messages = self._bounded_history(
+                recent,
+                inbound=inbound,
+                content=content,
+                character_budget=history_budget,
+                event_limit=runtime.context.local_event_limit,
+                low_watermark_ratio=self._settings.history_window_low_watermark_ratio,
+                anchor_event_id=self._history_window_anchor(history_window_key),
+            )
+        await self._memory_context.mark_used(retrieval, selected_fact_ids)
         self._remember_history_window_anchor(
             history_window_key,
             bounded_messages.history_anchor_event_id,
@@ -276,15 +345,47 @@ class ContextAssembler:
             history_messages=len(history_messages),
             current_message_characters=len(current_message.content or ""),
             history_window_rolled=bounded_messages.history_window_rolled,
+            history_event_count=bounded_messages.history_event_count,
+            history_block_count=len(history_messages),
+            history_envelope_characters=bounded_messages.history_envelope_characters,
+            history_body_characters=bounded_messages.history_body_characters,
+            reference_registry_user_count=(
+                len(reference_registry.users) if reference_registry is not None else 0
+            ),
+            reference_registry_message_count=(
+                len(reference_registry.messages) if reference_registry is not None else 0
+            ),
+            reference_registry_group_count=(
+                len(reference_registry.groups) if reference_registry is not None else 0
+            ),
+            reference_epoch_rolled=(
+                reference_registry.epoch_rolled if reference_registry is not None else False
+            ),
+            reference_epoch_rolls=int(
+                reference_registry.epoch_rolled if reference_registry is not None else False
+            ),
         )
         logger.debug(
             "context_assembled metadata_characters=%d history_characters=%d "
-            "history_messages=%d current_message_characters=%d history_window_rolled=%s",
+            "history_messages=%d history_events=%d history_blocks=%d "
+            "history_envelope_characters=%d history_body_characters=%d "
+            "reference_users=%d reference_messages=%d reference_groups=%d "
+            "current_message_characters=%d history_window_rolled=%s "
+            "reference_epoch_rolled=%s reference_epoch_rolls=%d",
             metrics.metadata_characters,
             metrics.history_characters,
             metrics.history_messages,
+            metrics.history_event_count,
+            metrics.history_block_count,
+            metrics.history_envelope_characters,
+            metrics.history_body_characters,
+            metrics.reference_registry_user_count,
+            metrics.reference_registry_message_count,
+            metrics.reference_registry_group_count,
             metrics.current_message_characters,
             metrics.history_window_rolled,
+            metrics.reference_epoch_rolled,
+            metrics.reference_epoch_rolls,
         )
         return AssembledContext(
             metadata_payload=metadata_payload,
@@ -295,6 +396,7 @@ class ContextAssembler:
             current_relationship=current_relationship,
             metrics=metrics,
             external_events=external_events,
+            references=reference_registry,
         )
 
     async def assemble_external(
@@ -783,6 +885,110 @@ class ContextAssembler:
         while len(self._history_window_anchors) > _HISTORY_WINDOW_STATE_LIMIT:
             self._history_window_anchors.popitem(last=False)
 
+    def _bounded_main_history(
+        self,
+        recent: tuple[EventRecord, ...],
+        *,
+        inbound: InboundMessage,
+        content: str,
+        character_budget: int,
+        event_limit: int,
+        low_watermark_ratio: float,
+        anchor_event_id: int | None,
+        conversation_key: str,
+        reset_marker: str,
+        registry: TurnReferenceRegistry,
+    ) -> _BoundedMessages:
+        """Compress trusted events before applying the rolling history budget."""
+
+        current_row = next(
+            (row for row in reversed(recent) if row.platform_message_id == inbound.message_id),
+            None,
+        )
+        history_rows = tuple(
+            row
+            for row in recent
+            if row.platform_message_id != inbound.message_id
+            and (anchor_event_id is None or row.id >= anchor_event_id)
+        )
+        if event_limit > 1 and len(history_rows) > event_limit - 1:
+            low_event_limit = max(
+                1,
+                int((event_limit - 1) * low_watermark_ratio),
+            )
+            history_rows = history_rows[-low_event_limit:]
+        projector = MainAgentHistoryProjector(recent)
+        current_message = projector.current_message(
+            inbound=inbound,
+            content=content,
+            registry=registry,
+            current_row=current_row,
+        )
+        blocks = projector.project(history_rows, registry)
+        selection = self._select_history_window(
+            tuple((block.first_event_id, block.message) for block in blocks),
+            anchor_event_id=anchor_event_id,
+            high_event_limit=max(0, event_limit - 1),
+            high_character_limit=max(0, character_budget - len(current_message.content or "")),
+            low_watermark_ratio=low_watermark_ratio,
+            fallback_anchor_event_id=current_row.id if current_row is not None else None,
+            event_weights={block.first_event_id: len(block.event_ids) for block in blocks},
+        )
+        selected_blocks = tuple(
+            block
+            for block in blocks
+            if selection.anchor_event_id is not None
+            and block.first_event_id >= selection.anchor_event_id
+        )
+        trimmed_initial_epoch = bool(
+            blocks
+            and selection.anchor_event_id is not None
+            and selection.anchor_event_id != blocks[0].first_event_id
+        )
+        final_registry = registry
+        if selection.rolled or trimmed_initial_epoch:
+            selected_event_ids = {
+                event_id for block in selected_blocks for event_id in block.event_ids
+            }
+            selected_rows = tuple(row for row in history_rows if row.id in selected_event_ids)
+            final_registry = self._reference_epochs.prepare(
+                conversation_key=conversation_key,
+                events=selected_rows,
+                inbound=inbound,
+                current_event_id=current_row.id if current_row is not None else -1,
+                anchor_event_id=selection.anchor_event_id,
+                reset_marker=reset_marker,
+                force_roll=True,
+            )
+            projector = MainAgentHistoryProjector(
+                (*selected_rows, *((current_row,) if current_row else ()))
+            )
+            selected_blocks = projector.project(selected_rows, final_registry)
+            selection = _HistoryWindowSelection(
+                messages=tuple(block.message for block in selected_blocks),
+                anchor_event_id=selection.anchor_event_id,
+                rolled=True,
+            )
+            current_message = projector.current_message(
+                inbound=inbound,
+                content=content,
+                registry=final_registry,
+                current_row=current_row,
+            )
+        else:
+            selected_messages = set(selection.messages)
+            selected_blocks = tuple(block for block in blocks if block.message in selected_messages)
+        return _BoundedMessages(
+            history_messages=selection.messages,
+            current_message=current_message,
+            history_anchor_event_id=selection.anchor_event_id,
+            history_window_rolled=selection.rolled,
+            references=final_registry,
+            history_event_count=sum(len(block.event_ids) for block in selected_blocks),
+            history_envelope_characters=sum(block.envelope_characters for block in selected_blocks),
+            history_body_characters=sum(block.body_characters for block in selected_blocks),
+        )
+
     @classmethod
     def _bounded_history(
         cls,
@@ -841,6 +1047,7 @@ class ContextAssembler:
         high_character_limit: int,
         low_watermark_ratio: float,
         fallback_anchor_event_id: int | None,
+        event_weights: dict[int, int] | None = None,
     ) -> _HistoryWindowSelection:
         """Keep one prefix stable until a high watermark forces a block roll."""
 
@@ -851,9 +1058,12 @@ class ContextAssembler:
         anchor_found = anchor_index is not None
         candidate = rendered[anchor_index:] if anchor_index is not None else rendered
         candidate_characters = sum(len(item.content or "") for _, item in candidate)
+        candidate_event_count = sum(
+            (event_weights or {}).get(event_id, 1) for event_id, _message in candidate
+        )
         must_roll = (
             not anchor_found
-            or len(candidate) > high_event_limit
+            or candidate_event_count > high_event_limit
             or candidate_characters > high_character_limit
         )
         if not must_roll:
@@ -874,9 +1084,13 @@ class ContextAssembler:
         low_character_limit = max(1, int(high_character_limit * low_watermark_ratio))
         selected_reversed: list[tuple[int, ChatMessage]] = []
         selected_characters = 0
+        selected_events = 0
         for item in reversed(candidate):
             size = len(item[1].content or "")
-            if len(selected_reversed) >= low_event_limit:
+            weight = (event_weights or {}).get(item[0], 1)
+            if selected_events >= low_event_limit:
+                break
+            if selected_reversed and selected_events + weight > low_event_limit:
                 break
             if not selected_reversed and size > high_character_limit:
                 break
@@ -884,6 +1098,7 @@ class ContextAssembler:
                 break
             selected_reversed.append(item)
             selected_characters += size
+            selected_events += weight
         selected = tuple(reversed(selected_reversed))
         return _HistoryWindowSelection(
             messages=tuple(item for _, item in selected),

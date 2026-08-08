@@ -14,6 +14,7 @@ class ToolKernelMetrics:
     schema_tokens: Counter[tuple[str, str]] = field(default_factory=Counter)
     planner_scope_turns: Counter[bool] = field(default_factory=Counter)
     first_round_tool_hits: Counter[bool] = field(default_factory=Counter)
+    reference_resolution_failures: Counter[str] = field(default_factory=Counter)
     tool_enabled_turns: int = 0
     request_tools_calls: int = 0
     request_tools_zero_results: int = 0
@@ -48,3 +49,8 @@ class ToolKernelMetrics:
         """Record whether the first real tool ran without discovery fallback."""
 
         self.first_round_tool_hits[hit] += 1
+
+    def record_reference_resolution_failure(self, error_code: str) -> None:
+        """Count a bounded error category without retaining any reference mapping."""
+
+        self.reference_resolution_failures[error_code] += 1

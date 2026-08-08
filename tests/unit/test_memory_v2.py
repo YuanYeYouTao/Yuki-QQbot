@@ -1089,7 +1089,7 @@ async def test_context_limits_mentioned_member_facts_to_current_group_block(
     blocks = {item["id"]: item["data"] for item in context["items"]}
     referenced = blocks["referenced_person.0"]
 
-    assert referenced["user_id"] == "1002"
+    assert referenced["user_ref"] == "u2"
     assert referenced["person_facts"] == []
     assert [fact["fact_id"] for fact in referenced["group_facts"]] == [group_fact.id]
     assert person_fact.id not in {

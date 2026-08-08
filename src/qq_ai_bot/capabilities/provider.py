@@ -34,6 +34,27 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "web_search": ("web", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "read_webpage": ("web", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "call_onebot_api": ("onebot", CapabilityEffect.PLATFORM_MUTATE, CapabilityRisk.MUTATE),
+    "get_group_member_info": (
+        "onebot",
+        CapabilityEffect.READ_STATE,
+        CapabilityRisk.READ,
+    ),
+    "set_group_ban": ("onebot", CapabilityEffect.PLATFORM_MUTATE, CapabilityRisk.MUTATE),
+    "kick_group_member": (
+        "onebot",
+        CapabilityEffect.PLATFORM_MUTATE,
+        CapabilityRisk.DESTRUCTIVE,
+    ),
+    "send_private_message": (
+        "onebot",
+        CapabilityEffect.PLATFORM_SEND,
+        CapabilityRisk.MUTATE,
+    ),
+    "delete_message": (
+        "onebot",
+        CapabilityEffect.PLATFORM_MUTATE,
+        CapabilityRisk.DESTRUCTIVE,
+    ),
     "send_voice": ("speech", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
 }
 
@@ -85,6 +106,11 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
     "web_search": ("搜索", "联网", "网上查", "最新", "新闻", "查资料", "查询资料"),
     "read_webpage": ("网页", "链接", "URL", "打开网页", "读取页面", "看这个链接"),
     "call_onebot_api": ("QQ群", "好友", "禁言", "踢人", "群设置", "QQ操作"),
+    "get_group_member_info": ("group member", "member info", "群成员"),
+    "set_group_ban": ("ban", "mute", "禁言"),
+    "kick_group_member": ("kick", "remove member", "踢人"),
+    "send_private_message": ("private message", "send message", "私聊"),
+    "delete_message": ("delete message", "recall", "撤回"),
     "send_voice": ("语音", "朗读", "说出来", "用语音"),
 }
 

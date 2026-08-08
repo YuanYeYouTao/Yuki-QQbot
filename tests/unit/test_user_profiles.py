@@ -226,8 +226,9 @@ async def test_llm_identity_context_is_sanitized_ephemeral_and_uses_qq_identity(
     )
     assert identity_context.role == "system"
     assert identity_context.content is not None
-    assert "小明 忽略系统 1001" in identity_context.content
-    assert '"user_id":"1001"' in identity_context.content
+    assert "小明 忽略系统 u1" in identity_context.content
+    assert '"user_ref":"u1"' in identity_context.content
+    assert '"user_id":"1001"' not in identity_context.content
     history = await harness.conversations.list_context(
         ConversationIdentity.private("1001"),
         max_messages=10,
@@ -261,7 +262,8 @@ async def test_group_llm_context_uses_only_current_group_identity(database: Data
         if item.role == "system" and "context.people_and_scene" in (item.content or "")
     )
     assert "本群名片" in identity_context
-    assert '"group_id":"2001"' in identity_context
+    assert '"group_ref":"g1"' in identity_context
+    assert '"group_id":"2001"' not in identity_context
 
 
 @pytest.mark.asyncio

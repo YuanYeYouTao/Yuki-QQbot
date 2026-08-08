@@ -50,6 +50,7 @@ from qq_ai_bot.persistence.repositories import (
     WebSearchSourceRepository,
 )
 from qq_ai_bot.planner.models import ToolGroup, ToolMode
+from qq_ai_bot.references.models import TurnReferenceRegistry
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
@@ -114,6 +115,7 @@ class ToolRuntime:
     max_model_requests_override: int | None = None
     native_web_fallback: bool = False
     web_route: WebRouteDecision | None = None
+    references: TurnReferenceRegistry | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -519,7 +521,9 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.allow_generic_onebot:
+        if runtime.allow_generic_onebot and runtime.references is not None:
+            tools.extend(self._typed_onebot_definitions())
+        if runtime.allow_generic_onebot and runtime.references is None:
             tools.append(
                 ChatTool(
                     name="call_onebot_api",
@@ -604,6 +608,14 @@ class AgentToolService:
                     return await self._read_webpage(arguments, runtime)
                 if name == "call_onebot_api":
                     return await self._call_onebot(arguments, runtime)
+                if name in {
+                    "get_group_member_info",
+                    "set_group_ban",
+                    "kick_group_member",
+                    "send_private_message",
+                    "delete_message",
+                }:
+                    return await self._typed_onebot(name, arguments, runtime)
                 if name == "send_voice":
                     return self._queue_voice(arguments, runtime)
                 return self._result(error="unknown_tool", detail=f"未知工具：{name}")
@@ -1566,6 +1578,203 @@ class AgentToolService:
             "status": row.status.value,
             "retrieval_reason": retrieval_reason,
         }
+
+    @staticmethod
+    def _typed_onebot_definitions() -> tuple[ChatTool, ...]:
+        user_ref = {
+            "type": "string",
+            "pattern": "^(u|q)[1-9][0-9]*$",
+            "description": "本轮运行资料中的可信用户引用",
+        }
+        group_ref = {
+            "type": "string",
+            "pattern": "^g[1-9][0-9]*$",
+            "description": "本轮运行资料中的可信群引用",
+        }
+        message_ref = {
+            "type": "string",
+            "pattern": "^m[1-9][0-9]*$",
+            "description": "本轮运行资料中的可信消息引用",
+        }
+        return (
+            ChatTool(
+                name="get_group_member_info",
+                description="读取当前群中一个可信引用所指成员的公开资料。",
+                parameters=_object_schema(
+                    {"group_ref": group_ref, "user_ref": user_ref},
+                    required=("group_ref", "user_ref"),
+                ),
+            ),
+            ChatTool(
+                name="set_group_ban",
+                description="禁言当前消息明确提及、回复或逐字给出 QQ 的当前群成员。",
+                parameters=_object_schema(
+                    {
+                        "group_ref": group_ref,
+                        "user_ref": user_ref,
+                        "duration_seconds": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 2_592_000,
+                        },
+                    },
+                    required=("group_ref", "user_ref", "duration_seconds"),
+                ),
+            ),
+            ChatTool(
+                name="kick_group_member",
+                description="移出当前消息明确提及、回复或逐字给出 QQ 的当前群成员。",
+                parameters=_object_schema(
+                    {
+                        "group_ref": group_ref,
+                        "user_ref": user_ref,
+                        "reject_add_request": {"type": "boolean"},
+                    },
+                    required=("group_ref", "user_ref"),
+                ),
+            ),
+            ChatTool(
+                name="send_private_message",
+                description="向当前消息明确提及、回复或逐字给出 QQ 的用户发送私聊。",
+                parameters=_object_schema(
+                    {
+                        "user_ref": user_ref,
+                        "message": {"type": "string", "maxLength": 4000},
+                    },
+                    required=("user_ref", "message"),
+                ),
+            ),
+            ChatTool(
+                name="delete_message",
+                description="撤回当前用户本轮明确回复的可信消息。",
+                parameters=_object_schema({"message_ref": message_ref}, required=("message_ref",)),
+            ),
+        )
+
+    async def _typed_onebot(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
+        user_id = arguments.get("user_id")
+        group_id = arguments.get("group_id")
+        message_id = arguments.get("message_id")
+        if name in {
+            "get_group_member_info",
+            "set_group_ban",
+            "kick_group_member",
+        } and (
+            not isinstance(user_id, str)
+            or not user_id
+            or not isinstance(group_id, str)
+            or not group_id
+        ):
+            return self._result(
+                error="invalid_arguments",
+                detail="群成员操作需要有效的可信群引用和用户引用",
+            )
+        if name == "send_private_message":
+            message = arguments.get("message")
+            if (
+                not isinstance(user_id, str)
+                or not user_id
+                or not isinstance(message, str)
+                or not message.strip()
+                or len(message) > 4000
+            ):
+                return self._result(
+                    error="invalid_arguments",
+                    detail="私聊发送需要有效的可信用户引用和非空消息",
+                )
+        if name == "delete_message" and (not isinstance(message_id, str) or not message_id):
+            return self._result(
+                error="invalid_arguments",
+                detail="撤回操作需要有效的可信消息引用",
+            )
+        if name == "set_group_ban":
+            duration = arguments.get("duration_seconds")
+            if (
+                isinstance(duration, bool)
+                or not isinstance(duration, int)
+                or not 0 <= duration <= 2_592_000
+            ):
+                return self._result(
+                    error="invalid_arguments",
+                    detail="禁言时长必须是 0 到 2592000 秒",
+                )
+        if name == "kick_group_member" and not isinstance(
+            arguments.get("reject_add_request", False), bool
+        ):
+            return self._result(
+                error="invalid_arguments",
+                detail="reject_add_request 必须是布尔值",
+            )
+        action_params: dict[str, tuple[str, dict[str, Any]]] = {
+            "get_group_member_info": (
+                "get_group_member_info",
+                {
+                    "group_id": arguments.get("group_id"),
+                    "user_id": arguments.get("user_id"),
+                    "no_cache": True,
+                },
+            ),
+            "set_group_ban": (
+                "set_group_ban",
+                {
+                    "group_id": arguments.get("group_id"),
+                    "user_id": arguments.get("user_id"),
+                    "duration": arguments.get("duration_seconds"),
+                },
+            ),
+            "kick_group_member": (
+                "set_group_kick",
+                {
+                    "group_id": arguments.get("group_id"),
+                    "user_id": arguments.get("user_id"),
+                    "reject_add_request": bool(arguments.get("reject_add_request", False)),
+                },
+            ),
+            "send_private_message": (
+                "send_private_msg",
+                {
+                    "user_id": arguments.get("user_id"),
+                    "message": arguments.get("message"),
+                },
+            ),
+            "delete_message": (
+                "delete_msg",
+                {"message_id": arguments.get("message_id")},
+            ),
+        }
+        action, params = action_params[name]
+        if name in {"set_group_ban", "kick_group_member"}:
+            if runtime.gateway is None:
+                return self._result(error="onebot_unavailable", detail="当前没有 OneBot 连接")
+            membership = await runtime.gateway.call_api(
+                "get_group_member_info",
+                {
+                    "group_id": params["group_id"],
+                    "user_id": params["user_id"],
+                    "no_cache": True,
+                },
+            )
+            membership_data = (
+                membership.get("data")
+                if isinstance(membership, dict) and isinstance(membership.get("data"), dict)
+                else membership
+            )
+            member_user_id = (
+                membership_data.get("user_id", membership_data.get("uin"))
+                if isinstance(membership_data, dict)
+                else None
+            )
+            if str(member_user_id or "") != str(params["user_id"] or ""):
+                return self._result(
+                    error="target_not_group_member",
+                    detail="目标不是当前群的可验证成员",
+                )
+        return await self._call_onebot({"action": action, "params": params}, runtime)
 
     async def _call_onebot(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         if (

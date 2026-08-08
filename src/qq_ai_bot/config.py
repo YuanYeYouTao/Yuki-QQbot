@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     max_context_characters: int = 12_000
     context_metadata_budget_ratio: float = Field(default=0.55, gt=0, lt=1)
     history_window_low_watermark_ratio: float = Field(default=0.67, gt=0, lt=1)
+    main_agent_reference_envelope_enabled: bool = True
 
     global_llm_concurrency: int = 4
     per_user_requests_per_minute: int = 10

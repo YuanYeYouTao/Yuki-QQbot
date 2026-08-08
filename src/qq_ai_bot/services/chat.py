@@ -8,7 +8,7 @@ import logging
 import random
 import re
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Protocol, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -94,6 +94,8 @@ from qq_ai_bot.planner.models import (
     ToolSelection,
 )
 from qq_ai_bot.planner.observability import identifier_hash
+from qq_ai_bot.references import ReferenceResolutionError, ReferenceToolAdapter
+from qq_ai_bot.references.models import TurnReferenceRegistry
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
@@ -173,6 +175,12 @@ class OutboundSender(Protocol):
 
     async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
         """Send one normal message and return proof of platform acceptance."""
+
+
+@dataclass(frozen=True, slots=True)
+class _BuiltAgentPrompt:
+    messages: tuple[ChatMessage, ...]
+    references: TurnReferenceRegistry | None
 
 
 class AdminToolService(Protocol):
@@ -274,6 +282,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._request_tools_called = False
         self._first_real_tool_recorded = False
         self._native_web_fallback = runtime.native_web_fallback
+        self._reference_tools = ReferenceToolAdapter()
 
     def enable_native_web_fallback(self) -> None:
         """Allow Tavily tools only after the Runner verifies a fallback condition."""
@@ -506,6 +515,8 @@ class _ChatAgentBackend(AgentToolBackend):
                 tool for tool in definitions if tool.name == self._admin_retry_constraint[0]
             )
         definitions = tuple(sorted(definitions, key=lambda tool: tool.name))
+        if self._runtime.references is not None:
+            definitions = tuple(self._reference_tools.project_tool(tool) for tool in definitions)
         self._log_tool_exposure(
             definitions,
             selected_scopes=selected_scopes,
@@ -692,8 +703,19 @@ class _ChatAgentBackend(AgentToolBackend):
             else:
                 started = time.perf_counter()
                 try:
+                    invocation_arguments = {str(key): value for key, value in parsed.items()}
+                    if execution_runtime.references is not None:
+                        invocation_arguments = self._reference_tools.resolve_arguments(
+                            invocation_arguments,
+                            registry=execution_runtime.references,
+                            risk=effective_descriptor.risk,
+                            tool_name=descriptor.model_name,
+                            allow_current_sender=(
+                                ToolGroup.ONEBOT.value not in effective_descriptor.scope_ids
+                            ),
+                        )
                     outcome = await descriptor.binding.invoke(
-                        {str(key): value for key, value in parsed.items()},
+                        invocation_arguments,
                         ToolInvocationContext(
                             runtime=execution_runtime,
                             call_id=call.id,
@@ -711,6 +733,16 @@ class _ChatAgentBackend(AgentToolBackend):
                     )
                 except asyncio.CancelledError:
                     raise
+                except ReferenceResolutionError as exc:
+                    self._service._tool_metrics.record_reference_resolution_failure(exc.code.value)
+                    outcome = ToolExecutionResult(
+                        ok=False,
+                        error_code=exc.code.value,
+                        public_message=exc.detail,
+                        retryable=False,
+                        provider_id=descriptor.provider_id,
+                        tool_name=descriptor.provider_tool_name or descriptor.model_name,
+                    )
                 except Exception as exc:
                     outcome = ToolExecutionResult(
                         ok=False,
@@ -728,6 +760,11 @@ class _ChatAgentBackend(AgentToolBackend):
                     outcome,
                     mutation_committed=mutation_committed,
                 )
+                if execution_runtime.references is not None:
+                    outcome = self._reference_tools.project_result(
+                        outcome,
+                        execution_runtime.references,
+                    )
                 tooling = config.tooling
                 mcp = config.mcp
                 is_mcp = effective_descriptor.trust_source is CapabilityTrustSource.MCP
@@ -1408,8 +1445,8 @@ class ChatService:
                 and planned_turn.plan.tool_mode is ToolMode.NONE
                 and not memory_mutation_intent
             )
-            messages = (
-                ()
+            built_prompt = (
+                _BuiltAgentPrompt(messages=(), references=None)
                 if planner_emoji_only
                 else await self._build_messages(
                     inbound,
@@ -1422,6 +1459,7 @@ class ChatService:
                     planned_turn=planned_turn,
                 )
             )
+            messages = built_prompt.messages
             scheduled_automation_intent = bool(
                 not autonomous
                 and not visual_input_present
@@ -1563,6 +1601,7 @@ class ChatService:
                     web_route is not None and web_route.provider is WebProvider.TAVILY
                 ),
                 web_route=web_route,
+                references=built_prompt.references,
             )
             if planner_emoji_only:
                 response_text = ""
@@ -1629,6 +1668,13 @@ class ChatService:
                 trigger_message_id=inbound.message_id,
             )
             response_text = self._source_renderer.sanitize_model_text(response_text, sources)
+            if runtime.references is not None:
+                response_text, reference_leaked = runtime.references.clean_output(response_text)
+                if reference_leaked:
+                    logger.warning(
+                        "main_agent_reference_output_cleaned conversation_hash=%s",
+                        identifier_hash(identity.key) or "missing",
+                    )
             effects = runtime.reply_effects or []
             emoji_effects = [effect for effect in effects if isinstance(effect, PendingReplyEffect)]
             queued_voice = next(
@@ -1977,7 +2023,7 @@ class ChatService:
         visual_observation: VisualObservation | None = None,
         visual_failure: bool = False,
         planned_turn: PlannedTurn | None = None,
-    ) -> tuple[ChatMessage, ...]:
+    ) -> _BuiltAgentPrompt:
         context = await self._context_assembler.assemble(
             inbound=inbound,
             identity=identity,
@@ -1994,13 +2040,16 @@ class ChatService:
                 planned_turn.plan.memory_context.self_recall if planned_turn is not None else False
             ),
         )
-        return self._prompt_composer.compose(
-            inbound=inbound,
-            context=context,
-            runtime=runtime,
-            visual_observation=visual_observation,
-            visual_failure=visual_failure,
-            planned_turn=planned_turn,
+        return _BuiltAgentPrompt(
+            messages=self._prompt_composer.compose(
+                inbound=inbound,
+                context=context,
+                runtime=runtime,
+                visual_observation=visual_observation,
+                visual_failure=visual_failure,
+                planned_turn=planned_turn,
+            ),
+            references=context.references,
         )
 
     async def _run_agent(
