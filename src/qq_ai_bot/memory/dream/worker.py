@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.dream.models import (
+    DreamClusterPreview,
     DreamClusterStatus,
     DreamHealth,
     DreamRun,
@@ -93,6 +94,12 @@ class DreamWorker:
         if page <= 0:
             raise ValueError("Dream 页码必须大于零")
         return await self._repository.run_page(public_id, page=page)
+
+    async def preview(self, public_id: str, *, cluster_id: int) -> DreamClusterPreview:
+        if self._process_lock.locked():
+            raise RuntimeError("Dream 正在运行，暂不能生成预览")
+        async with self._process_lock:
+            return await self._service.preview_cluster(public_id, cluster_id)
 
     async def cancel(self, public_id: str) -> bool:
         return await self._repository.cancel(public_id)

@@ -11,7 +11,7 @@ from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.context import MemoryContextService
-from qq_ai_bot.memory.dream.models import DreamRun, DreamRunPage
+from qq_ai_bot.memory.dream.models import DreamClusterPreview, DreamRun, DreamRunPage
 from qq_ai_bot.memory.dream.worker import DreamWorker
 from qq_ai_bot.memory.embedding.models import MemoryEmbeddingHealth
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
@@ -800,6 +800,18 @@ class MemoryAdminService:
         if self._dream is None:
             raise RuntimeError("Memory Dream 未初始化")
         return await self._dream.show(public_id, page=page)
+
+    async def dream_preview(
+        self,
+        actor: AdminActor,
+        public_id: str,
+        *,
+        cluster_id: int,
+    ) -> DreamClusterPreview:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream 未初始化")
+        return await self._dream.preview(public_id, cluster_id=cluster_id)
 
     async def dream_cancel(self, actor: AdminActor, public_id: str) -> bool:
         self._require_superuser(actor)

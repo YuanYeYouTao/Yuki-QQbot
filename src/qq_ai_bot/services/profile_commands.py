@@ -423,7 +423,7 @@ class ProfileCommandHandler:
         if not parts:
             return (
                 "可用操作：plan、start、list、status、show、cancel、resume、retry、"
-                "rollback run、rollback operation。"
+                "preview、rollback run、rollback operation。"
             )
         operation = parts.pop(0).casefold()
         if operation == "plan" and not parts:
@@ -456,10 +456,37 @@ class ProfileCommandHandler:
             lines.extend(
                 f"operation={row.public_id} [{row.operation.value}/{row.status.value}] "
                 f"cluster={row.cluster_id} sources={','.join(map(str, row.source_fact_ids))} "
-                f"output={row.output_fact_id or '-'}"
+                f"outputs={','.join(map(str, row.output_fact_ids)) or row.output_fact_id or '-'}"
                 for row in page_result.operations
             )
             return "\n".join(lines) or "该页没有 Dream 簇。"
+        if operation == "preview" and len(parts) == 2:
+            public_id, raw_cluster_id = parts
+            preview = await self._memory_admin.dream_preview(
+                actor,
+                public_id,
+                cluster_id=int(raw_cluster_id),
+            )
+            lines = [
+                f"Dream 只读预览 cluster={preview.cluster_id} "
+                f"facts={','.join(map(str, preview.fact_ids))}",
+                f"正文 {preview.source_characters} → {preview.output_characters} 字符 "
+                f"({preview.compression_ratio:.1%})；尚未写入数据库。",
+            ]
+            for index, action in enumerate(preview.actions, start=1):
+                lines.append(
+                    f"[{index}] {action.operation.value} "
+                    f"sources={','.join(action.source_refs)}"
+                )
+                if action.content:
+                    lines.append(action.content)
+                for output_index, output in enumerate(action.outputs, start=1):
+                    lines.append(
+                        f"  输出 {output_index} sources={','.join(output.source_refs)} "
+                        f"importance={output.importance}"
+                    )
+                    lines.append(output.content)
+            return "\n".join(lines)
         if operation in {"start", "status", "cancel", "resume", "retry"}:
             if len(parts) != 1:
                 return f"格式：/ai memory dream {operation} <run_id>"
@@ -490,7 +517,7 @@ class ProfileCommandHandler:
                 return f"Dream run 已回滚 {count} 个 operation。"
         return (
             "格式：/ai memory dream "
-            "<plan|start|list|status|show|cancel|resume|retry|rollback>"
+            "<plan|start|list|status|show|preview|cancel|resume|retry|rollback>"
         )
 
     async def preference(self, *, actor: AdminActor, argument: str) -> str:

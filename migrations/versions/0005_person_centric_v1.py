@@ -106,6 +106,7 @@ def upgrade() -> None:
             "memory_dream_clusters",
             "memory_dream_operations",
             "memory_dream_operation_sources",
+            "memory_dream_operation_results",
             "memory_dream_fact_checkpoints",
             "plugin_background_target_grants",
             "plugin_media_artifacts",

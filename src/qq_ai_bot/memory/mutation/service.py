@@ -24,6 +24,7 @@ from qq_ai_bot.memory.claim_processor import (
 from qq_ai_bot.memory.dream.db_models import (
     MemoryDreamClusterModel,
     MemoryDreamOperationModel,
+    MemoryDreamOperationResultModel,
     MemoryDreamOperationSourceModel,
 )
 from qq_ai_bot.memory.dream.models import (
@@ -85,6 +86,13 @@ from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class DreamRecomposePlan:
+    source_facts: tuple[MemoryFact, ...]
+    content: str
+    importance: int
 
 
 class MemoryMutationRejected(ValueError):
@@ -190,6 +198,7 @@ class MemoryMutationService:
         anchor_fact_id: int | None,
         content: str | None,
         importance: int | None,
+        recompose_outputs: tuple[DreamRecomposePlan, ...] = (),
         bot_user_id: str,
         run_public_id: str,
         session: AsyncSession,
@@ -208,9 +217,25 @@ class MemoryMutationService:
         partition = self._dream_partition(sources[0])
         if any(self._dream_partition(item) != partition for item in sources[1:]):
             raise ValueError("dream mutation cannot cross memory partitions")
+        if operation_type is DreamOperationType.RECOMPOSE:
+            if sources[0].kind is not MemoryKind.EPISODE:
+                raise ValueError("dream recompose is only available for episodes")
+            if content is not None or importance is not None:
+                raise ValueError("dream recompose uses its bounded output list")
+            if not 1 <= len(recompose_outputs) <= 4:
+                raise ValueError("dream recompose requires one to four outputs")
+            if any(not 1 <= output.importance <= 5 for output in recompose_outputs):
+                raise ValueError("dream recompose importance is out of range")
+        elif recompose_outputs:
+            raise ValueError("only dream recompose accepts multiple outputs")
         explicit = tuple(item for item in sources if self._dream_explicit(item))
         if (
-            operation_type in {DreamOperationType.CONTEST, DreamOperationType.SYNTHESIZE}
+            operation_type
+            in {
+                DreamOperationType.CONTEST,
+                DreamOperationType.SYNTHESIZE,
+                DreamOperationType.RECOMPOSE,
+            }
             and explicit
         ):
             raise ValueError("dream cannot modify an explicit memory anchor")
@@ -221,6 +246,7 @@ class MemoryMutationService:
         if operation_type in {
             DreamOperationType.MERGE,
             DreamOperationType.SYNTHESIZE,
+            DreamOperationType.RECOMPOSE,
             DreamOperationType.RESOLVE,
         }:
             if anchor is None:
@@ -235,6 +261,14 @@ class MemoryMutationService:
             "sources": [item.id for item in sources],
             "anchor": anchor.id if anchor else None,
             "content": content,
+            "recompose_outputs": [
+                {
+                    "sources": [item.id for item in output.source_facts],
+                    "content": output.content,
+                    "importance": output.importance,
+                }
+                for output in recompose_outputs
+            ],
         }
         fingerprint = hashlib.sha256(
             json.dumps(
@@ -252,7 +286,9 @@ class MemoryMutationService:
         if existing is not None:
             return DreamMutationResult(
                 operation_id=dream_operation_id,
-                output_fact_id=existing.new_fact_id,
+                output_fact_ids=(
+                    (existing.new_fact_id,) if existing.new_fact_id is not None else ()
+                ),
                 added_evidence_ids=(),
                 added_relation_ids=(),
                 changed=False,
@@ -287,12 +323,14 @@ class MemoryMutationService:
             )
         )
         changed = False
-        output_fact_id: int | None = anchor.id if anchor is not None else sources[0].id
+        output_fact_ids: tuple[int, ...] = (
+            (anchor.id,) if anchor is not None else (sources[0].id,)
+        )
         outcome = MemoryMutationOutcome.NO_CHANGE
         reason_code = f"memory_dream_{operation_type.value}"
 
         if operation_type is DreamOperationType.KEEP:
-            output_fact_id = sources[0].id
+            output_fact_ids = (sources[0].id,)
         elif operation_type is DreamOperationType.MERGE:
             assert anchor is not None
             for source in sources:
@@ -306,7 +344,7 @@ class MemoryMutationService:
                     session=session,
                 )
                 changed = changed or merged is not None
-            output_fact_id = anchor.id
+            output_fact_ids = (anchor.id,)
             outcome = MemoryMutationOutcome.COMMITTED if changed else outcome
         elif operation_type is DreamOperationType.SYNTHESIZE:
             assert anchor is not None
@@ -387,7 +425,149 @@ class MemoryMutationService:
                     source_event_id=None,
                     session=session,
                 )
-            output_fact_id = created.id
+            output_fact_ids = (created.id,)
+            changed = True
+            outcome = MemoryMutationOutcome.COMMITTED
+        elif operation_type is DreamOperationType.RECOMPOSE:
+            assert anchor is not None
+            source_by_id = {item.id: item for item in sources}
+            if not recompose_outputs:
+                raise ValueError("dream recompose requires outputs")
+            referenced = {
+                source.id for output in recompose_outputs for source in output.source_facts
+            }
+            if referenced != set(source_by_id):
+                raise ValueError("dream recompose outputs must cover all operation sources")
+            if any(
+                not output.source_facts
+                or any(source.id not in source_by_id for source in output.source_facts)
+                for output in recompose_outputs
+            ):
+                raise ValueError("dream recompose output has invalid sources")
+            normalized_outputs = tuple(
+                normalize_memory_text(output.content, maximum=4000)
+                for output in recompose_outputs
+            )
+            if any(not item for item in normalized_outputs):
+                raise ValueError("dream recompose content cannot be empty")
+            if len({item.casefold() for item in normalized_outputs}) != len(
+                normalized_outputs
+            ):
+                raise ValueError("dream recompose content must be unique")
+            if any(
+                len(item) > self._settings.memory_dream_episode_max_characters
+                for item in normalized_outputs
+            ):
+                raise ValueError("dream recompose content exceeds the character limit")
+            source_characters = sum(len(item.content) for item in sources)
+            output_characters = sum(len(item) for item in normalized_outputs)
+            if output_characters > max(
+                min(450, self._settings.memory_dream_episode_max_characters),
+                int(
+                    source_characters
+                    * self._settings.memory_dream_episode_compression_ratio
+                ),
+            ):
+                raise ValueError("dream recompose did not compress its source episodes")
+            for source in sources:
+                await self._facts.repository.transition(
+                    source.id,
+                    status=MemoryStatus.SUPERSEDED,
+                    conflict_state=MemoryConflictState.CLEAR,
+                    invalidated_reason=None,
+                    action=MemoryStateAction.SUPERSEDED,
+                    reason_code=reason_code,
+                    source_event_id=None,
+                    actor_user_id=bot_user_id,
+                    session=session,
+                )
+            created_ids: list[int] = []
+            used_keys: set[str] = set()
+            for output_index, (output, normalized) in enumerate(
+                zip(recompose_outputs, normalized_outputs, strict=True), start=1
+            ):
+                output_sources = tuple(source_by_id[item.id] for item in output.source_facts)
+                output_anchor = self.select_dream_anchor(output_sources)
+                memory_key = self._dream_recompose_key(
+                    output_anchor.memory_key,
+                    dream_operation_id=dream_operation_id,
+                    output_index=output_index,
+                    content=normalized,
+                    used_keys=used_keys,
+                )
+                used_keys.add(memory_key)
+                replacement = MemoryFactCreate(
+                    scope_type=output_anchor.scope_type,
+                    subject_user_id=output_anchor.subject_user_id,
+                    group_id=output_anchor.group_id,
+                    visibility_type=output_anchor.visibility_type,
+                    visibility_user_id=output_anchor.visibility_user_id,
+                    visibility_group_id=output_anchor.visibility_group_id,
+                    kind=output_anchor.kind,
+                    memory_key=memory_key,
+                    category=output_anchor.category,
+                    content=normalized,
+                    importance=output.importance,
+                    confidence=output_anchor.confidence,
+                    source_type=output_anchor.source_type,
+                    authority=output_anchor.authority,
+                    valid_from=min(
+                        (
+                            item.valid_from
+                            for item in output_sources
+                            if item.valid_from is not None
+                        ),
+                        default=output_anchor.valid_from,
+                    ),
+                    valid_until=(
+                        None
+                        if any(item.valid_until is None for item in output_sources)
+                        else max(
+                            item.valid_until
+                            for item in output_sources
+                            if item.valid_until is not None
+                        )
+                    ),
+                    validation_version=output_anchor.validation_version,
+                    review_state=output_anchor.review_state,
+                )
+                collision = await self._facts.repository.find_active(replacement, session=session)
+                if collision is not None:
+                    raise ValueError("dream recompose collided with an active key")
+                created = await self._facts.repository.create_fact(
+                    replacement,
+                    normalized_content=normalized.casefold(),
+                    supersedes_id=output_anchor.id,
+                    recorded_at=datetime.now(UTC),
+                    session=session,
+                )
+                evidence = await self._dream_evidence_bundle(output_sources, session=session)
+                await self._facts.append_evidence_bundle(
+                    created.id,
+                    evidence,
+                    confirmed_at=max(item.last_confirmed_at for item in output_sources),
+                    session=session,
+                )
+                await self._facts.repository.record_created(
+                    created.id,
+                    status=MemoryStatus.ACTIVE,
+                    conflict_state=MemoryConflictState.CLEAR,
+                    reason_code=reason_code,
+                    source_event_id=None,
+                    actor_user_id=bot_user_id,
+                    session=session,
+                )
+                for source in output_sources:
+                    await self._facts.repository.add_relation(
+                        source_fact_id=source.id,
+                        target_fact_id=created.id,
+                        relation_type=MemoryFactRelationType.REFINES,
+                        confidence=1.0,
+                        source_event_id=None,
+                        session=session,
+                    )
+                created_ids.append(created.id)
+            output_fact_ids = tuple(created_ids)
             changed = True
             outcome = MemoryMutationOutcome.COMMITTED
         elif operation_type is DreamOperationType.CONTEST:
@@ -411,7 +591,7 @@ class MemoryMutationService:
                         source_event_id=None,
                         session=session,
                     )
-            output_fact_id = sources[0].id
+            output_fact_ids = (sources[0].id,)
             outcome = MemoryMutationOutcome.COMMITTED_AS_CONTESTED if changed else outcome
         elif operation_type is DreamOperationType.RESOLVE:
             assert anchor is not None
@@ -453,11 +633,11 @@ class MemoryMutationService:
                     session=session,
                 )
                 changed = True
-            output_fact_id = anchor.id
+            output_fact_ids = (anchor.id,)
             outcome = MemoryMutationOutcome.COMMITTED if changed else outcome
 
         affected_ids = tuple(
-            dict.fromkeys((*source_ids, *((output_fact_id,) if output_fact_id is not None else ())))
+            dict.fromkeys((*source_ids, *output_fact_ids))
         )
         after_evidence = set(
             await session.scalars(
@@ -476,7 +656,7 @@ class MemoryMutationService:
             receipt.id,
             applied_operation=applied if changed else MemoryMutationAppliedOperation.NOOP,
             old_fact_id=sources[0].id,
-            new_fact_id=output_fact_id,
+            new_fact_id=output_fact_ids[0] if output_fact_ids else None,
             outcome=outcome,
             reason_code=reason_code,
             session=session,
@@ -484,7 +664,7 @@ class MemoryMutationService:
         _ = finalized
         return DreamMutationResult(
             operation_id=dream_operation_id,
-            output_fact_id=output_fact_id,
+            output_fact_ids=output_fact_ids,
             added_evidence_ids=tuple(sorted(after_evidence - before_evidence)),
             added_relation_ids=tuple(sorted(after_relations - before_relations)),
             changed=changed,
@@ -531,18 +711,33 @@ class MemoryMutationService:
             if current is None or fact_signature(current) != source.after_signature:
                 raise RuntimeError("Dream source changed after this operation")
             current_sources[source.fact_id] = current
-        if operation.output_fact_id is not None and operation.result_signature is not None:
-            output = await self._facts.repository.get_fact(
-                operation.output_fact_id, session=session
-            )
-            if output is None or fact_signature(output) != operation.result_signature:
+        result_rows = tuple(
+            (
+                await session.scalars(
+                    select(MemoryDreamOperationResultModel)
+                    .where(MemoryDreamOperationResultModel.operation_id == operation.id)
+                    .order_by(MemoryDreamOperationResultModel.position)
+                )
+            ).all()
+        )
+        output_ids: tuple[int, ...]
+        expected_signatures: tuple[str | None, ...]
+        if not result_rows and operation.output_fact_id is not None:
+            output_ids = (operation.output_fact_id,)
+            expected_signatures = (operation.result_signature,)
+        else:
+            output_ids = tuple(row.fact_id for row in result_rows)
+            expected_signatures = tuple(row.result_signature for row in result_rows)
+        for fact_id, signature in zip(output_ids, expected_signatures, strict=True):
+            output = await self._facts.repository.get_fact(fact_id, session=session)
+            if output is None or signature is None or fact_signature(output) != signature:
                 raise RuntimeError("Dream result changed after this operation")
 
         affected_ids = tuple(
             dict.fromkeys(
                 (
                     *(source.fact_id for source in source_rows),
-                    *((operation.output_fact_id,) if operation.output_fact_id else ()),
+                    *output_ids,
                 )
             )
         )
@@ -595,9 +790,11 @@ class MemoryMutationService:
                 )
             )
         source_ids = {row.fact_id for row in source_rows}
-        if operation.output_fact_id is not None and operation.output_fact_id not in source_ids:
+        for output_fact_id in output_ids:
+            if output_fact_id in source_ids:
+                continue
             await self._facts.repository.transition(
-                operation.output_fact_id,
+                output_fact_id,
                 status=MemoryStatus.INVALIDATED,
                 conflict_state=MemoryConflictState.CLEAR,
                 invalidated_reason=MemoryInvalidationReason.DREAM_ROLLBACK,
@@ -641,7 +838,7 @@ class MemoryMutationService:
         await self._receipts.finalize(
             receipt.id,
             applied_operation=MemoryMutationAppliedOperation.RESTORE,
-            old_fact_id=operation.output_fact_id,
+            old_fact_id=output_ids[0] if output_ids else None,
             new_fact_id=source_rows[0].fact_id,
             outcome=MemoryMutationOutcome.COMMITTED,
             reason_code="memory_dream_rollback",
@@ -678,6 +875,23 @@ class MemoryMutationService:
         return tuple(rows.values())
 
     @staticmethod
+    def _dream_recompose_key(
+        base_key: str,
+        *,
+        dream_operation_id: int,
+        output_index: int,
+        content: str,
+        used_keys: set[str],
+    ) -> str:
+        if base_key not in used_keys:
+            return base_key
+        suffix = hashlib.sha256(
+            f"{dream_operation_id}:{output_index}:{content.casefold()}".encode()
+        ).hexdigest()[:16]
+        prefix = base_key[: max(1, 128 - len(suffix) - 7)]
+        return f"{prefix}:dream:{suffix}"
+
+    @staticmethod
     def _dream_partition(fact: MemoryFact) -> tuple[object, ...]:
         return (
             fact.scope_type,
@@ -710,6 +924,10 @@ class MemoryMutationService:
                 MemoryMutationAppliedOperation.MERGE,
             ),
             DreamOperationType.SYNTHESIZE: (
+                MemoryMutationOperation.CORRECT,
+                MemoryMutationAppliedOperation.CORRECT,
+            ),
+            DreamOperationType.RECOMPOSE: (
                 MemoryMutationOperation.CORRECT,
                 MemoryMutationAppliedOperation.CORRECT,
             ),

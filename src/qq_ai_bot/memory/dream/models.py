@@ -38,6 +38,7 @@ class DreamOperationType(StrEnum):
     KEEP = "keep"
     MERGE = "merge"
     SYNTHESIZE = "synthesize"
+    RECOMPOSE = "recompose"
     CONTEST = "contest"
     RESOLVE = "resolve"
 
@@ -83,7 +84,26 @@ class DreamInput(_DreamModel):
     visibility_user_id: str | None = None
     visibility_group_id: str | None = None
     kind: str
-    memories: tuple[DreamMemoryInput, ...] = Field(min_length=2, max_length=6)
+    memories: tuple[DreamMemoryInput, ...] = Field(min_length=1, max_length=6)
+
+    @model_validator(mode="after")
+    def _single_memory_is_episode_only(self) -> DreamInput:
+        if len(self.memories) == 1 and self.kind != "episode":
+            raise ValueError("only an episode Dream input may contain one memory")
+        return self
+
+
+class DreamRecomposeOutput(_DreamModel):
+    source_refs: tuple[str, ...] = Field(min_length=1, max_length=6)
+    content: str = Field(min_length=1, max_length=4000)
+    importance: int = Field(ge=1, le=5)
+
+    @field_validator("source_refs")
+    @classmethod
+    def _unique_sources(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("dream recompose output source refs must be unique")
+        return value
 
 
 class DreamAction(_DreamModel):
@@ -92,6 +112,7 @@ class DreamAction(_DreamModel):
     anchor_ref: str | None = None
     content: str | None = Field(default=None, max_length=4000)
     importance: int | None = Field(default=None, ge=1, le=5)
+    outputs: tuple[DreamRecomposeOutput, ...] = Field(default=(), max_length=4)
 
     @field_validator("source_refs")
     @classmethod
@@ -113,7 +134,20 @@ class DreamAction(_DreamModel):
                 raise ValueError("dream anchor must be one of the source refs")
         elif self.anchor_ref is not None:
             raise ValueError("dream keep and contest actions do not use an anchor")
-        if self.operation is DreamOperationType.SYNTHESIZE:
+        if self.operation is DreamOperationType.RECOMPOSE:
+            if not self.outputs:
+                raise ValueError("dream recompose requires one or more outputs")
+            if self.content is not None or self.importance is not None:
+                raise ValueError("dream recompose uses outputs instead of content")
+            sources = set(self.source_refs)
+            output_sources = {ref for output in self.outputs for ref in output.source_refs}
+            if output_sources != sources:
+                raise ValueError("dream recompose outputs must cover exactly all action sources")
+            if any(not set(output.source_refs).issubset(sources) for output in self.outputs):
+                raise ValueError("dream recompose output referenced a source outside the action")
+        elif self.outputs:
+            raise ValueError("only dream recompose may emit multiple outputs")
+        elif self.operation is DreamOperationType.SYNTHESIZE:
             if self.content is None or not self.content.strip():
                 raise ValueError("dream synthesis requires content")
         elif self.content is not None or self.importance is not None:
@@ -190,7 +224,7 @@ class DreamCluster(_DreamModel):
     bot_user_id: str
     kind: str
     status: DreamClusterStatus
-    fact_ids: tuple[int, ...] = Field(min_length=2)
+    fact_ids: tuple[int, ...] = Field(min_length=1)
     fingerprint: str
     attempts: int = Field(ge=0)
     model_calls: int = Field(ge=0)
@@ -206,11 +240,22 @@ class DreamOperationSummary(_DreamModel):
     source_fact_ids: tuple[int, ...]
     anchor_fact_id: int | None = None
     output_fact_id: int | None = None
+    output_fact_ids: tuple[int, ...] = ()
 
 
 class DreamRunPage(_DreamModel):
     clusters: tuple[DreamCluster, ...]
     operations: tuple[DreamOperationSummary, ...]
+
+
+class DreamClusterPreview(_DreamModel):
+    run_public_id: str
+    cluster_id: int = Field(gt=0)
+    fact_ids: tuple[int, ...]
+    source_characters: int = Field(ge=0)
+    output_characters: int = Field(ge=0)
+    compression_ratio: float = Field(ge=0)
+    actions: tuple[DreamAction, ...]
 
 
 class DreamHealth(_DreamModel):
@@ -226,7 +271,11 @@ class DreamHealth(_DreamModel):
 @dataclass(frozen=True, slots=True)
 class DreamMutationResult:
     operation_id: int
-    output_fact_id: int | None
+    output_fact_ids: tuple[int, ...]
     added_evidence_ids: tuple[int, ...]
     added_relation_ids: tuple[int, ...]
     changed: bool
+
+    @property
+    def output_fact_id(self) -> int | None:
+        return self.output_fact_ids[0] if self.output_fact_ids else None

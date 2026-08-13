@@ -230,6 +230,8 @@ class MemorySettings(DomainSettings):
     memory_dream_max_cluster_size: int = Field(ge=2, le=20)
     memory_dream_max_input_characters: int = Field(gt=0, le=100_000)
     memory_dream_max_output_tokens: int = Field(gt=0)
+    memory_dream_episode_max_characters: int = Field(ge=200, le=4000)
+    memory_dream_episode_compression_ratio: float = Field(gt=0, le=1)
     memory_dream_evidence_per_fact: int = Field(ge=0, le=10)
     memory_dream_evidence_excerpt_characters: int = Field(gt=0, le=2000)
     memory_mmr_enabled: bool

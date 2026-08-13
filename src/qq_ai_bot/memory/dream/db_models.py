@@ -104,7 +104,7 @@ class MemoryDreamOperationModel(Base):
             "cluster_id", "action_index", name="uq_memory_dream_operations_cluster_action"
         ),
         CheckConstraint(
-            "operation_type IN ('keep','merge','synthesize','contest','resolve')",
+            "operation_type IN ('keep','merge','synthesize','recompose','contest','resolve')",
             name="ck_memory_dream_operations_type",
         ),
         CheckConstraint(
@@ -163,6 +163,25 @@ class MemoryDreamOperationSourceModel(Base):
     )
     before_signature: Mapped[str] = mapped_column(String(64), nullable=False)
     after_signature: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class MemoryDreamOperationResultModel(Base):
+    __tablename__ = "memory_dream_operation_results"
+    __table_args__ = (
+        UniqueConstraint("operation_id", "position", name="uq_memory_dream_results_position"),
+        UniqueConstraint("operation_id", "fact_id", name="uq_memory_dream_results_fact"),
+        Index("ix_memory_dream_results_fact", "fact_id", "operation_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    operation_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_dream_operations.id", ondelete="CASCADE"), nullable=False
+    )
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_signature: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class MemoryDreamFactCheckpointModel(Base):

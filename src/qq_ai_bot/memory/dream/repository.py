@@ -18,6 +18,7 @@ from qq_ai_bot.memory.dream.db_models import (
     MemoryDreamClusterModel,
     MemoryDreamFactCheckpointModel,
     MemoryDreamOperationModel,
+    MemoryDreamOperationResultModel,
     MemoryDreamOperationSourceModel,
     MemoryDreamRunModel,
     MemoryDreamRuntimeModel,
@@ -420,6 +421,24 @@ class DreamRepository:
                 if cluster_ids
                 else ()
             )
+            operation_ids = tuple(row.id for row in operation_rows)
+            result_rows = (
+                (
+                    await session.scalars(
+                        select(MemoryDreamOperationResultModel)
+                        .where(MemoryDreamOperationResultModel.operation_id.in_(operation_ids))
+                        .order_by(
+                            MemoryDreamOperationResultModel.operation_id,
+                            MemoryDreamOperationResultModel.position,
+                        )
+                    )
+                ).all()
+                if operation_ids
+                else ()
+            )
+            results_by_operation: dict[int, list[int]] = {}
+            for result in result_rows:
+                results_by_operation.setdefault(result.operation_id, []).append(result.fact_id)
         return DreamRunPage(
             clusters=tuple(self._cluster(row) for row in cluster_rows),
             operations=tuple(
@@ -431,10 +450,28 @@ class DreamRepository:
                     source_fact_ids=tuple(json.loads(row.source_fact_ids_json)),
                     anchor_fact_id=row.anchor_fact_id,
                     output_fact_id=row.output_fact_id,
+                    output_fact_ids=tuple(results_by_operation.get(row.id, ())),
                 )
                 for row in operation_rows
             ),
         )
+
+    async def cluster_for_run(
+        self, run_public_id: str, cluster_id: int
+    ) -> DreamCluster | None:
+        async with self.database.sessions() as session:
+            row = await session.scalar(
+                select(MemoryDreamClusterModel)
+                .join(
+                    MemoryDreamRunModel,
+                    MemoryDreamRunModel.id == MemoryDreamClusterModel.run_id,
+                )
+                .where(
+                    MemoryDreamRunModel.public_id == run_public_id,
+                    MemoryDreamClusterModel.id == cluster_id,
+                )
+            )
+        return self._cluster(row) if row is not None else None
 
     async def start_run(self, public_id: str) -> bool:
         now = datetime.now(UTC)
@@ -797,6 +834,7 @@ class DreamRepository:
         operation_id: int,
         *,
         output_fact_id: int | None,
+        output_results: tuple[tuple[int, str], ...],
         added_evidence_ids: tuple[int, ...],
         added_relation_ids: tuple[int, ...],
         result_signature: str | None,
@@ -824,6 +862,16 @@ class DreamRepository:
                 )
                 .values(after_signature=signature)
             )
+        for position, (fact_id, signature) in enumerate(output_results):
+            session.add(
+                MemoryDreamOperationResultModel(
+                    operation_id=operation_id,
+                    fact_id=fact_id,
+                    position=position,
+                    result_signature=signature,
+                )
+            )
+        await session.flush()
 
     async def cluster_facts(self, cluster: DreamCluster) -> tuple[MemoryFact, ...]:
         rows: list[MemoryFact] = []
