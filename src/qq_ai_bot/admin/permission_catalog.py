@@ -666,6 +666,12 @@ _MEMORY_LIFECYCLE_CAPABILITIES = (
                 "立即运行一次有界的 {bot_name} Self Reflection。",
                 True,
             ),
+            ("dream.plan", "规划 Memory Dream", "只读规划一次全库 Dream 快照。", False),
+            ("dream.start", "启动 Memory Dream", "后台启动一个已规划的 Dream。", True),
+            ("dream.list", "查看 Memory Dream", "查看 Dream 运行与簇状态。", False),
+            ("dream.cancel", "取消 Memory Dream", "取消尚未完成的 Dream。", True),
+            ("dream.retry", "重试 Memory Dream", "重试失败或过期的 Dream 簇。", True),
+            ("dream.rollback", "回滚 Memory Dream", "回滚 Dream operation 或整轮运行。", True),
         )
     ),
 )

@@ -220,6 +220,21 @@ class MemorySettings(DomainSettings):
     memory_consolidation_min_relevance: float = Field(ge=0, le=1)
     memory_consolidation_model_task: str
     memory_consolidation_max_output_tokens: int = Field(gt=0)
+    memory_dream_enabled: bool
+    memory_dream_schedule_hour: int = Field(ge=0, le=23)
+    memory_dream_timezone: str
+    memory_dream_poll_seconds: float = Field(gt=0)
+    memory_dream_max_clusters_per_run: int = Field(gt=0, le=100)
+    memory_dream_max_model_calls_per_run: int = Field(gt=0, le=200)
+    memory_dream_similarity_threshold: float = Field(ge=-1, le=1)
+    memory_dream_max_cluster_size: int = Field(ge=2, le=20)
+    memory_dream_max_input_characters: int = Field(gt=0, le=100_000)
+    memory_dream_max_output_tokens: int = Field(gt=0)
+    memory_dream_evidence_per_fact: int = Field(ge=0, le=10)
+    memory_dream_evidence_excerpt_characters: int = Field(gt=0, le=2000)
+    memory_mmr_enabled: bool
+    memory_mmr_lambda: float = Field(ge=0, le=1)
+    memory_mmr_candidate_pool_size: int = Field(gt=0, le=100)
     memory_evidence_weight_explicit: float = Field(ge=0, le=1)
     memory_evidence_weight_self: float = Field(ge=0, le=1)
     memory_evidence_weight_group: float = Field(ge=0, le=1)

@@ -122,6 +122,9 @@ class PersistenceModule:
             retriever=MemoryRetriever(
                 repository=memory_repository,
                 lexical_index=memory_index,
+                mmr_enabled=settings.memory_mmr_enabled,
+                mmr_lambda=settings.memory_mmr_lambda,
+                mmr_candidate_pool_size=settings.memory_mmr_candidate_pool_size,
             ),
             facts=memories,
         )

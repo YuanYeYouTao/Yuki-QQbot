@@ -196,12 +196,15 @@ class ProfileCommandHandler:
             "resolve",
             "maintenance",
             "self-reflection",
+            "dream",
             "doctor",
         }
         if not parts or parts[0].casefold() not in diagnostic_operations:
             return None
         operation = parts.pop(0).casefold()
         try:
+            if operation == "dream":
+                return await self._memory_dream_command(actor, parts)
             if operation == "self-reflection":
                 if parts != ["run"]:
                     return "格式：/ai memory self-reflection run"
@@ -413,6 +416,82 @@ class ProfileCommandHandler:
             )
         except (PermissionError, RuntimeError, ValueError) as exc:
             return str(exc)
+
+    async def _memory_dream_command(self, actor: AdminActor, parts: list[str]) -> str:
+        if not actor.is_superuser:
+            raise PermissionError("仅当前真实超级管理员可管理 Memory Dream。")
+        if not parts:
+            return (
+                "可用操作：plan、start、list、status、show、cancel、resume、retry、"
+                "rollback run、rollback operation。"
+            )
+        operation = parts.pop(0).casefold()
+        if operation == "plan" and not parts:
+            run = await self._memory_admin.dream_plan(actor)
+            stats = run.statistics
+            return (
+                f"Dream 计划 {run.public_id}：正式记忆 {stats.eligible_facts}，"
+                f"候选簇 {stats.candidate_clusters}，预计最多调用 "
+                f"{stats.estimated_model_calls} 次；使用 start 启动。"
+            )
+        if operation == "list" and not parts:
+            rows = await self._memory_admin.dream_list(actor)
+            return (
+                "\n".join(
+                    f"{row.public_id} [{row.mode.value}/{row.status.value}] "
+                    f"clusters={row.statistics.candidate_clusters} calls={row.model_calls}"
+                    for row in rows
+                )
+                or "暂无 Dream 任务。"
+            )
+        if operation == "show" and len(parts) in {1, 2}:
+            page = int(parts[1]) if len(parts) == 2 else 1
+            page_result = await self._memory_admin.dream_show(actor, parts[0], page=page)
+            lines = [
+                    f"cluster={row.id} [{row.status.value}] kind={row.kind} "
+                    f"facts={','.join(map(str, row.fact_ids))} calls={row.model_calls} "
+                    f"operations={row.operation_count} error={row.error_category or '-'}"
+                for row in page_result.clusters
+            ]
+            lines.extend(
+                f"operation={row.public_id} [{row.operation.value}/{row.status.value}] "
+                f"cluster={row.cluster_id} sources={','.join(map(str, row.source_fact_ids))} "
+                f"output={row.output_fact_id or '-'}"
+                for row in page_result.operations
+            )
+            return "\n".join(lines) or "该页没有 Dream 簇。"
+        if operation in {"start", "status", "cancel", "resume", "retry"}:
+            if len(parts) != 1:
+                return f"格式：/ai memory dream {operation} <run_id>"
+            public_id = parts[0]
+            if operation == "status":
+                row = await self._memory_admin.dream_status(actor, public_id)
+                return (
+                    json.dumps(row.model_dump(mode="json"), ensure_ascii=False, indent=2)
+                    if row is not None
+                    else "没有找到该 Dream 任务。"
+                )
+            if operation == "cancel":
+                return (
+                    "Dream 任务已取消。"
+                    if await self._memory_admin.dream_cancel(actor, public_id)
+                    else "Dream 任务不存在或当前不能取消。"
+                )
+            method = getattr(self._memory_admin, f"dream_{operation}")
+            row = await method(actor, public_id)
+            return f"Dream 任务 {row.public_id} 已进入 {row.status.value}。"
+        if operation == "rollback" and len(parts) == 2:
+            kind, public_id = parts
+            if kind == "operation":
+                changed = await self._memory_admin.dream_rollback_operation(actor, public_id)
+                return "Dream operation 已回滚。" if changed else "没有可回滚的 operation。"
+            if kind == "run":
+                count = await self._memory_admin.dream_rollback_run(actor, public_id)
+                return f"Dream run 已回滚 {count} 个 operation。"
+        return (
+            "格式：/ai memory dream "
+            "<plan|start|list|status|show|cancel|resume|retry|rollback>"
+        )
 
     async def preference(self, *, actor: AdminActor, argument: str) -> str:
         parsed = self._parse_scoped_operation(

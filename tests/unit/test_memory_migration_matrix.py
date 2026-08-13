@@ -24,6 +24,7 @@ MATRIX = {
     "chat-event-sender-identity": "0029",
     "memory-quality-self-reflection": "0030",
     "episode-self-reflection": "0031",
+    "memory-dream": "0032",
 }
 
 
@@ -64,8 +65,10 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
     assert "memory_reflection_jobs" in expected_names
     assert "memory_claim_candidates" in expected_names
     assert "memory_self_reflection_runs" in expected_names
+    assert "memory_dream_runs" in expected_names
+    assert "memory_dream_operations" in expected_names
     with sqlite3.connect(fresh) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0031",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0032",)
 
     for label, revision in MATRIX.items():
         database = tmp_path / f"{label}.db"
@@ -75,11 +78,11 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
         assert names == expected_names, label
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0031",
+                "0032",
             )
             assert connection.execute("SELECT COUNT(*) FROM memory_rebuild_runs").fetchone() == (0,)
 
 
-def test_episode_self_reflection_is_the_current_production_migration() -> None:
+def test_memory_dream_is_the_current_production_migration() -> None:
     versions = sorted((ROOT / "migrations/versions").glob("*.py"))
-    assert versions[-1].name == "0031_episode_self_reflection_baseline.py"
+    assert versions[-1].name == "0032_memory_dream.py"

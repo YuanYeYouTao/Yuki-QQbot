@@ -135,6 +135,7 @@ class MemoryInvalidationReason(StrEnum):
     PRIVACY_DELETION = "privacy_deletion"
     CONFLICT_RESOLUTION = "conflict_resolution"
     PLUGIN_EXPLICIT_INVALIDATION = "plugin_explicit_invalidation"
+    DREAM_ROLLBACK = "dream_rollback"
 
 
 class MemoryTemporalMode(StrEnum):

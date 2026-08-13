@@ -11,6 +11,8 @@ from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.dream.models import DreamRun, DreamRunPage
+from qq_ai_bot.memory.dream.worker import DreamWorker
 from qq_ai_bot.memory.embedding.models import MemoryEmbeddingHealth
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.enums import (
@@ -71,6 +73,7 @@ class MemoryAdminService:
         mutations: MemoryMutationService | None = None,
         ledger: EventLedgerRepository | None = None,
         self_reflection: SelfReflectionWorker | None = None,
+        dream: DreamWorker | None = None,
     ) -> None:
         self._settings = settings
         self._memories = memories
@@ -95,6 +98,7 @@ class MemoryAdminService:
         self._mutations = mutations
         self._ledger = ledger
         self._self_reflection = self_reflection
+        self._dream = dream
 
     async def list_memories(
         self,
@@ -760,6 +764,72 @@ class MemoryAdminService:
             health=await self._self_reflection.health(),
             max_daily_calls=self._settings.memory_self_reflection_max_daily_calls,
         )
+
+    async def dream_plan(self, actor: AdminActor) -> DreamRun:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream Worker 当前不可用")
+        return await self._dream.plan_full(actor_user_id=actor.user_id)
+
+    async def dream_start(self, actor: AdminActor, public_id: str) -> DreamRun:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream Worker 当前不可用")
+        return await self._dream.start_run(public_id)
+
+    async def dream_list(self, actor: AdminActor) -> tuple[DreamRun, ...]:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream Worker 当前不可用")
+        return await self._dream.list_runs()
+
+    async def dream_status(self, actor: AdminActor, public_id: str) -> DreamRun | None:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream Worker 当前不可用")
+        return await self._dream.status(public_id)
+
+    async def dream_show(
+        self,
+        actor: AdminActor,
+        public_id: str,
+        *,
+        page: int = 1,
+    ) -> DreamRunPage:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream 未初始化")
+        return await self._dream.show(public_id, page=page)
+
+    async def dream_cancel(self, actor: AdminActor, public_id: str) -> bool:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream Worker 当前不可用")
+        return await self._dream.cancel(public_id)
+
+    async def dream_resume(self, actor: AdminActor, public_id: str) -> DreamRun:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream Worker 当前不可用")
+        return await self._dream.resume(public_id)
+
+    async def dream_retry(self, actor: AdminActor, public_id: str) -> DreamRun:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream Worker 当前不可用")
+        return await self._dream.retry(public_id)
+
+    async def dream_rollback_operation(self, actor: AdminActor, public_id: str) -> bool:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream Worker 当前不可用")
+        return await self._dream.rollback_operation(public_id)
+
+    async def dream_rollback_run(self, actor: AdminActor, public_id: str) -> int:
+        self._require_superuser(actor)
+        if self._dream is None:
+            raise RuntimeError("Memory Dream Worker 当前不可用")
+        return await self._dream.rollback_run(public_id)
 
     async def _apply_mutation(
         self,

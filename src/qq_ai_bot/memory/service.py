@@ -1266,6 +1266,7 @@ class MemoryFactService:
                 target_fact_id,
                 MemoryEvidenceCreate(
                     event_id=row.event_id,
+                    tool_receipt_id=row.tool_receipt_id,
                     source_speaker_user_id=row.source_speaker_user_id,
                     relation=row.relation,
                     confidence=row.confidence,

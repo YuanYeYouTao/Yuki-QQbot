@@ -6,9 +6,11 @@ import hashlib
 import logging
 import time
 
+from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
 from qq_ai_bot.memory.embedding.metrics import MemoryEmbeddingMetrics
 from qq_ai_bot.memory.embedding.models import (
     EmbeddingBatchResult,
+    EmbeddingVector,
     MemoryEmbeddingProfileRecord,
     MemorySemanticCandidate,
 )
@@ -51,6 +53,9 @@ class MemoryRetriever:
         embedding_queries: EmbeddingQueryBuilder | None = None,
         embedding_metrics: MemoryEmbeddingMetrics | None = None,
         query_embedding_cache: QueryEmbeddingCache | None = None,
+        mmr_enabled: bool = True,
+        mmr_lambda: float = 0.75,
+        mmr_candidate_pool_size: int = 20,
     ) -> None:
         self._repository = repository
         self._index = lexical_index
@@ -62,6 +67,10 @@ class MemoryRetriever:
         self._embedding_queries = embedding_queries
         self._embedding_metrics = embedding_metrics
         self._query_embedding_cache = query_embedding_cache
+        self._mmr_enabled = mmr_enabled
+        self._mmr_lambda = mmr_lambda
+        self._mmr_candidate_pool_size = mmr_candidate_pool_size
+        self._vector_codec = Float32VectorCodec()
 
     @property
     def metrics(self) -> MemoryRetrievalMetrics:
@@ -89,6 +98,7 @@ class MemoryRetriever:
         query: MemoryQuery,
         *,
         lexical_enabled: bool = True,
+        diversify: bool = False,
     ) -> MemoryRetrievalResult:
         started = time.perf_counter()
         fts_latency = 0.0
@@ -265,13 +275,33 @@ class MemoryRetriever:
                     lexical_weight=query.hybrid_lexical_weight,
                     semantic_weight=query.hybrid_semantic_weight,
                     rrf_k=query.hybrid_rrf_k,
-                    limit=remaining,
+                    limit=(
+                        max(remaining, self._mmr_candidate_pool_size)
+                        if self._mmr_enabled and diversify and query_vector is not None
+                        else remaining
+                    ),
                 )
                 hybrid_latency += time.perf_counter() - hybrid_started
                 preference_ids = {hit.fact.id for hit in preference_hits}
                 deduplicated = tuple(
                     hit for hit in lexical_hits if hit.fact.id not in preference_ids
                 )
+                if (
+                    self._mmr_enabled
+                    and diversify
+                    and query_vector is not None
+                    and self._semantic_index is not None
+                    and self._embedding_profile is not None
+                    and remaining > 0
+                ):
+                    deduplicated = await self._diversify_mmr(
+                        deduplicated,
+                        query_vector=query_vector,
+                        valid_fact_ids=frozenset(
+                            item.fact_id for item in semantic_candidates
+                        ),
+                        limit=remaining,
+                    )
                 combined = (*preference_hits, *deduplicated)[: query.limit_per_target]
                 hits = tuple(
                     hit.model_copy(update={"rank": rank})
@@ -329,3 +359,100 @@ class MemoryRetriever:
             )
         )
         return result
+
+    async def _diversify_mmr(
+        self,
+        hits: tuple[MemoryRetrievalHit, ...],
+        *,
+        query_vector: EmbeddingVector,
+        valid_fact_ids: frozenset[int],
+        limit: int,
+    ) -> tuple[MemoryRetrievalHit, ...]:
+        """Diversify the RRF tail while pinning exact matches and using local vectors only."""
+
+        semantic_index = self._semantic_index
+        if (
+            limit <= 0
+            or len(hits) <= 1
+            or self._embedding_profile is None
+            or semantic_index is None
+        ):
+            return hits[:limit]
+        profile = self._embedding_profile.profile
+        vectors = await semantic_index.repository.load_vectors_for_fact_ids(
+            fact_ids=tuple(
+                hit.fact.id
+                for hit in hits[: self._mmr_candidate_pool_size]
+                if hit.fact.id in valid_fact_ids
+            ),
+            profile_id=self._embedding_profile.id,
+        )
+        decoded = {
+            fact_id: self._vector_codec.decode(payload, dimensions=profile.dimensions)
+            for fact_id, payload in vectors.items()
+        }
+        pinned = [hit for hit in hits if hit.selection_reason.endswith("_exact")][:limit]
+        selected = list(pinned)
+        selected_ids = {hit.fact.id for hit in selected}
+        candidates = [
+            hit
+            for hit in hits[: self._mmr_candidate_pool_size]
+            if hit.fact.id not in selected_ids and hit.fact.id in decoded
+        ]
+        if not candidates:
+            return hits[:limit]
+        while candidates and len(selected) < limit:
+            best = max(
+                candidates,
+                key=lambda hit: (
+                    self._mmr_score(
+                        hit,
+                        query_vector=query_vector,
+                        selected=selected,
+                        vectors=decoded,
+                    ),
+                    -(hit.rank),
+                    -hit.fact.id,
+                ),
+            )
+            selected.append(best)
+            candidates.remove(best)
+        for hit in hits:
+            if len(selected) >= limit:
+                break
+            if hit.fact.id not in {item.fact.id for item in selected}:
+                selected.append(hit)
+        return tuple(selected)
+
+    def _mmr_score(
+        self,
+        hit: MemoryRetrievalHit,
+        *,
+        query_vector: EmbeddingVector,
+        selected: list[MemoryRetrievalHit],
+        vectors: dict[int, EmbeddingVector],
+    ) -> float:
+        vector = vectors[hit.fact.id]
+        relevance = self._vector_codec.dot(query_vector, vector)
+        redundancy = max(
+            (
+                self._vector_codec.dot(vector, vectors[item.fact.id])
+                for item in selected
+                if item.fact.id in vectors
+                and self._mmr_partition(item) == self._mmr_partition(hit)
+            ),
+            default=0.0,
+        )
+        return self._mmr_lambda * relevance - (1.0 - self._mmr_lambda) * redundancy
+
+    @staticmethod
+    def _mmr_partition(hit: MemoryRetrievalHit) -> tuple[object, ...]:
+        fact = hit.fact
+        return (
+            fact.scope_type,
+            fact.subject_user_id,
+            fact.group_id,
+            fact.visibility_type,
+            fact.visibility_user_id,
+            fact.visibility_group_id,
+        )

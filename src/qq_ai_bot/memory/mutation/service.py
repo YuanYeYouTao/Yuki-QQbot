@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +21,17 @@ from qq_ai_bot.memory.claim_processor import (
     MemoryClaimResolution,
     MemoryProcessingContext,
 )
+from qq_ai_bot.memory.dream.db_models import (
+    MemoryDreamClusterModel,
+    MemoryDreamOperationModel,
+    MemoryDreamOperationSourceModel,
+)
+from qq_ai_bot.memory.dream.models import (
+    DreamMutationResult,
+    DreamOperationStatus,
+    DreamOperationType,
+)
+from qq_ai_bot.memory.dream.repository import fact_signature
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
@@ -33,6 +45,7 @@ from qq_ai_bot.memory.enums import (
     MemoryReviewState,
     MemoryScopeType,
     MemorySourceType,
+    MemoryStateAction,
     MemoryStatus,
     MemorySubjectBasis,
     MemoryTemporalMode,
@@ -67,6 +80,7 @@ from qq_ai_bot.memory.validation import (
     ValidatedMemoryClaim,
     normalize_memory_text,
 )
+from qq_ai_bot.persistence.models import MemoryEvidenceModel, MemoryFactRelationModel
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -140,6 +154,574 @@ class MemoryMutationService:
         except MemoryMutationRejected as exc:
             return self._rejected(request.operation, exc.reason_code)
         return await self._commit_prepared(prepared)
+
+    @staticmethod
+    def select_dream_anchor(facts: tuple[MemoryFact, ...]) -> MemoryFact:
+        """Choose one stable metadata anchor without asking the model for identity fields."""
+
+        if not facts:
+            raise ValueError("dream anchor selection requires at least one fact")
+        authority_rank = {
+            MemoryAuthority.THIRD_PARTY: 0,
+            MemoryAuthority.GROUP_REPORT: 1,
+            MemoryAuthority.SELF_REPORT: 2,
+            MemoryAuthority.AGENT_REFLECTION: 3,
+            MemoryAuthority.EXPLICIT: 4,
+        }
+        return max(
+            facts,
+            key=lambda fact: (
+                fact.source_type is MemorySourceType.EXPLICIT
+                or fact.authority is MemoryAuthority.EXPLICIT,
+                fact.status is MemoryStatus.ACTIVE,
+                authority_rank[fact.authority],
+                fact.evidence_count,
+                fact.updated_at.timestamp(),
+                -fact.id,
+            ),
+        )
+
+    async def mutate_dream(
+        self,
+        *,
+        dream_operation_id: int,
+        operation_type: DreamOperationType,
+        source_facts: tuple[MemoryFact, ...],
+        anchor_fact_id: int | None,
+        content: str | None,
+        importance: int | None,
+        bot_user_id: str,
+        run_public_id: str,
+        session: AsyncSession,
+    ) -> DreamMutationResult:
+        """Apply one already-validated Dream action inside its cluster transaction."""
+
+        if not source_facts:
+            raise ValueError("dream mutation requires source facts")
+        current: list[MemoryFact] = []
+        for snapshot in source_facts:
+            fact = await self._facts.repository.get_fact(snapshot.id, session=session)
+            if fact is None or fact.status not in {MemoryStatus.ACTIVE, MemoryStatus.CONTESTED}:
+                raise ValueError("dream source changed before commit")
+            current.append(fact)
+        sources = tuple(current)
+        partition = self._dream_partition(sources[0])
+        if any(self._dream_partition(item) != partition for item in sources[1:]):
+            raise ValueError("dream mutation cannot cross memory partitions")
+        explicit = tuple(item for item in sources if self._dream_explicit(item))
+        if (
+            operation_type in {DreamOperationType.CONTEST, DreamOperationType.SYNTHESIZE}
+            and explicit
+        ):
+            raise ValueError("dream cannot modify an explicit memory anchor")
+        if operation_type is DreamOperationType.MERGE and len(explicit) > 1:
+            raise ValueError("dream cannot merge two explicit memory anchors")
+
+        anchor = next((item for item in sources if item.id == anchor_fact_id), None)
+        if operation_type in {
+            DreamOperationType.MERGE,
+            DreamOperationType.SYNTHESIZE,
+            DreamOperationType.RESOLVE,
+        }:
+            if anchor is None:
+                raise ValueError("dream mutation anchor is missing")
+            if explicit and anchor.id != explicit[0].id:
+                raise ValueError("an explicit memory must remain the dream anchor")
+
+        requested, applied = self._dream_receipt_operations(operation_type)
+        fingerprint_payload = {
+            "operation_id": dream_operation_id,
+            "operation": operation_type.value,
+            "sources": [item.id for item in sources],
+            "anchor": anchor.id if anchor else None,
+            "content": content,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                fingerprint_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        existing = await self._receipts.find(
+            idempotency_key=fingerprint,
+            claim_fingerprint=fingerprint,
+            session=session,
+        )
+        if existing is not None:
+            return DreamMutationResult(
+                operation_id=dream_operation_id,
+                output_fact_id=existing.new_fact_id,
+                added_evidence_ids=(),
+                added_relation_ids=(),
+                changed=False,
+            )
+        target_fingerprint = hashlib.sha256(repr(partition).encode()).hexdigest()
+        receipt = await self._receipts.reserve_dream(
+            mutation_id=str(uuid.uuid4()),
+            idempotency_key=fingerprint,
+            claim_fingerprint=fingerprint,
+            target_fingerprint=target_fingerprint,
+            dream_operation_id=dream_operation_id,
+            conversation_key=f"memory-dream:{bot_user_id}:{run_public_id}",
+            current_group_id=sources[0].group_id or sources[0].visibility_group_id,
+            bot_user_id=bot_user_id,
+            requested_operation=requested,
+            created_at=datetime.now(UTC),
+            session=session,
+        )
+
+        source_ids = tuple(item.id for item in sources)
+        before_evidence = set(
+            await session.scalars(
+                select(MemoryEvidenceModel.id).where(MemoryEvidenceModel.fact_id.in_(source_ids))
+            )
+        )
+        before_relations = set(
+            await session.scalars(
+                select(MemoryFactRelationModel.id).where(
+                    (MemoryFactRelationModel.source_fact_id.in_(source_ids))
+                    | (MemoryFactRelationModel.target_fact_id.in_(source_ids))
+                )
+            )
+        )
+        changed = False
+        output_fact_id: int | None = anchor.id if anchor is not None else sources[0].id
+        outcome = MemoryMutationOutcome.NO_CHANGE
+        reason_code = f"memory_dream_{operation_type.value}"
+
+        if operation_type is DreamOperationType.KEEP:
+            output_fact_id = sources[0].id
+        elif operation_type is DreamOperationType.MERGE:
+            assert anchor is not None
+            for source in sources:
+                if source.id == anchor.id:
+                    continue
+                merged = await self._facts.merge_facts(
+                    source.id,
+                    anchor.id,
+                    actor_user_id=bot_user_id,
+                    confirmed_at=max(item.last_confirmed_at for item in sources),
+                    session=session,
+                )
+                changed = changed or merged is not None
+            output_fact_id = anchor.id
+            outcome = MemoryMutationOutcome.COMMITTED if changed else outcome
+        elif operation_type is DreamOperationType.SYNTHESIZE:
+            assert anchor is not None
+            normalized = normalize_memory_text(content or "", maximum=4000)
+            if not normalized:
+                raise ValueError("dream synthesis content cannot be empty")
+            for source in sources:
+                await self._facts.repository.transition(
+                    source.id,
+                    status=MemoryStatus.SUPERSEDED,
+                    conflict_state=MemoryConflictState.CLEAR,
+                    invalidated_reason=None,
+                    action=MemoryStateAction.SUPERSEDED,
+                    reason_code=reason_code,
+                    source_event_id=None,
+                    actor_user_id=bot_user_id,
+                    session=session,
+                )
+            replacement = MemoryFactCreate(
+                scope_type=anchor.scope_type,
+                subject_user_id=anchor.subject_user_id,
+                group_id=anchor.group_id,
+                visibility_type=anchor.visibility_type,
+                visibility_user_id=anchor.visibility_user_id,
+                visibility_group_id=anchor.visibility_group_id,
+                kind=anchor.kind,
+                memory_key=anchor.memory_key,
+                category=anchor.category,
+                content=normalized,
+                importance=importance or anchor.importance,
+                confidence=anchor.confidence,
+                source_type=anchor.source_type,
+                authority=anchor.authority,
+                valid_from=min(
+                    (item.valid_from for item in sources if item.valid_from is not None),
+                    default=anchor.valid_from,
+                ),
+                valid_until=(
+                    None
+                    if any(item.valid_until is None for item in sources)
+                    else max(item.valid_until for item in sources if item.valid_until is not None)
+                ),
+                validation_version=anchor.validation_version,
+                review_state=anchor.review_state,
+            )
+            collision = await self._facts.repository.find_active(replacement, session=session)
+            if collision is not None:
+                raise ValueError("dream synthesis collided with an unrelated active key")
+            created = await self._facts.repository.create_fact(
+                replacement,
+                normalized_content=normalized.casefold(),
+                supersedes_id=anchor.id,
+                recorded_at=datetime.now(UTC),
+                session=session,
+            )
+            evidence = await self._dream_evidence_bundle(sources, session=session)
+            await self._facts.append_evidence_bundle(
+                created.id,
+                evidence,
+                confirmed_at=max(item.last_confirmed_at for item in sources),
+                session=session,
+            )
+            await self._facts.repository.record_created(
+                created.id,
+                status=MemoryStatus.ACTIVE,
+                conflict_state=MemoryConflictState.CLEAR,
+                reason_code=reason_code,
+                source_event_id=None,
+                actor_user_id=bot_user_id,
+                session=session,
+            )
+            for source in sources:
+                await self._facts.repository.add_relation(
+                    source_fact_id=source.id,
+                    target_fact_id=created.id,
+                    relation_type=MemoryFactRelationType.REFINES,
+                    confidence=1.0,
+                    source_event_id=None,
+                    session=session,
+                )
+            output_fact_id = created.id
+            changed = True
+            outcome = MemoryMutationOutcome.COMMITTED
+        elif operation_type is DreamOperationType.CONTEST:
+            for source in sources:
+                changed = (
+                    await self._facts.contest_fact(
+                        source.id,
+                        reason_code=reason_code,
+                        actor_user_id=bot_user_id,
+                        session=session,
+                    )
+                    or changed
+                )
+            for index, source in enumerate(sources):
+                for target in sources[index + 1 :]:
+                    await self._facts.repository.add_relation(
+                        source_fact_id=source.id,
+                        target_fact_id=target.id,
+                        relation_type=MemoryFactRelationType.CONTRADICTS,
+                        confidence=1.0,
+                        source_event_id=None,
+                        session=session,
+                    )
+            output_fact_id = sources[0].id
+            outcome = MemoryMutationOutcome.COMMITTED_AS_CONTESTED if changed else outcome
+        elif operation_type is DreamOperationType.RESOLVE:
+            assert anchor is not None
+            for source in sources:
+                if source.id == anchor.id:
+                    continue
+                if self._dream_explicit(source):
+                    raise ValueError("dream cannot invalidate an explicit memory")
+                await self._facts.repository.add_relation(
+                    source_fact_id=source.id,
+                    target_fact_id=anchor.id,
+                    relation_type=MemoryFactRelationType.CONTRADICTS,
+                    confidence=1.0,
+                    source_event_id=None,
+                    session=session,
+                )
+                changed = (
+                    await self._facts.invalidate_fact(
+                        source.id,
+                        reason=MemoryInvalidationReason.CONFLICT_RESOLUTION,
+                        actor_user_id=bot_user_id,
+                        session=session,
+                    )
+                    or changed
+                )
+            if not self._dream_explicit(anchor) and (
+                anchor.status is MemoryStatus.CONTESTED
+                or anchor.conflict_state is MemoryConflictState.CONTESTED
+            ):
+                await self._facts.repository.transition(
+                    anchor.id,
+                    status=MemoryStatus.ACTIVE,
+                    conflict_state=MemoryConflictState.CLEAR,
+                    invalidated_reason=None,
+                    action=MemoryStateAction.CONFLICT_CLEARED,
+                    reason_code=reason_code,
+                    source_event_id=None,
+                    actor_user_id=bot_user_id,
+                    session=session,
+                )
+                changed = True
+            output_fact_id = anchor.id
+            outcome = MemoryMutationOutcome.COMMITTED if changed else outcome
+
+        affected_ids = tuple(
+            dict.fromkeys((*source_ids, *((output_fact_id,) if output_fact_id is not None else ())))
+        )
+        after_evidence = set(
+            await session.scalars(
+                select(MemoryEvidenceModel.id).where(MemoryEvidenceModel.fact_id.in_(affected_ids))
+            )
+        )
+        after_relations = set(
+            await session.scalars(
+                select(MemoryFactRelationModel.id).where(
+                    (MemoryFactRelationModel.source_fact_id.in_(affected_ids))
+                    | (MemoryFactRelationModel.target_fact_id.in_(affected_ids))
+                )
+            )
+        )
+        finalized = await self._receipts.finalize(
+            receipt.id,
+            applied_operation=applied if changed else MemoryMutationAppliedOperation.NOOP,
+            old_fact_id=sources[0].id,
+            new_fact_id=output_fact_id,
+            outcome=outcome,
+            reason_code=reason_code,
+            session=session,
+        )
+        _ = finalized
+        return DreamMutationResult(
+            operation_id=dream_operation_id,
+            output_fact_id=output_fact_id,
+            added_evidence_ids=tuple(sorted(after_evidence - before_evidence)),
+            added_relation_ids=tuple(sorted(after_relations - before_relations)),
+            changed=changed,
+        )
+
+    async def rollback_dream_operation(
+        self,
+        *,
+        public_id: str,
+        session: AsyncSession,
+    ) -> tuple[int, ...]:
+        """Rollback one unchanged Dream result through the unified mutation boundary."""
+
+        operation_row = (
+            await session.execute(
+                select(MemoryDreamOperationModel, MemoryDreamClusterModel)
+                .join(
+                    MemoryDreamClusterModel,
+                    MemoryDreamClusterModel.id == MemoryDreamOperationModel.cluster_id,
+                )
+                .where(
+                    MemoryDreamOperationModel.public_id == public_id,
+                    MemoryDreamOperationModel.status == DreamOperationStatus.COMMITTED.value,
+                )
+            )
+        ).one_or_none()
+        if operation_row is None:
+            return ()
+        operation, cluster = operation_row
+        source_rows = tuple(
+            (
+                await session.scalars(
+                    select(MemoryDreamOperationSourceModel)
+                    .where(MemoryDreamOperationSourceModel.operation_id == operation.id)
+                    .order_by(MemoryDreamOperationSourceModel.position)
+                )
+            ).all()
+        )
+        if not source_rows or any(row.after_signature is None for row in source_rows):
+            raise RuntimeError("Dream operation is missing its committed source signatures")
+        current_sources: dict[int, MemoryFact] = {}
+        for source in source_rows:
+            current = await self._facts.repository.get_fact(source.fact_id, session=session)
+            if current is None or fact_signature(current) != source.after_signature:
+                raise RuntimeError("Dream source changed after this operation")
+            current_sources[source.fact_id] = current
+        if operation.output_fact_id is not None and operation.result_signature is not None:
+            output = await self._facts.repository.get_fact(
+                operation.output_fact_id, session=session
+            )
+            if output is None or fact_signature(output) != operation.result_signature:
+                raise RuntimeError("Dream result changed after this operation")
+
+        affected_ids = tuple(
+            dict.fromkeys(
+                (
+                    *(source.fact_id for source in source_rows),
+                    *((operation.output_fact_id,) if operation.output_fact_id else ()),
+                )
+            )
+        )
+        dependencies = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(MemoryDreamOperationSourceModel)
+                .join(
+                    MemoryDreamOperationModel,
+                    MemoryDreamOperationModel.id == MemoryDreamOperationSourceModel.operation_id,
+                )
+                .where(
+                    MemoryDreamOperationSourceModel.fact_id.in_(affected_ids),
+                    MemoryDreamOperationModel.id > operation.id,
+                    MemoryDreamOperationModel.status == DreamOperationStatus.COMMITTED.value,
+                )
+            )
+            or 0
+        )
+        if dependencies:
+            raise RuntimeError("Dream operation has later dependent operations")
+
+        fingerprint = hashlib.sha256(f"dream-rollback:{operation.id}".encode()).hexdigest()
+        receipt = await self._receipts.reserve_dream(
+            mutation_id=str(uuid.uuid4()),
+            idempotency_key=fingerprint,
+            claim_fingerprint=fingerprint,
+            target_fingerprint=hashlib.sha256(cluster.partition_key.encode()).hexdigest(),
+            dream_operation_id=operation.id,
+            conversation_key=f"memory-dream-rollback:{cluster.bot_user_id}:{public_id}",
+            current_group_id=(
+                current_sources[source_rows[0].fact_id].group_id
+                or current_sources[source_rows[0].fact_id].visibility_group_id
+            ),
+            bot_user_id=cluster.bot_user_id,
+            requested_operation=MemoryMutationOperation.RESTORE,
+            created_at=datetime.now(UTC),
+            session=session,
+        )
+        added_evidence = tuple(int(item) for item in json.loads(operation.added_evidence_ids_json))
+        added_relations = tuple(int(item) for item in json.loads(operation.added_relation_ids_json))
+        if added_evidence:
+            await session.execute(
+                delete(MemoryEvidenceModel).where(MemoryEvidenceModel.id.in_(added_evidence))
+            )
+        if added_relations:
+            await session.execute(
+                delete(MemoryFactRelationModel).where(
+                    MemoryFactRelationModel.id.in_(added_relations)
+                )
+            )
+        source_ids = {row.fact_id for row in source_rows}
+        if operation.output_fact_id is not None and operation.output_fact_id not in source_ids:
+            await self._facts.repository.transition(
+                operation.output_fact_id,
+                status=MemoryStatus.INVALIDATED,
+                conflict_state=MemoryConflictState.CLEAR,
+                invalidated_reason=MemoryInvalidationReason.DREAM_ROLLBACK,
+                action=MemoryStateAction.INVALIDATED,
+                reason_code=MemoryInvalidationReason.DREAM_ROLLBACK.value,
+                source_event_id=None,
+                actor_user_id=cluster.bot_user_id,
+                session=session,
+            )
+        for source in source_rows:
+            await self._facts.repository.transition(
+                source.fact_id,
+                status=MemoryStatus(source.before_status),
+                conflict_state=MemoryConflictState(source.before_conflict_state),
+                invalidated_reason=(
+                    MemoryInvalidationReason(source.before_invalidated_reason)
+                    if source.before_invalidated_reason is not None
+                    else None
+                ),
+                action=(
+                    MemoryStateAction.RESTORED
+                    if source.before_status == MemoryStatus.ACTIVE.value
+                    else MemoryStateAction.CONTESTED
+                ),
+                reason_code="memory_dream_rollback",
+                source_event_id=None,
+                actor_user_id=cluster.bot_user_id,
+                session=session,
+            )
+            await self._facts.repository.restore_confirmation_metadata(
+                source.fact_id,
+                authority=source.before_authority,
+                confidence=source.before_confidence,
+                last_confirmed_at=source.before_last_confirmed_at,
+                session=session,
+            )
+        operation.status = DreamOperationStatus.ROLLED_BACK.value
+        operation.rolled_back_at = datetime.now(UTC)
+        cluster.status = "rolled_back"
+        cluster.updated_at = datetime.now(UTC)
+        await self._receipts.finalize(
+            receipt.id,
+            applied_operation=MemoryMutationAppliedOperation.RESTORE,
+            old_fact_id=operation.output_fact_id,
+            new_fact_id=source_rows[0].fact_id,
+            outcome=MemoryMutationOutcome.COMMITTED,
+            reason_code="memory_dream_rollback",
+            session=session,
+        )
+        return affected_ids
+
+    async def _dream_evidence_bundle(
+        self,
+        facts: tuple[MemoryFact, ...],
+        *,
+        session: AsyncSession,
+    ) -> tuple[MemoryEvidenceCreate, ...]:
+        rows: dict[tuple[str, int], MemoryEvidenceCreate] = {}
+        for fact in facts:
+            for evidence in await self._facts.repository.list_evidence(
+                fact.id, limit=100_000, session=session
+            ):
+                source = (
+                    ("event", evidence.event_id)
+                    if evidence.event_id is not None
+                    else ("tool", evidence.tool_receipt_id)
+                )
+                assert source[1] is not None
+                rows[(source[0], int(source[1]))] = MemoryEvidenceCreate(
+                    event_id=evidence.event_id,
+                    tool_receipt_id=evidence.tool_receipt_id,
+                    source_speaker_user_id=evidence.source_speaker_user_id,
+                    relation=evidence.relation,
+                    confidence=evidence.confidence,
+                    authority=evidence.authority,
+                    excerpt=evidence.excerpt,
+                )
+        return tuple(rows.values())
+
+    @staticmethod
+    def _dream_partition(fact: MemoryFact) -> tuple[object, ...]:
+        return (
+            fact.scope_type,
+            fact.subject_user_id,
+            fact.group_id,
+            fact.visibility_type,
+            fact.visibility_user_id,
+            fact.visibility_group_id,
+            fact.kind,
+        )
+
+    @staticmethod
+    def _dream_explicit(fact: MemoryFact) -> bool:
+        return bool(
+            fact.source_type is MemorySourceType.EXPLICIT
+            or fact.authority is MemoryAuthority.EXPLICIT
+        )
+
+    @staticmethod
+    def _dream_receipt_operations(
+        operation: DreamOperationType,
+    ) -> tuple[MemoryMutationOperation, MemoryMutationAppliedOperation]:
+        return {
+            DreamOperationType.KEEP: (
+                MemoryMutationOperation.UPDATE_METADATA,
+                MemoryMutationAppliedOperation.NOOP,
+            ),
+            DreamOperationType.MERGE: (
+                MemoryMutationOperation.MERGE,
+                MemoryMutationAppliedOperation.MERGE,
+            ),
+            DreamOperationType.SYNTHESIZE: (
+                MemoryMutationOperation.CORRECT,
+                MemoryMutationAppliedOperation.CORRECT,
+            ),
+            DreamOperationType.CONTEST: (
+                MemoryMutationOperation.CONTEST,
+                MemoryMutationAppliedOperation.CONTEST,
+            ),
+            DreamOperationType.RESOLVE: (
+                MemoryMutationOperation.RESTORE,
+                MemoryMutationAppliedOperation.RESTORE,
+            ),
+        }[operation]
 
     async def mutate_resolved(
         self,

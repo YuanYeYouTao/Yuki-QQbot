@@ -610,6 +610,28 @@ class MemoryFactRepository:
             )
         )
 
+    async def restore_confirmation_metadata(
+        self,
+        fact_id: int,
+        *,
+        authority: str,
+        confidence: float,
+        last_confirmed_at: datetime,
+        session: AsyncSession,
+    ) -> None:
+        """Restore exact aggregate fields captured by a reversible internal operation."""
+
+        await session.execute(
+            update(MemoryFactModel)
+            .where(MemoryFactModel.id == fact_id)
+            .values(
+                authority=authority,
+                confidence=confidence,
+                last_confirmed_at=last_confirmed_at,
+                updated_at=datetime.now(UTC),
+            )
+        )
+
     async def add_relation(
         self,
         *,

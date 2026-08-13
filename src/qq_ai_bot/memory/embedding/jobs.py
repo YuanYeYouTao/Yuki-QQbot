@@ -23,6 +23,8 @@ from qq_ai_bot.persistence.models import (
     MemoryFactModel,
 )
 
+_EMBEDDABLE_STATUSES = ("active", "contested")
+
 
 @dataclass(frozen=True, slots=True)
 class EmbeddingWrite:
@@ -55,7 +57,7 @@ class MemoryEmbeddingJobRepository:
     async def enqueue_fact(self, fact_id: int, *, force: bool = False) -> bool:
         async with self._database.sessions() as session, session.begin():
             fact = await session.get(MemoryFactModel, fact_id)
-            if fact is None or fact.status != "active":
+            if fact is None or fact.status not in _EMBEDDABLE_STATUSES:
                 return False
             content_hash = self._hash_row(fact)
             existing = await session.scalar(
@@ -102,7 +104,7 @@ class MemoryEmbeddingJobRepository:
                 (
                     await session.scalars(
                         select(MemoryFactModel).where(
-                            MemoryFactModel.status == "active",
+                            MemoryFactModel.status.in_(_EMBEDDABLE_STATUSES),
                             MemoryFactModel.review_state != "quarantined",
                             or_(
                                 MemoryFactModel.valid_until.is_(None),
@@ -169,7 +171,7 @@ class MemoryEmbeddingJobRepository:
                     await session.scalars(
                         select(MemoryFactModel).where(
                             MemoryFactModel.id.in_(ids),
-                            MemoryFactModel.status == "active",
+                            MemoryFactModel.status.in_(_EMBEDDABLE_STATUSES),
                             MemoryFactModel.review_state != "quarantined",
                             or_(
                                 MemoryFactModel.valid_until.is_(None),
@@ -201,7 +203,7 @@ class MemoryEmbeddingJobRepository:
                     valid_until = valid_until.replace(tzinfo=UTC)
                 if (
                     fact is None
-                    or fact.status != "active"
+                    or fact.status not in _EMBEDDABLE_STATUSES
                     or (valid_until is not None and valid_until <= now)
                 ):
                     job.status = MemoryEmbeddingJobStatus.DONE.value
