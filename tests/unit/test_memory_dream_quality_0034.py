@@ -24,7 +24,11 @@ from qq_ai_bot.memory.dream.models import (
     DreamRecomposeOutput,
     DreamRunMode,
 )
-from qq_ai_bot.memory.dream.repository import DreamRepository, fact_signature
+from qq_ai_bot.memory.dream.repository import (
+    _DREAM_PREVIEW_SCHEMA_VERSION,
+    DreamRepository,
+    fact_signature,
+)
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryEvidenceRelation,
@@ -126,6 +130,7 @@ async def test_preview_is_immutable_superseded_and_stale_checked(database: Datab
         )
     assert statuses[first] == "superseded"
     assert statuses[second] == "stale"
+    assert _DREAM_PREVIEW_SCHEMA_VERSION == 2
 
 
 @pytest.mark.asyncio

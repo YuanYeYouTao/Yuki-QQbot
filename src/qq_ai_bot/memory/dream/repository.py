@@ -55,6 +55,8 @@ from qq_ai_bot.persistence.models import (
     MemoryToolReceiptModel,
 )
 
+_DREAM_PREVIEW_SCHEMA_VERSION = 2
+
 
 @dataclass(frozen=True, slots=True)
 class DreamCandidate:
@@ -460,9 +462,7 @@ class DreamRepository:
             ),
         )
 
-    async def cluster_for_run(
-        self, run_public_id: str, cluster_id: int
-    ) -> DreamCluster | None:
+    async def cluster_for_run(self, run_public_id: str, cluster_id: int) -> DreamCluster | None:
         async with self.database.sessions() as session:
             row = await session.scalar(
                 select(MemoryDreamClusterModel)
@@ -918,7 +918,7 @@ class DreamRepository:
                     cluster_id=cluster_id,
                     source_fingerprint=source_fingerprint,
                     proposal_json=proposal.model_dump_json(),
-                    schema_version=1,
+                    schema_version=_DREAM_PREVIEW_SCHEMA_VERSION,
                     model_calls=model_calls,
                     source_characters=source_characters,
                     output_characters=output_characters,
@@ -951,7 +951,10 @@ class DreamRepository:
                 ).all()
             )
             for row in rows:
-                if row.source_fingerprint != source_fingerprint or row.schema_version != 1:
+                if (
+                    row.source_fingerprint != source_fingerprint
+                    or row.schema_version != _DREAM_PREVIEW_SCHEMA_VERSION
+                ):
                     row.status = "stale"
                     continue
                 return row.id, row.public_id, DreamOutput.model_validate_json(row.proposal_json)

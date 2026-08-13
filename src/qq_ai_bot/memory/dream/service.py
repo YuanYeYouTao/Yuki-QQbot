@@ -619,19 +619,13 @@ class DreamService:
                 raise ValueError("dream recompose episode exceeds the character limit")
             source_characters = sum(len(row.content) for row in source_rows)
             output_characters = sum(len(content) for content in contents)
-            allowed = max(
-                min(450, self._settings.memory_dream_episode_max_characters),
-                int(source_characters * self._settings.memory_dream_episode_compression_ratio),
-            )
+            allowed = self._episode_compression_limit(source_characters)
             if output_characters > allowed:
                 raise ValueError("dream recompose did not compress the source episodes")
         if recomposed_refs:
             source_characters = sum(len(by_ref[ref].content) for ref in recomposed_refs)
             output_characters = self._output_characters(output)
-            allowed = max(
-                min(450, self._settings.memory_dream_episode_max_characters),
-                int(source_characters * self._settings.memory_dream_episode_compression_ratio),
-            )
+            allowed = self._episode_compression_limit(source_characters)
             if output_characters > allowed:
                 raise ValueError("dream output did not meet the total episode compression ratio")
 
@@ -700,7 +694,7 @@ class DreamService:
         run: DreamRun,
         cluster: DreamCluster,
     ) -> tuple[DreamOutput, int]:
-        instruction = self._instruction(self_memory=self_memory)
+        instruction = self._instruction(self_memory=self_memory, payload=payload)
         calls = 0
         try:
             if not await self._reserve_model_call(run, cluster):
@@ -745,7 +739,7 @@ class DreamService:
         *,
         self_memory: bool,
     ) -> tuple[DreamOutput, int]:
-        instruction = self._instruction(self_memory=self_memory)
+        instruction = self._instruction(self_memory=self_memory, payload=payload)
         try:
             result = await self._run_model(instruction, payload)
             self._validate_output(payload, result)
@@ -773,8 +767,18 @@ class DreamService:
             "同一来源的拆分必须放在该 action 的 outputs 内，不能把来源重复放进多个 action。"
         )
 
-    def _instruction(self, *, self_memory: bool) -> str:
+    def _instruction(self, *, self_memory: bool, payload: DreamInput) -> str:
         instruction = f"{_INSTRUCTION}\n{_RECOMPOSE_QUALITY_INSTRUCTION}"
+        if payload.kind == MemoryKind.EPISODE.value:
+            source_characters = sum(len(item.content) for item in payload.memories)
+            hard_limit = self._episode_compression_limit(source_characters)
+            target = max(150, min(450, int(hard_limit * 0.8)))
+            instruction += (
+                f"\n本簇 Episode 原文共 {source_characters} 字。若全部 recompose，所有 output "
+                f"正文合计硬上限为 {hard_limit} 字，建议控制在 {target} 字以内；若部分来源 "
+                "keep，recompose 可用上限会按其实际来源进一步缩小。这个预算是整个簇合计，"
+                "不是每条 output 各自可用。"
+            )
         if self_memory:
             instruction += (
                 f"\n【{self._settings.bot_display_name} 共享核心人格】\n"
@@ -782,6 +786,12 @@ class DreamService:
                 "SELF 记忆应保持第一人称和这一人格的自然口吻。"
             )
         return instruction
+
+    def _episode_compression_limit(self, source_characters: int) -> int:
+        return max(
+            min(450, self._settings.memory_dream_episode_max_characters),
+            int(source_characters * self._settings.memory_dream_episode_compression_ratio),
+        )
 
     async def _reserve_model_call(self, run: DreamRun, cluster: DreamCluster) -> bool:
         return await self._repository.reserve_model_call(
