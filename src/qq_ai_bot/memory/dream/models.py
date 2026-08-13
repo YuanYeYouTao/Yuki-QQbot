@@ -165,11 +165,15 @@ class DreamOutput(_DreamModel):
     @model_validator(mode="after")
     def _disjoint(self) -> DreamOutput:
         used: set[str] = set()
+        output_count = 0
         for action in self.actions:
             overlap = used.intersection(action.source_refs)
             if overlap:
                 raise ValueError("dream actions must use disjoint source refs")
             used.update(action.source_refs)
+            output_count += len(action.outputs)
+        if output_count > 4:
+            raise ValueError("dream output may contain at most four recomposed episodes")
         return self
 
 

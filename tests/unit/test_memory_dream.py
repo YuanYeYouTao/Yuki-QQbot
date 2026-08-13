@@ -115,14 +115,14 @@ def test_episode_recompose_can_split_one_source_into_multiple_outputs() -> None:
         operation=DreamOperationType.RECOMPOSE,
         source_refs=("memory_1",),
         outputs=(
-                DreamRecomposeOutput(
-                    focus="第一次独立经历",
+            DreamRecomposeOutput(
+                focus="第一次独立经历",
                 source_refs=("memory_1",),
                 content="第一次独立经历的压缩回忆。",
                 importance=3,
             ),
-                DreamRecomposeOutput(
-                    focus="第二次独立经历",
+            DreamRecomposeOutput(
+                focus="第二次独立经历",
                 source_refs=("memory_1",),
                 content="第二次独立经历的压缩回忆。",
                 importance=4,
@@ -167,8 +167,8 @@ def test_episode_recompose_rejects_an_uncompressed_long_output() -> None:
                 operation=DreamOperationType.RECOMPOSE,
                 source_refs=("memory_1",),
                 outputs=(
-                        DreamRecomposeOutput(
-                            focus="未充分压缩的经历",
+                    DreamRecomposeOutput(
+                        focus="未充分压缩的经历",
                         source_refs=("memory_1",),
                         content="乙" * 600,
                         importance=3,
@@ -179,6 +179,72 @@ def test_episode_recompose_rejects_an_uncompressed_long_output() -> None:
     )
 
     with pytest.raises(ValueError, match="did not compress"):
+        service._validate_output(payload, output)
+
+
+def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits() -> None:
+    with pytest.raises(ValueError, match="at most four"):
+        DreamOutput(
+            actions=tuple(
+                DreamAction(
+                    operation=DreamOperationType.RECOMPOSE,
+                    source_refs=(f"memory_{index}",),
+                    outputs=(
+                        DreamRecomposeOutput(
+                            focus=f"经历 {index}",
+                            source_refs=(f"memory_{index}",),
+                            content="简短经历",
+                            importance=3,
+                        ),
+                    ),
+                )
+                for index in range(1, 6)
+            )
+        )
+
+    service = object.__new__(DreamService)
+    service._settings = cast(
+        object,
+        SimpleNamespace(
+            memory_dream_episode_max_characters=800,
+            memory_dream_episode_compression_ratio=0.45,
+        ),
+    )
+    memories = tuple(
+        DreamMemoryInput(
+            ref=f"memory_{index}",
+            kind="episode",
+            category="self_episode",
+            memory_key=f"episode:{index}",
+            content="甲" * 500,
+            importance=3,
+            confidence=1.0,
+            source_type="automatic",
+            authority="agent_reflection",
+            status="active",
+            conflict_state="clear",
+        )
+        for index in range(1, 3)
+    )
+    payload = DreamInput(scope_type="self", kind="episode", memories=memories)
+    output = DreamOutput(
+        actions=tuple(
+            DreamAction(
+                operation=DreamOperationType.RECOMPOSE,
+                source_refs=(memory.ref,),
+                outputs=(
+                    DreamRecomposeOutput(
+                        focus=f"独立经历 {index}",
+                        source_refs=(memory.ref,),
+                        content="乙" * 300,
+                        importance=3,
+                    ),
+                ),
+            )
+            for index, memory in enumerate(memories, start=1)
+        )
+    )
+    with pytest.raises(ValueError, match="total episode compression"):
         service._validate_output(payload, output)
 
 
@@ -285,6 +351,8 @@ async def test_dream_clustering_does_not_bridge_unrelated_endpoints(
     assert len(clusters) == 1
     assert len(clusters[0]) == 2
     assert {item.fact.id for item in clusters[0]} != {item.id for item in rows}
+
+
 @pytest.mark.asyncio
 async def test_cancelled_dream_run_can_enter_rollback(database: Database) -> None:
     dreams = DreamRepository(database)

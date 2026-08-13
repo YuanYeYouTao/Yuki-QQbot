@@ -585,6 +585,7 @@ class DreamService:
         if used != expected:
             raise ValueError("dream output must cover every input memory exactly once")
         by_ref = {item.ref: item for item in payload.memories}
+        recomposed_refs: set[str] = set()
         for action in output.actions:
             if payload.kind != MemoryKind.EPISODE.value:
                 if action.operation is DreamOperationType.RECOMPOSE:
@@ -594,6 +595,7 @@ class DreamService:
                 raise ValueError("episodes must use recompose instead of synthesize")
             if action.operation is not DreamOperationType.RECOMPOSE:
                 continue
+            recomposed_refs.update(action.source_refs)
             source_rows = tuple(by_ref[ref] for ref in action.source_refs)
             if any(
                 row.source_type == MemorySourceType.EXPLICIT.value
@@ -617,6 +619,15 @@ class DreamService:
             )
             if output_characters > allowed:
                 raise ValueError("dream recompose did not compress the source episodes")
+        if recomposed_refs:
+            source_characters = sum(len(by_ref[ref].content) for ref in recomposed_refs)
+            output_characters = self._output_characters(output)
+            allowed = max(
+                min(450, self._settings.memory_dream_episode_max_characters),
+                int(source_characters * self._settings.memory_dream_episode_compression_ratio),
+            )
+            if output_characters > allowed:
+                raise ValueError("dream output did not meet the total episode compression ratio")
 
     @staticmethod
     def _output_characters(output: DreamOutput) -> int:
@@ -752,7 +763,7 @@ class DreamService:
             f"{instruction}\n上一次输出无效：{reason}；具体位置：{detail or 'unknown'}。"
             "请重新划分语义事件、删掉所有不直接服务 focus 的旁支，并充分压缩。"
             "必须重新返回完整结果：每个 recompose output 都要同时包含 focus、source_refs、"
-            "content、importance；每个 action 最多 4 个 outputs，不能省略必填字段。"
+            "content、importance；整个簇的所有 action 合计最多 4 个 outputs，不能省略必填字段。"
         )
 
     def _instruction(self, *, self_memory: bool) -> str:
