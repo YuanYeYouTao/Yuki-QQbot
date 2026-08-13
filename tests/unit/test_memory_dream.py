@@ -115,12 +115,14 @@ def test_episode_recompose_can_split_one_source_into_multiple_outputs() -> None:
         operation=DreamOperationType.RECOMPOSE,
         source_refs=("memory_1",),
         outputs=(
-            DreamRecomposeOutput(
+                DreamRecomposeOutput(
+                    focus="第一次独立经历",
                 source_refs=("memory_1",),
                 content="第一次独立经历的压缩回忆。",
                 importance=3,
             ),
-            DreamRecomposeOutput(
+                DreamRecomposeOutput(
+                    focus="第二次独立经历",
                 source_refs=("memory_1",),
                 content="第二次独立经历的压缩回忆。",
                 importance=4,
@@ -137,7 +139,7 @@ def test_episode_recompose_rejects_an_uncompressed_long_output() -> None:
         object,
         SimpleNamespace(
             memory_dream_episode_max_characters=800,
-            memory_dream_episode_compression_ratio=0.55,
+            memory_dream_episode_compression_ratio=0.45,
         ),
     )
     payload = DreamInput(
@@ -165,7 +167,8 @@ def test_episode_recompose_rejects_an_uncompressed_long_output() -> None:
                 operation=DreamOperationType.RECOMPOSE,
                 source_refs=("memory_1",),
                 outputs=(
-                    DreamRecomposeOutput(
+                        DreamRecomposeOutput(
+                            focus="未充分压缩的经历",
                         source_refs=("memory_1",),
                         content="乙" * 600,
                         importance=3,

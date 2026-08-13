@@ -81,7 +81,11 @@ from qq_ai_bot.memory.validation import (
     ValidatedMemoryClaim,
     normalize_memory_text,
 )
-from qq_ai_bot.persistence.models import MemoryEvidenceModel, MemoryFactRelationModel
+from qq_ai_bot.persistence.models import (
+    MemoryEvidenceModel,
+    MemoryFactRelationModel,
+    MemorySelfReflectionResultModel,
+)
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -340,6 +344,9 @@ class MemoryMutationService:
                     source.id,
                     anchor.id,
                     actor_user_id=bot_user_id,
+                    source_evidence=await self._dream_evidence_bundle(
+                        (source,), session=session, maximum_total=2
+                    ),
                     confirmed_at=max(item.last_confirmed_at for item in sources),
                     session=session,
                 )
@@ -851,12 +858,22 @@ class MemoryMutationService:
         facts: tuple[MemoryFact, ...],
         *,
         session: AsyncSession,
+        maximum_total: int = 12,
     ) -> tuple[MemoryEvidenceCreate, ...]:
         rows: dict[tuple[str, int], MemoryEvidenceCreate] = {}
         for fact in facts:
-            for evidence in await self._facts.repository.list_evidence(
+            evidence_rows = await self._facts.repository.list_evidence(
                 fact.id, limit=100_000, session=session
-            ):
+            )
+            ordered = tuple(sorted(evidence_rows, key=lambda item: (item.created_at, item.id)))
+            limit = self._settings.memory_dream_evidence_per_fact
+            if len(ordered) <= limit:
+                selected = ordered
+            elif limit == 1:
+                selected = (ordered[-1],)
+            else:
+                selected = (ordered[0], *ordered[-(limit - 1) :])
+            for evidence in selected:
                 source = (
                     ("event", evidence.event_id)
                     if evidence.event_id is not None
@@ -872,6 +889,8 @@ class MemoryMutationService:
                     authority=evidence.authority,
                     excerpt=evidence.excerpt,
                 )
+                if len(rows) >= maximum_total:
+                    return tuple(rows.values())
         return tuple(rows.values())
 
     @staticmethod
@@ -948,6 +967,7 @@ class MemoryMutationService:
         *,
         target: ResolvedSubject,
         additional_evidence: tuple[MemoryEvidenceCreate, ...] = (),
+        self_reflection_result: tuple[int, str, int] | None = None,
     ) -> MemoryMutationResult:
         """Apply a trusted command/admin/plugin target through the same boundary."""
 
@@ -962,13 +982,20 @@ class MemoryMutationService:
             prepared = await self._prepare(request, context, target_override=target)
         except MemoryMutationRejected as exc:
             return self._rejected(request.operation, exc.reason_code)
-        return await self._commit_prepared(prepared, additional_evidence=additional_evidence)
+        if self_reflection_result is not None and not self._trusted_self_reflection(context):
+            return self._rejected(request.operation, "result_mapping_requires_self_reflection")
+        return await self._commit_prepared(
+            prepared,
+            additional_evidence=additional_evidence,
+            self_reflection_result=self_reflection_result,
+        )
 
     async def _commit_prepared(
         self,
         prepared: _PreparedMutation,
         *,
         additional_evidence: tuple[MemoryEvidenceCreate, ...] = (),
+        self_reflection_result: tuple[int, str, int] | None = None,
     ) -> MemoryMutationResult:
         request = prepared.request
         context = prepared.context
@@ -1039,6 +1066,17 @@ class MemoryMutationService:
                             additional_evidence,
                             confirmed_at=context.event.occurred_at,
                             session=session,
+                        )
+                    if applied.new_fact_id is not None and self_reflection_result is not None:
+                        run_id, result_kind, result_index = self_reflection_result
+                        session.add(
+                            MemorySelfReflectionResultModel(
+                                run_id=run_id,
+                                fact_id=applied.new_fact_id,
+                                result_kind=result_kind,
+                                result_index=result_index,
+                                created_at=datetime.now(UTC),
+                            )
                         )
                     receipt = await self._receipts.finalize(
                         reserved.id,

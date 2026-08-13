@@ -232,8 +232,10 @@ class MemorySettings(DomainSettings):
     memory_dream_max_output_tokens: int = Field(gt=0)
     memory_dream_episode_max_characters: int = Field(ge=200, le=4000)
     memory_dream_episode_compression_ratio: float = Field(gt=0, le=1)
-    memory_dream_evidence_per_fact: int = Field(ge=0, le=10)
+    memory_dream_evidence_per_fact: int = Field(ge=1, le=10)
     memory_dream_evidence_excerpt_characters: int = Field(gt=0, le=2000)
+    memory_evidence_compaction_enabled: bool
+    memory_evidence_compaction_batch_size: int = Field(ge=1, le=100)
     memory_mmr_enabled: bool
     memory_mmr_lambda: float = Field(ge=0, le=1)
     memory_mmr_candidate_pool_size: int = Field(gt=0, le=100)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -32,6 +33,8 @@ class DreamWorker:
         settings: Settings,
         repository: DreamRepository,
         service: DreamService,
+        process_lock: asyncio.Lock | None = None,
+        compaction_active: Callable[[], bool] | None = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
@@ -40,7 +43,8 @@ class DreamWorker:
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
-        self._process_lock = asyncio.Lock()
+        self._process_lock = process_lock or asyncio.Lock()
+        self._compaction_active = compaction_active or (lambda: False)
         self._baseline_ready = False
 
     async def start(self) -> None:
@@ -125,7 +129,14 @@ class DreamWorker:
             return await self._service.rollback_run(public_id)
 
     async def health(self) -> DreamHealth:
-        return await self._repository.health(enabled=self._settings.memory_dream_enabled)
+        snapshot = await self._repository.health(enabled=self._settings.memory_dream_enabled)
+        return snapshot.model_copy(
+            update={
+                "waiting_for_compaction_lock": (
+                    self._process_lock.locked() and self._compaction_active()
+                )
+            }
+        )
 
     async def _run(self) -> None:
         while not self._stop.is_set():

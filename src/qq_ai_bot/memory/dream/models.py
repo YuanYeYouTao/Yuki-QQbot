@@ -94,6 +94,7 @@ class DreamInput(_DreamModel):
 
 
 class DreamRecomposeOutput(_DreamModel):
+    focus: str = Field(min_length=1, max_length=120)
     source_refs: tuple[str, ...] = Field(min_length=1, max_length=6)
     content: str = Field(min_length=1, max_length=4000)
     importance: int = Field(ge=1, le=5)
@@ -145,6 +146,9 @@ class DreamAction(_DreamModel):
                 raise ValueError("dream recompose outputs must cover exactly all action sources")
             if any(not set(output.source_refs).issubset(sources) for output in self.outputs):
                 raise ValueError("dream recompose output referenced a source outside the action")
+            focuses = tuple(output.focus.strip().casefold() for output in self.outputs)
+            if len(set(focuses)) != len(focuses):
+                raise ValueError("dream recompose output focuses must be unique")
         elif self.outputs:
             raise ValueError("only dream recompose may emit multiple outputs")
         elif self.operation is DreamOperationType.SYNTHESIZE:
@@ -249,6 +253,7 @@ class DreamRunPage(_DreamModel):
 
 
 class DreamClusterPreview(_DreamModel):
+    preview_public_id: str | None = None
     run_public_id: str
     cluster_id: int = Field(gt=0)
     fact_ids: tuple[int, ...]
@@ -266,6 +271,16 @@ class DreamHealth(_DreamModel):
     failed_clusters: int = Field(ge=0)
     last_completed_at: datetime | None = None
     last_error_category: str | None = None
+    preview_ready: int = Field(default=0, ge=0)
+    preview_stale: int = Field(default=0, ge=0)
+    compaction_pending: int = Field(default=0, ge=0)
+    compaction_completed: int = Field(default=0, ge=0)
+    compaction_skipped: int = Field(default=0, ge=0)
+    compaction_failed: int = Field(default=0, ge=0)
+    compaction_evidence_before: int = Field(default=0, ge=0)
+    compaction_evidence_after: int = Field(default=0, ge=0)
+    compaction_last_error_category: str | None = None
+    waiting_for_compaction_lock: bool = False
 
 
 @dataclass(frozen=True, slots=True)

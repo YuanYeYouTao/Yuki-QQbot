@@ -852,6 +852,33 @@ class MemorySelfReflectionRunModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class MemorySelfReflectionResultModel(Base):
+    """Atomic mapping from a reflection run to each durable result."""
+
+    __tablename__ = "memory_self_reflection_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "result_kind", "result_index", name="uq_self_reflection_result_position"
+        ),
+        CheckConstraint(
+            "result_kind IN ('episode','proposal')",
+            name="ck_self_reflection_result_kind",
+        ),
+        Index("ix_self_reflection_results_fact", "fact_id", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_self_reflection_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    result_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    result_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class MemoryReflectionJobModel(Base):
     """One restart-safe bounded governance task over existing memory evidence."""
 

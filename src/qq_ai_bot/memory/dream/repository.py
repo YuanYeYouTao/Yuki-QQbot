@@ -16,12 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.memory.dream.db_models import (
     MemoryDreamClusterModel,
+    MemoryDreamClusterPreviewModel,
     MemoryDreamFactCheckpointModel,
     MemoryDreamOperationModel,
     MemoryDreamOperationResultModel,
     MemoryDreamOperationSourceModel,
     MemoryDreamRunModel,
     MemoryDreamRuntimeModel,
+    MemoryEvidenceCompactionItemModel,
+    MemoryEvidenceCompactionRunModel,
 )
 from qq_ai_bot.memory.dream.models import (
     DreamCluster,
@@ -30,6 +33,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamOperationStatus,
     DreamOperationSummary,
     DreamOperationType,
+    DreamOutput,
     DreamPlanStatistics,
     DreamRun,
     DreamRunMode,
@@ -788,6 +792,7 @@ class DreamRepository:
         source_facts: tuple[MemoryFact, ...],
         anchor_fact_id: int | None,
         session: AsyncSession,
+        decision_focuses: tuple[str, ...] = (),
     ) -> MemoryDreamOperationModel:
         now = datetime.now(UTC)
         row = MemoryDreamOperationModel(
@@ -799,6 +804,7 @@ class DreamRepository:
             anchor_fact_id=anchor_fact_id,
             output_fact_id=None,
             source_fact_ids_json=json.dumps([item.id for item in source_facts]),
+            decision_focuses_json=json.dumps(decision_focuses, ensure_ascii=False),
             added_evidence_ids_json="[]",
             added_relation_ids_json="[]",
             result_signature=None,
@@ -883,6 +889,96 @@ class DreamRepository:
                 rows.append(fact)
         return tuple(rows)
 
+    async def save_preview(
+        self,
+        *,
+        cluster_id: int,
+        source_fingerprint: str,
+        proposal: DreamOutput,
+        model_calls: int,
+        source_characters: int,
+        output_characters: int,
+    ) -> str:
+        """Persist one immutable proposal and supersede older ready proposals."""
+
+        now = datetime.now(UTC)
+        public_id = str(uuid.uuid4())
+        async with self.database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemoryDreamClusterPreviewModel)
+                .where(
+                    MemoryDreamClusterPreviewModel.cluster_id == cluster_id,
+                    MemoryDreamClusterPreviewModel.status == "ready",
+                )
+                .values(status="superseded")
+            )
+            session.add(
+                MemoryDreamClusterPreviewModel(
+                    public_id=public_id,
+                    cluster_id=cluster_id,
+                    source_fingerprint=source_fingerprint,
+                    proposal_json=proposal.model_dump_json(),
+                    schema_version=1,
+                    model_calls=model_calls,
+                    source_characters=source_characters,
+                    output_characters=output_characters,
+                    status="ready",
+                    created_at=now,
+                    applied_at=None,
+                )
+            )
+        return public_id
+
+    async def ready_preview(
+        self,
+        *,
+        cluster_id: int,
+        source_fingerprint: str,
+    ) -> tuple[int, str, DreamOutput] | None:
+        """Return the exact ready proposal, marking incompatible snapshots stale."""
+
+        async with self.database.sessions() as session, session.begin():
+            rows = tuple(
+                (
+                    await session.scalars(
+                        select(MemoryDreamClusterPreviewModel)
+                        .where(
+                            MemoryDreamClusterPreviewModel.cluster_id == cluster_id,
+                            MemoryDreamClusterPreviewModel.status == "ready",
+                        )
+                        .order_by(MemoryDreamClusterPreviewModel.id.desc())
+                    )
+                ).all()
+            )
+            for row in rows:
+                if row.source_fingerprint != source_fingerprint or row.schema_version != 1:
+                    row.status = "stale"
+                    continue
+                return row.id, row.public_id, DreamOutput.model_validate_json(row.proposal_json)
+        return None
+
+    async def stale_previews(self, cluster_id: int) -> None:
+        async with self.database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemoryDreamClusterPreviewModel)
+                .where(
+                    MemoryDreamClusterPreviewModel.cluster_id == cluster_id,
+                    MemoryDreamClusterPreviewModel.status == "ready",
+                )
+                .values(status="stale")
+            )
+
+    @staticmethod
+    async def mark_preview_applied(preview_id: int, *, session: AsyncSession) -> None:
+        await session.execute(
+            update(MemoryDreamClusterPreviewModel)
+            .where(
+                MemoryDreamClusterPreviewModel.id == preview_id,
+                MemoryDreamClusterPreviewModel.status == "ready",
+            )
+            .values(status="applied", applied_at=datetime.now(UTC))
+        )
+
     async def health(self, *, enabled: bool) -> DreamHealth:
         async with self.database.sessions() as session:
             active = await session.scalar(
@@ -913,6 +1009,36 @@ class DreamRepository:
                 .order_by(MemoryDreamRunModel.completed_at.desc())
                 .limit(1)
             )
+            preview_ready = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(MemoryDreamClusterPreviewModel)
+                    .where(MemoryDreamClusterPreviewModel.status == "ready")
+                )
+                or 0
+            )
+            preview_stale = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(MemoryDreamClusterPreviewModel)
+                    .where(MemoryDreamClusterPreviewModel.status == "stale")
+                )
+                or 0
+            )
+            compaction_rows = (
+                await session.execute(
+                    select(
+                        MemoryEvidenceCompactionItemModel.status,
+                        func.count(MemoryEvidenceCompactionItemModel.id),
+                    ).group_by(MemoryEvidenceCompactionItemModel.status)
+                )
+            ).all()
+            compaction_counts = {str(row[0]): int(row[1]) for row in compaction_rows}
+            compaction_latest = await session.scalar(
+                select(MemoryEvidenceCompactionRunModel)
+                .order_by(MemoryEvidenceCompactionRunModel.id.desc())
+                .limit(1)
+            )
         return DreamHealth(
             enabled=enabled,
             running=active is not None,
@@ -921,6 +1047,23 @@ class DreamRepository:
             failed_clusters=failed,
             last_completed_at=latest.completed_at if latest is not None else None,
             last_error_category=latest.error_category if latest is not None else None,
+            preview_ready=preview_ready,
+            preview_stale=preview_stale,
+            compaction_pending=(
+                compaction_counts.get("pending", 0) + compaction_counts.get("processing", 0)
+            ),
+            compaction_completed=compaction_counts.get("completed", 0),
+            compaction_skipped=compaction_counts.get("skipped", 0),
+            compaction_failed=compaction_counts.get("failed", 0),
+            compaction_evidence_before=(
+                compaction_latest.evidence_before if compaction_latest is not None else 0
+            ),
+            compaction_evidence_after=(
+                compaction_latest.evidence_after if compaction_latest is not None else 0
+            ),
+            compaction_last_error_category=(
+                compaction_latest.error_category if compaction_latest is not None else None
+            ),
         )
 
     async def committed_operation_ids(self, run_public_id: str) -> tuple[str, ...]:

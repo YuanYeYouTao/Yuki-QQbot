@@ -877,17 +877,30 @@ async def test_reflection_batches_same_conversation_separately_per_bot(
 def test_reflection_output_allows_zero_or_one_free_episode() -> None:
     assert SelfReflectionOutput.model_validate({}).episodes == ()
     one = SelfReflectionOutput.model_validate(
-        {"episodes": [{"content": "我记得那天终于把问题修好了", "importance": 4}]}
+        {
+            "episodes": [
+                {
+                    "content": "我记得那天终于把问题修好了",
+                    "importance": 4,
+                    "evidence_refs": ["event_1"],
+                }
+            ]
+        }
     )
     assert one.episodes[0].content == "我记得那天终于把问题修好了"
     with pytest.raises(ValidationError, match="at most one episode"):
         SelfReflectionOutput.model_validate(
             {
                 "episodes": [
-                    {"content": "QQ 2186567848 当时说终于成功了", "importance": 4},
+                    {
+                        "content": "QQ 2186567848 当时说终于成功了",
+                        "importance": 4,
+                        "evidence_refs": ["event_1"],
+                    },
                     {
                         "content": "在群 1049765710 里，我后来觉得这件事挺有趣",
                         "importance": 3,
+                        "evidence_refs": ["event_2"],
                     },
                 ]
             }

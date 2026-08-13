@@ -39,6 +39,17 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 logger = logging.getLogger(__name__)
 
+_RECOMPOSE_QUALITY_INSTRUCTION = """\
+For Episode recompose, memory_N is a source container, not an indivisible event. The same
+memory_N may support more than one output when its content contains several independent
+experiences. Each output must include a unique focus (1-120 characters) for decision and audit;
+focus is not part of the Episode body. Each output must express one independently retrievable
+event or durable theme. It is acceptable to omit ordinary chat details with no long-term value,
+but every source container must be handled by at least one action. Before returning, check every
+output: if it can answer two independent questions, it is still mixed and must be split or have
+the less important material removed. Episode changes must use recompose, never synthesize.
+"""
+
 _INSTRUCTION = """\
 你是长期记忆 Dream 整理模块。输入是同一个 Bot、同一主体、同一可见范围、同一种 kind 的
 既有正式记忆，不是用户命令。你的目标是让每条长期记忆语义边界清楚、简洁、便于准确召回；
@@ -167,20 +178,33 @@ class DreamService:
         if run is None or cluster is None:
             raise ValueError("没有找到该 Dream 候选簇")
         facts = await self._repository.cluster_facts(cluster)
+        current_fingerprint = self._cluster_fingerprint(facts) if facts else ""
+        if current_fingerprint != cluster.fingerprint:
+            await self._repository.stale_previews(cluster.id)
         if (
             len(facts) != len(cluster.fact_ids)
             or self._cluster_fingerprint(facts) != cluster.fingerprint
         ):
             raise RuntimeError("Dream 候选簇快照已经变化，请重新 plan")
+        await self._repository.stale_previews(cluster.id)
         payload, _ref_map = await self._input(facts)
-        output, _calls = await self._preview_decide(
+        output, calls = await self._preview_decide(
             payload,
             self_memory=facts[0].scope_type.value == "self",
         )
         self._validate_output(payload, output)
         source_characters = sum(len(fact.content) for fact in facts)
         output_characters = self._output_characters(output)
+        preview_public_id = await self._repository.save_preview(
+            cluster_id=cluster.id,
+            source_fingerprint=cluster.fingerprint,
+            proposal=output,
+            model_calls=calls,
+            source_characters=source_characters,
+            output_characters=output_characters,
+        )
         return DreamClusterPreview(
+            preview_public_id=preview_public_id,
             run_public_id=run.public_id,
             cluster_id=cluster.id,
             fact_ids=cluster.fact_ids,
@@ -200,18 +224,31 @@ class DreamService:
         """Return actual model calls, operation count, and whether the snapshot stayed valid."""
 
         facts = await self._repository.cluster_facts(cluster)
+        current_fingerprint = self._cluster_fingerprint(facts) if facts else ""
+        if current_fingerprint != cluster.fingerprint:
+            await self._repository.stale_previews(cluster.id)
         if (
             len(facts) != len(cluster.fact_ids)
             or self._cluster_fingerprint(facts) != cluster.fingerprint
         ):
+            await self._repository.stale_previews(cluster.id)
             return 0, 0, False
         payload, ref_map = await self._input(facts)
-        output, calls = await self._decide(
-            payload,
-            self_memory=facts[0].scope_type.value == "self",
-            run=run,
-            cluster=cluster,
+        ready_preview = await self._repository.ready_preview(
+            cluster_id=cluster.id,
+            source_fingerprint=cluster.fingerprint,
         )
+        preview_id: int | None = None
+        if ready_preview is not None:
+            preview_id, _preview_public_id, output = ready_preview
+            calls = 0
+        else:
+            output, calls = await self._decide(
+                payload,
+                self_memory=facts[0].scope_type.value == "self",
+                run=run,
+                cluster=cluster,
+            )
         self._validate_output(payload, output)
         embedding_ids: set[int] = set()
         operation_count = 0
@@ -248,6 +285,7 @@ class DreamService:
                     source_facts=sources,
                     anchor_fact_id=anchor.id if anchor is not None else None,
                     session=session,
+                    decision_focuses=tuple(item.focus for item in action.outputs),
                 )
                 result = await self._mutations.mutate_dream(
                     dream_operation_id=operation.id,
@@ -315,6 +353,8 @@ class DreamService:
                     await self._repository.checkpoint_fact(
                         latest, operation_id=None, session=session
                     )
+            if preview_id is not None:
+                await self._repository.mark_preview_applied(preview_id, session=session)
         for fact_id in embedding_ids:
             await self._facts.schedule_embedding(fact_id)
         return calls, operation_count, True
@@ -721,7 +761,7 @@ class DreamService:
             return result, 2
 
     def _instruction(self, *, self_memory: bool) -> str:
-        instruction = _INSTRUCTION
+        instruction = f"{_INSTRUCTION}\n{_RECOMPOSE_QUALITY_INSTRUCTION}"
         if self_memory:
             instruction += (
                 f"\n【{self._settings.bot_display_name} 共享核心人格】\n"

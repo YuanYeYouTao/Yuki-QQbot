@@ -205,9 +205,11 @@ class Settings(BaseSettings):
     memory_dream_max_input_characters: int = Field(default=24_000, gt=0, le=100_000)
     memory_dream_max_output_tokens: int = Field(default=2400, gt=0)
     memory_dream_episode_max_characters: int = Field(default=800, ge=200, le=4000)
-    memory_dream_episode_compression_ratio: float = Field(default=0.55, gt=0, le=1)
-    memory_dream_evidence_per_fact: int = Field(default=2, ge=0, le=10)
+    memory_dream_episode_compression_ratio: float = Field(default=0.45, gt=0, le=1)
+    memory_dream_evidence_per_fact: int = Field(default=2, ge=1, le=10)
     memory_dream_evidence_excerpt_characters: int = Field(default=300, gt=0, le=2000)
+    memory_evidence_compaction_enabled: bool = True
+    memory_evidence_compaction_batch_size: int = Field(default=20, ge=1, le=100)
     memory_mmr_enabled: bool = True
     memory_mmr_lambda: float = Field(default=0.75, ge=0, le=1)
     memory_mmr_candidate_pool_size: int = Field(default=20, gt=0, le=100)

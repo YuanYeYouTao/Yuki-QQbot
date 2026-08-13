@@ -69,8 +69,12 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
     assert "memory_dream_runs" in expected_names
     assert "memory_dream_operations" in expected_names
     assert "memory_dream_operation_results" in expected_names
+    assert "memory_self_reflection_results" in expected_names
+    assert "memory_dream_cluster_previews" in expected_names
+    assert "memory_evidence_compaction_runs" in expected_names
+    assert "memory_evidence_compaction_items" in expected_names
     with sqlite3.connect(fresh) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0033",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0034",)
 
     for label, revision in MATRIX.items():
         database = tmp_path / f"{label}.db"
@@ -80,11 +84,11 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
         assert names == expected_names, label
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0033",
+                "0034",
             )
             assert connection.execute("SELECT COUNT(*) FROM memory_rebuild_runs").fetchone() == (0,)
 
 
-def test_memory_dream_recompose_is_the_current_production_migration() -> None:
+def test_memory_dream_quality_is_the_current_production_migration() -> None:
     versions = sorted((ROOT / "migrations/versions").glob("*.py"))
-    assert versions[-1].name == "0033_memory_dream_recompose.py"
+    assert versions[-1].name == "0034_memory_dream_quality_and_evidence_provenance.py"

@@ -470,6 +470,7 @@ class ProfileCommandHandler:
             lines = [
                 f"Dream 只读预览 cluster={preview.cluster_id} "
                 f"facts={','.join(map(str, preview.fact_ids))}",
+                f"preview={preview.preview_public_id or '-'}; execution will reuse this proposal",
                 f"正文 {preview.source_characters} → {preview.output_characters} 字符 "
                 f"({preview.compression_ratio:.1%})；尚未写入数据库。",
             ]
@@ -481,6 +482,7 @@ class ProfileCommandHandler:
                 if action.content:
                     lines.append(action.content)
                 for output_index, output in enumerate(action.outputs, start=1):
+                    lines.append(f"  focus={output.focus}")
                     lines.append(
                         f"  输出 {output_index} sources={','.join(output.source_refs)} "
                         f"importance={output.importance}"

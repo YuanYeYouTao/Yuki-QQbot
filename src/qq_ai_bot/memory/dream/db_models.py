@@ -130,6 +130,9 @@ class MemoryDreamOperationModel(Base):
         ForeignKey("memory_facts.id", ondelete="SET NULL"), nullable=True
     )
     source_fact_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    decision_focuses_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
     added_evidence_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     added_relation_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     result_signature: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -195,3 +198,93 @@ class MemoryDreamFactCheckpointModel(Base):
         ForeignKey("memory_dream_operations.id", ondelete="SET NULL"), nullable=True
     )
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryDreamClusterPreviewModel(Base):
+    __tablename__ = "memory_dream_cluster_previews"
+    __table_args__ = (
+        UniqueConstraint("public_id", name="uq_memory_dream_previews_public_id"),
+        CheckConstraint(
+            "status IN ('ready','applied','stale','superseded')",
+            name="ck_memory_dream_previews_status",
+        ),
+        Index("ix_memory_dream_previews_cluster_status", "cluster_id", "status", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    cluster_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_dream_clusters.id", ondelete="CASCADE"), nullable=False
+    )
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    proposal_json: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_characters: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_characters: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MemoryEvidenceCompactionRunModel(Base):
+    __tablename__ = "memory_evidence_compaction_runs"
+    __table_args__ = (
+        UniqueConstraint("public_id", name="uq_evidence_compaction_runs_public_id"),
+        CheckConstraint(
+            "status IN ('running','completed','partial_failed','failed')",
+            name="ck_evidence_compaction_runs_status",
+        ),
+        Index("ix_evidence_compaction_runs_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    scan_after_fact_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scanned_facts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    evidence_before: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    evidence_after: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MemoryEvidenceCompactionItemModel(Base):
+    __tablename__ = "memory_evidence_compaction_items"
+    __table_args__ = (
+        UniqueConstraint("run_id", "fact_id", name="uq_evidence_compaction_items_fact"),
+        CheckConstraint(
+            "provenance_type IN ('self_reflection','dream')",
+            name="ck_evidence_compaction_items_provenance",
+        ),
+        CheckConstraint(
+            "status IN ('pending','processing','completed','skipped','failed')",
+            name="ck_evidence_compaction_items_status",
+        ),
+        Index("ix_evidence_compaction_items_run_status", "run_id", "status", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_evidence_compaction_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    provenance_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    dream_operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_dream_operations.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence_before: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    evidence_after: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deleted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
