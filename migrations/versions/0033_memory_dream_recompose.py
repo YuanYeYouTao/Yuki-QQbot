@@ -23,8 +23,7 @@ def upgrade() -> None:
         batch.drop_constraint("ck_memory_dream_operations_type", type_="check")
         batch.create_check_constraint(
             "ck_memory_dream_operations_type",
-            "operation_type IN "
-            "('keep','merge','synthesize','recompose','contest','resolve')",
+            "operation_type IN ('keep','merge','synthesize','recompose','contest','resolve')",
         )
     op.create_table(
         "memory_dream_operation_results",
@@ -37,9 +36,7 @@ def upgrade() -> None:
             ["operation_id"], ["memory_dream_operations.id"], ondelete="CASCADE"
         ),
         sa.ForeignKeyConstraint(["fact_id"], ["memory_facts.id"], ondelete="CASCADE"),
-        sa.UniqueConstraint(
-            "operation_id", "position", name="uq_memory_dream_results_position"
-        ),
+        sa.UniqueConstraint("operation_id", "position", name="uq_memory_dream_results_position"),
         sa.UniqueConstraint("operation_id", "fact_id", name="uq_memory_dream_results_fact"),
     )
     op.create_index(
@@ -56,9 +53,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_memory_dream_results_fact", table_name="memory_dream_operation_results"
-    )
+    op.drop_index("ix_memory_dream_results_fact", table_name="memory_dream_operation_results")
     op.drop_table("memory_dream_operation_results")
     op.execute(
         "DELETE FROM memory_mutation_receipts WHERE dream_operation_id IN "

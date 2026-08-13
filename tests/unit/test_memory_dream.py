@@ -263,12 +263,12 @@ def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits()
                 operation=DreamOperationType.RECOMPOSE,
                 source_refs=tuple(memory.ref for memory in memories),
                 outputs=tuple(
-                        DreamRecomposeOutput(
-                            focus=f"独立经历 {index}",
-                            source_refs=(memory.ref,),
-                            content=f"{index}" + "乙" * 299,
-                            importance=3,
-                        )
+                    DreamRecomposeOutput(
+                        focus=f"独立经历 {index}",
+                        source_refs=(memory.ref,),
+                        content=f"{index}" + "乙" * 299,
+                        importance=3,
+                    )
                     for index, memory in enumerate(memories, start=1)
                 ),
             ),

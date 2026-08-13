@@ -199,10 +199,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "DELETE FROM memory_mutation_receipts "
-        "WHERE trigger_source_type = 'dream_operation'"
-    )
+    op.execute("DELETE FROM memory_mutation_receipts WHERE trigger_source_type = 'dream_operation'")
     with op.batch_alter_table("memory_mutation_receipts", recreate="always") as batch:
         batch.drop_constraint("ck_memory_mutation_trigger_source", type_="check")
         batch.drop_constraint("fk_memory_mutation_receipts_dream_operation", type_="foreignkey")

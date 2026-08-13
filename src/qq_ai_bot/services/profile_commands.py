@@ -448,9 +448,9 @@ class ProfileCommandHandler:
             page = int(parts[1]) if len(parts) == 2 else 1
             page_result = await self._memory_admin.dream_show(actor, parts[0], page=page)
             lines = [
-                    f"cluster={row.id} [{row.status.value}] kind={row.kind} "
-                    f"facts={','.join(map(str, row.fact_ids))} calls={row.model_calls} "
-                    f"operations={row.operation_count} error={row.error_category or '-'}"
+                f"cluster={row.id} [{row.status.value}] kind={row.kind} "
+                f"facts={','.join(map(str, row.fact_ids))} calls={row.model_calls} "
+                f"operations={row.operation_count} error={row.error_category or '-'}"
                 for row in page_result.clusters
             ]
             lines.extend(
@@ -476,8 +476,7 @@ class ProfileCommandHandler:
             ]
             for index, action in enumerate(preview.actions, start=1):
                 lines.append(
-                    f"[{index}] {action.operation.value} "
-                    f"sources={','.join(action.source_refs)}"
+                    f"[{index}] {action.operation.value} sources={','.join(action.source_refs)}"
                 )
                 if action.content:
                     lines.append(action.content)

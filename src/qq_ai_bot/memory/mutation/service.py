@@ -327,9 +327,7 @@ class MemoryMutationService:
             )
         )
         changed = False
-        output_fact_ids: tuple[int, ...] = (
-            (anchor.id,) if anchor is not None else (sources[0].id,)
-        )
+        output_fact_ids: tuple[int, ...] = (anchor.id,) if anchor is not None else (sources[0].id,)
         outcome = MemoryMutationOutcome.NO_CHANGE
         reason_code = f"memory_dream_{operation_type.value}"
 
@@ -452,14 +450,11 @@ class MemoryMutationService:
             ):
                 raise ValueError("dream recompose output has invalid sources")
             normalized_outputs = tuple(
-                normalize_memory_text(output.content, maximum=4000)
-                for output in recompose_outputs
+                normalize_memory_text(output.content, maximum=4000) for output in recompose_outputs
             )
             if any(not item for item in normalized_outputs):
                 raise ValueError("dream recompose content cannot be empty")
-            if len({item.casefold() for item in normalized_outputs}) != len(
-                normalized_outputs
-            ):
+            if len({item.casefold() for item in normalized_outputs}) != len(normalized_outputs):
                 raise ValueError("dream recompose content must be unique")
             if any(
                 len(item) > self._settings.memory_dream_episode_max_characters
@@ -470,10 +465,7 @@ class MemoryMutationService:
             output_characters = sum(len(item) for item in normalized_outputs)
             if output_characters > max(
                 min(450, self._settings.memory_dream_episode_max_characters),
-                int(
-                    source_characters
-                    * self._settings.memory_dream_episode_compression_ratio
-                ),
+                int(source_characters * self._settings.memory_dream_episode_compression_ratio),
             ):
                 raise ValueError("dream recompose did not compress its source episodes")
             for source in sources:
@@ -519,11 +511,7 @@ class MemoryMutationService:
                     source_type=output_anchor.source_type,
                     authority=output_anchor.authority,
                     valid_from=min(
-                        (
-                            item.valid_from
-                            for item in output_sources
-                            if item.valid_from is not None
-                        ),
+                        (item.valid_from for item in output_sources if item.valid_from is not None),
                         default=output_anchor.valid_from,
                     ),
                     valid_until=(
@@ -643,9 +631,7 @@ class MemoryMutationService:
             output_fact_ids = (anchor.id,)
             outcome = MemoryMutationOutcome.COMMITTED if changed else outcome
 
-        affected_ids = tuple(
-            dict.fromkeys((*source_ids, *output_fact_ids))
-        )
+        affected_ids = tuple(dict.fromkeys((*source_ids, *output_fact_ids)))
         after_evidence = set(
             await session.scalars(
                 select(MemoryEvidenceModel.id).where(MemoryEvidenceModel.fact_id.in_(affected_ids))

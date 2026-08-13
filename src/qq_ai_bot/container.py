@@ -273,9 +273,7 @@ class ApplicationContainer:
         self.memory_reflection_worker = conversation.memory_reflection_worker
         self.memory_self_reflection_worker = conversation.memory_self_reflection_worker
         self.memory_dream_worker = conversation.memory_dream_worker
-        self.memory_evidence_compaction_worker = (
-            conversation.memory_evidence_compaction_worker
-        )
+        self.memory_evidence_compaction_worker = conversation.memory_evidence_compaction_worker
         self.relationship_worker = conversation.relationship_worker
         admin = AdminModule(
             settings=settings,

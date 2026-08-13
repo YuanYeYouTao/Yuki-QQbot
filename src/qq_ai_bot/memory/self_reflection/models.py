@@ -157,8 +157,7 @@ class SelfEpisodeProposal(_Contract):
         if len(set(self.evidence_refs)) != len(self.evidence_refs):
             raise ValueError("episode evidence aliases must be unique")
         if any(
-            not (ref.startswith("event_") or ref.startswith("tool_"))
-            for ref in self.evidence_refs
+            not (ref.startswith("event_") or ref.startswith("tool_")) for ref in self.evidence_refs
         ):
             raise ValueError("episode evidence may only reference event or tool aliases")
         return self

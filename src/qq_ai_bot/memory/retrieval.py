@@ -297,9 +297,7 @@ class MemoryRetriever:
                     deduplicated = await self._diversify_mmr(
                         deduplicated,
                         query_vector=query_vector,
-                        valid_fact_ids=frozenset(
-                            item.fact_id for item in semantic_candidates
-                        ),
+                        valid_fact_ids=frozenset(item.fact_id for item in semantic_candidates),
                         limit=remaining,
                     )
                 combined = (*preference_hits, *deduplicated)[: query.limit_per_target]
@@ -438,8 +436,7 @@ class MemoryRetriever:
             (
                 self._vector_codec.dot(vector, vectors[item.fact.id])
                 for item in selected
-                if item.fact.id in vectors
-                and self._mmr_partition(item) == self._mmr_partition(hit)
+                if item.fact.id in vectors and self._mmr_partition(item) == self._mmr_partition(hit)
             ),
             default=0.0,
         )

@@ -21,9 +21,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column(
         "memory_dream_operations",
-        sa.Column(
-            "decision_focuses_json", sa.Text(), nullable=False, server_default="[]"
-        ),
+        sa.Column("decision_focuses_json", sa.Text(), nullable=False, server_default="[]"),
     )
     op.create_table(
         "memory_self_reflection_results",
@@ -33,9 +31,7 @@ def upgrade() -> None:
         sa.Column("result_kind", sa.String(16), nullable=False),
         sa.Column("result_index", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["run_id"], ["memory_self_reflection_runs.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["run_id"], ["memory_self_reflection_runs.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["fact_id"], ["memory_facts.id"], ondelete="CASCADE"),
         sa.UniqueConstraint(
             "run_id", "result_kind", "result_index", name="uq_self_reflection_result_position"
@@ -64,9 +60,7 @@ def upgrade() -> None:
         sa.Column("status", sa.String(16), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("applied_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(
-            ["cluster_id"], ["memory_dream_clusters.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["cluster_id"], ["memory_dream_clusters.id"], ondelete="CASCADE"),
         sa.UniqueConstraint("public_id", name="uq_memory_dream_previews_public_id"),
         sa.CheckConstraint(
             "status IN ('ready','applied','stale','superseded')",
@@ -162,9 +156,7 @@ def downgrade() -> None:
         table_name="memory_dream_cluster_previews",
     )
     op.drop_table("memory_dream_cluster_previews")
-    op.drop_index(
-        "ix_self_reflection_results_fact", table_name="memory_self_reflection_results"
-    )
+    op.drop_index("ix_self_reflection_results_fact", table_name="memory_self_reflection_results")
     op.drop_table("memory_self_reflection_results")
     with op.batch_alter_table("memory_dream_operations", recreate="always") as batch:
         batch.drop_column("decision_focuses_json")
