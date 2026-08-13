@@ -57,7 +57,9 @@ Episode 表示一段完整而连贯的经历，不表示一次模型提取批次
 
 每条 memory_N 必须且只能出现在一个 action 中，不得遗漏；keep 每次只能包含一个 source_ref。
 merge、synthesize、resolve 必须提供属于 source_refs 的 anchor_ref；不同 action 的 source_refs 不能
-重叠。只能引用 memory_N 别名，不能输出数据库 ID、QQ 目标或改变 scope/kind/key/category。
+重叠。只有 synthesize 必须输出 content，并且可以输出 importance；keep、merge、contest、resolve
+必须省略 content 和 importance。keep、contest 必须省略 anchor_ref。只能引用 memory_N 别名，
+不能输出数据库 ID、QQ 目标或改变 scope/kind/key/category。
 
 source_type=explicit 或 authority=explicit 的记忆是不可变锚点：不能被 synthesize、contest、失效
 或作为 merge 的被吞并来源；自动重复记忆可以 merge 到唯一显式锚点。两个显式锚点不能互相合并，
