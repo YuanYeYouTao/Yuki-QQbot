@@ -166,14 +166,19 @@ class DreamOutput(_DreamModel):
     def _disjoint(self) -> DreamOutput:
         used: set[str] = set()
         output_count = 0
+        recompose_count = 0
         for action in self.actions:
             overlap = used.intersection(action.source_refs)
             if overlap:
                 raise ValueError("dream actions must use disjoint source refs")
             used.update(action.source_refs)
             output_count += len(action.outputs)
+            if action.operation is DreamOperationType.RECOMPOSE:
+                recompose_count += 1
         if output_count > 4:
             raise ValueError("dream output may contain at most four recomposed episodes")
+        if recompose_count > 1:
+            raise ValueError("dream output may contain at most one recompose action")
         return self
 
 

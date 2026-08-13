@@ -202,6 +202,36 @@ def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits()
             )
         )
 
+    with pytest.raises(ValueError, match="at most one recompose"):
+        DreamOutput(
+            actions=(
+                DreamAction(
+                    operation=DreamOperationType.RECOMPOSE,
+                    source_refs=("memory_1",),
+                    outputs=(
+                        DreamRecomposeOutput(
+                            focus="第一件事",
+                            source_refs=("memory_1",),
+                            content="第一件独立经历",
+                            importance=3,
+                        ),
+                    ),
+                ),
+                DreamAction(
+                    operation=DreamOperationType.RECOMPOSE,
+                    source_refs=("memory_2",),
+                    outputs=(
+                        DreamRecomposeOutput(
+                            focus="第二件事",
+                            source_refs=("memory_2",),
+                            content="第二件独立经历",
+                            importance=3,
+                        ),
+                    ),
+                ),
+            )
+        )
+
     service = object.__new__(DreamService)
     service._settings = cast(
         object,
@@ -228,23 +258,23 @@ def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits()
     )
     payload = DreamInput(scope_type="self", kind="episode", memories=memories)
     output = DreamOutput(
-        actions=tuple(
+        actions=(
             DreamAction(
                 operation=DreamOperationType.RECOMPOSE,
-                source_refs=(memory.ref,),
-                outputs=(
-                    DreamRecomposeOutput(
-                        focus=f"独立经历 {index}",
-                        source_refs=(memory.ref,),
-                        content="乙" * 300,
-                        importance=3,
-                    ),
+                source_refs=tuple(memory.ref for memory in memories),
+                outputs=tuple(
+                        DreamRecomposeOutput(
+                            focus=f"独立经历 {index}",
+                            source_refs=(memory.ref,),
+                            content=f"{index}" + "乙" * 299,
+                            importance=3,
+                        )
+                    for index, memory in enumerate(memories, start=1)
                 ),
-            )
-            for index, memory in enumerate(memories, start=1)
+            ),
         )
     )
-    with pytest.raises(ValueError, match="total episode compression"):
+    with pytest.raises(ValueError, match="did not compress"):
         service._validate_output(payload, output)
 
 

@@ -72,6 +72,12 @@ _INSTRUCTION = """\
 无关任务和仅用于按时间串联的细节必须删掉，不能因为它们相邻就塞进正文。focus 若需要用“从 A 到 B”、
 “A 并 B”或“一整天聊了很多事”才能概括，通常仍是混合事件，应继续拆分或只保留更重要的一件。
 
+整个簇最多使用一个 recompose action。需要改写或拆分的所有来源都放进这个 action.source_refs；
+所有新 Episode 都放进同一个 action.outputs。同一个 memory_N 若支持多个事件，就在这个 outputs 数组中
+重复引用它，绝不能把同一个 memory_N 分散到两个 action。边界已经清楚且无需改写的来源可以各自 keep。
+例如两个来源要拆为两件事时，应返回一个 source_refs=[memory_1,memory_2] 的 recompose action，下面
+放两个都完整包含 focus、source_refs、content、importance 的 output。
+
 Episode 要略写和压缩。保留核心经过、结果、关系或认识的变化，以及值得长期记住的主要感受；省略
 逐轮问答、候选枚举、重复解释、无关玩笑和不影响结果的工具中间步骤。普通正文以 150 至 450 字为宜，
 复杂经历也不得超过 800 字。宁可输出两条边界清楚的短回忆，也不要输出一条跨越多个话题的长回忆。
@@ -763,7 +769,8 @@ class DreamService:
             f"{instruction}\n上一次输出无效：{reason}；具体位置：{detail or 'unknown'}。"
             "请重新划分语义事件、删掉所有不直接服务 focus 的旁支，并充分压缩。"
             "必须重新返回完整结果：每个 recompose output 都要同时包含 focus、source_refs、"
-            "content、importance；整个簇的所有 action 合计最多 4 个 outputs，不能省略必填字段。"
+            "content、importance；整个簇最多一个 recompose action、合计最多 4 个 outputs。"
+            "同一来源的拆分必须放在该 action 的 outputs 内，不能把来源重复放进多个 action。"
         )
 
     def _instruction(self, *, self_memory: bool) -> str:
