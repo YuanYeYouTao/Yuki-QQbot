@@ -11,7 +11,7 @@
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/Version-3.4.6-orange" alt="Version">
+  <img src="https://img.shields.io/badge/Version-3.5.0-orange" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python Version">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -36,10 +36,10 @@
 
 Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agent。它通过 NapCatQQ 接入 QQ，使用 Planner、Agent、长期记忆、工具系统和插件系统完成聊天、检索、自动化与外部服务调用。
 
-> **当前版本：3.4.6 正式版**
+> **当前版本：3.5.0 正式版**
 >
-> Self Reflection 现在按连续聊天的高低水位与自然停顿生成长 Episode，并使用同范围最近
-> Episode 抑制重复回忆；主 Agent 历史继续使用稳定的 `EventRecord.id` 和紧凑身份信封。
+> Memory Dream 会在 Self Reflection 之后整理既有长期记忆，按语义重组长 Episode、治理
+> Evidence 与来源链，并在召回阶段通过 MMR 减少重复；所有整理均可审计、预览和回滚。
 
 ## ✨ 主要功能
 

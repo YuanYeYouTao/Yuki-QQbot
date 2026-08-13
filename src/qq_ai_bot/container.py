@@ -245,6 +245,7 @@ class ApplicationContainer:
             speech=self.speech,
             speech_effects=self.speech_effects,
             voice_preferences=self.voice_preference_service,
+            memory_embeddings=self.memory_embeddings,
             tool_artifacts=self.tool_artifacts,
             tool_invocations=self.mcp_repository,
         )
@@ -271,6 +272,8 @@ class ApplicationContainer:
         self.memory_maintenance_worker = conversation.memory_maintenance_worker
         self.memory_reflection_worker = conversation.memory_reflection_worker
         self.memory_self_reflection_worker = conversation.memory_self_reflection_worker
+        self.memory_dream_worker = conversation.memory_dream_worker
+        self.memory_evidence_compaction_worker = conversation.memory_evidence_compaction_worker
         self.relationship_worker = conversation.relationship_worker
         admin = AdminModule(
             settings=settings,
@@ -297,6 +300,7 @@ class ApplicationContainer:
             memory_mutations=self.memory_mutations,
             ledger=self.ledger,
             memory_self_reflection=self.memory_self_reflection_worker,
+            memory_dream=self.memory_dream_worker,
         ).build()
         self.admin = admin
         self.admin_audit = admin.audit

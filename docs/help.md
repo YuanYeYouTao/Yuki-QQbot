@@ -1,8 +1,8 @@
 # Yuki-QQbot
 
-> **3.4.6 正式版：**Self Reflection 按连续聊天的高低水位和自然停顿生成不重叠的长
-> Episode，每批最多保留一条经历，并参考同范围最近 Episode 避免重复。Alembic head 为
-> `0031`。
+> **3.5.0 正式版：**新增 Memory Dream 与 MMR。Dream 在 Self Reflection 之后按语义整理
+> 既有长期记忆，支持长 Episode 切分、压缩、Evidence provenance、持久化 Preview、回滚和
+> 历史 Evidence 后台压缩；普通相关性召回使用 MMR 减少重复。Alembic head 为 `0034`。
 
 > **3.4.4 Prompt 缓存与输出清理：**历史位于动态上下文之前并使用高低水位分块滚动；首批
 > 工具和 Schema 采用宽松预算且按名称稳定排序；输出清理器兼容省略消息 ID 的身份头。
@@ -104,7 +104,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.4.6 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 3.5.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。

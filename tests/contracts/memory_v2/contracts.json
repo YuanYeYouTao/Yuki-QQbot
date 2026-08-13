@@ -36,7 +36,8 @@
       "merged",
       "privacy_deletion",
       "conflict_resolution",
-      "plugin_explicit_invalidation"
+      "plugin_explicit_invalidation",
+      "dream_rollback"
     ],
     "MemoryKind": [
       "fact",
@@ -105,9 +106,9 @@
   "schema_version": "1",
   "schemas": {
     "EmbeddingProviderProfile": "01d9ddd287565ae59d747a226abc5d68b909680f06ce3bf23588d7fb169e9d31",
-    "MemoryContextBlock": "374f96f7a8ee8d77fcd48c1777b9021a72232104e759df348ab6e97d54fa8e4d",
+    "MemoryContextBlock": "1b1a6349f450561fb7b3f03bbf44704d30b5631b2f175876e3d47fcc1619ce4e",
     "MemoryEvidenceCreate": "9ccc599265d1e44de286f6eef25b2003bef09fcd9a16e1ab7b4bd02d7b56f1ae",
-    "MemoryFactCreate": "d428eb2723678bb718a2242e5691db9233e4432a8200824afee7074f7deb16b6",
+    "MemoryFactCreate": "533cb26d7856cb10bc11a186ad492c168562f1d7dc52fe4a6e7808d01b299ff5",
     "MemoryQualityCase": "236c58b72d7fa07663f460b370700b635df213cee071315de30208a9056414de",
     "MemoryQualityReport": "d757579c3972dbe182aa8b711bbce98c50ec10a872ae7fdc0ab6c4861959d942",
     "MemoryQuery": "e6657f62bb695b28f6d2bd171a7490ce9520c50ab9b23f6d25b75f3c66409ddd",

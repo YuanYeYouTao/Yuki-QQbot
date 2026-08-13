@@ -151,7 +151,9 @@ class MemoryMutationReceipt:
     idempotency_key: str
     claim_fingerprint: str
     target_fingerprint: str
-    trigger_event_id: int
+    trigger_source_type: str
+    trigger_event_id: int | None
+    dream_operation_id: int | None
     conversation_key: str
     current_group_id: str | None
     turn_origin: str

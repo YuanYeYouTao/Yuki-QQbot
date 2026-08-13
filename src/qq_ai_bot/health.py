@@ -58,6 +58,7 @@ class HealthPayload(TypedDict):
     memory_maintenance_last_success_at: str | None
     memory_rebuild: dict[str, object]
     memory_self_reflection: dict[str, object]
+    memory_dream: dict[str, object]
     uptime_seconds: int
 
 
@@ -79,6 +80,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         active_in_flight_calls=container.memory_rebuild_service.active_in_flight_calls,
     )
     self_reflection_health = await container.memory_self_reflection_worker.health()
+    dream_health = await container.memory_dream_worker.health()
     return HealthPayload(
         status="ok" if database_ok else "degraded",
         version=__version__,
@@ -137,5 +139,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         ),
         memory_rebuild=rebuild_health.model_dump(mode="json"),
         memory_self_reflection=self_reflection_health.model_dump(mode="json"),
+        memory_dream=dream_health.model_dump(mode="json"),
         uptime_seconds=max(0, int(time.monotonic() - container.started_at)),
     )

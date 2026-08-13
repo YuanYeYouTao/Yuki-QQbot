@@ -87,6 +87,23 @@ class MemoryFactService:
     def repository(self) -> MemoryFactRepository:
         return self._repository
 
+    async def list_evidence_lineage(
+        self,
+        fact_id: int,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+    ) -> object:
+        """Page direct evidence and recoverable Reflection/Dream provenance."""
+
+        from qq_ai_bot.memory.lineage import MemoryLineageService
+
+        return await MemoryLineageService(self._repository.database).list_evidence_lineage(
+            fact_id,
+            cursor=cursor,
+            limit=limit,
+        )
+
     async def remember(
         self,
         fact: MemoryFactCreate,
@@ -696,6 +713,17 @@ class MemoryFactService:
             )
         return added
 
+    async def refresh_evidence_metadata(
+        self,
+        fact_id: int,
+        *,
+        confirmed_at: datetime,
+        session: AsyncSession,
+    ) -> None:
+        """Recompute aggregate authority/confidence after controlled evidence removal."""
+
+        await self._refresh_evidence(fact_id, confirmed_at=confirmed_at, session=session)
+
     async def correct_fact(
         self,
         fact_id: int,
@@ -1218,6 +1246,7 @@ class MemoryFactService:
         *,
         actor_user_id: str,
         evidence: MemoryEvidenceCreate | None = None,
+        source_evidence: tuple[MemoryEvidenceCreate, ...] | None = None,
         confirmed_at: datetime | None = None,
         session: AsyncSession | None = None,
     ) -> MemoryFact | None:
@@ -1230,6 +1259,7 @@ class MemoryFactService:
                     target_fact_id,
                     actor_user_id=actor_user_id,
                     evidence=evidence,
+                    source_evidence=source_evidence,
                     confirmed_at=confirmed_at,
                     session=owned,
                 )
@@ -1259,21 +1289,24 @@ class MemoryFactService:
             raise ValueError("memory merge cannot cross identity targets")
         if target.status is not MemoryStatus.ACTIVE:
             raise ValueError("memory merge target must be active")
-        for row in await self._repository.list_evidence(
-            source_fact_id, limit=100_000, session=session
-        ):
-            await self._repository.add_evidence(
-                target_fact_id,
+        inherited = source_evidence
+        if inherited is None:
+            inherited = tuple(
                 MemoryEvidenceCreate(
                     event_id=row.event_id,
+                    tool_receipt_id=row.tool_receipt_id,
                     source_speaker_user_id=row.source_speaker_user_id,
                     relation=row.relation,
                     confidence=row.confidence,
                     authority=row.authority,
                     excerpt=row.excerpt,
-                ),
-                session=session,
+                )
+                for row in await self._repository.list_evidence(
+                    source_fact_id, limit=100_000, session=session
+                )
             )
+        for item in inherited:
+            await self._repository.add_evidence(target_fact_id, item, session=session)
         if evidence is not None:
             await self._repository.add_evidence(target_fact_id, evidence, session=session)
         await self._refresh_evidence(

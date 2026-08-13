@@ -50,7 +50,7 @@ Yuki 3.4.1 将 Plugin API 扩展为 `1.1`，新增受 Host 管理的后台服务
 
 | 标识 | 当前值 | 用途 |
 |---|---:|---|
-| Yuki | `3.4.6` | Host 产品版本 |
+| Yuki | `3.5.0` | Host 产品版本 |
 | Plugin API | `1.1` | SDK 主兼容边界 |
 | Event/Tool/Automation Schema | `1` | 单类载荷的结构版本 |
 | Feature | 如 `planner.signal.v1` | 运行时能力探测 |

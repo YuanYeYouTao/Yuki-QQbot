@@ -167,6 +167,25 @@ class MemoryEmbeddingRepository:
             )
         return count
 
+    async def load_vectors_for_fact_ids(
+        self,
+        *,
+        fact_ids: tuple[int, ...],
+        profile_id: int,
+    ) -> dict[int, bytes]:
+        if not fact_ids:
+            return {}
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(MemoryEmbeddingModel.fact_id, MemoryEmbeddingModel.vector_blob).where(
+                        MemoryEmbeddingModel.profile_id == profile_id,
+                        MemoryEmbeddingModel.fact_id.in_(fact_ids),
+                    )
+                )
+            ).all()
+        return {int(row.fact_id): bytes(row.vector_blob) for row in rows}
+
     async def active_fact_count(self) -> int:
         async with self._database.sessions() as session:
             return int(
@@ -235,7 +254,7 @@ class MemoryEmbeddingRepository:
                     .join(MemoryFactModel, MemoryFactModel.id == MemoryEmbeddingModel.fact_id)
                     .where(
                         MemoryEmbeddingModel.profile_id == current_profile_id,
-                        MemoryFactModel.status != "active",
+                        MemoryFactModel.status.not_in(("active", "contested")),
                     )
                 )
                 or 0

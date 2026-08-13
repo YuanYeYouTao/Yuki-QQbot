@@ -28,6 +28,10 @@ class MemorySemanticIndex:
         self._documents = documents
         self._codec = codec or Float32VectorCodec()
 
+    @property
+    def repository(self) -> MemoryEmbeddingRepository:
+        return self._repository
+
     async def search(
         self,
         *,

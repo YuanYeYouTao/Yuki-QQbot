@@ -150,6 +150,17 @@ class SelfReflectionProposal(_Contract):
 class SelfEpisodeProposal(_Contract):
     content: str = Field(min_length=1, max_length=4000)
     importance: int = Field(default=3, ge=1, le=5)
+    evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def _trusted_evidence_aliases(self) -> SelfEpisodeProposal:
+        if len(set(self.evidence_refs)) != len(self.evidence_refs):
+            raise ValueError("episode evidence aliases must be unique")
+        if any(
+            not (ref.startswith("event_") or ref.startswith("tool_")) for ref in self.evidence_refs
+        ):
+            raise ValueError("episode evidence may only reference event or tool aliases")
+        return self
 
 
 class SelfReflectionOutput(_Contract):

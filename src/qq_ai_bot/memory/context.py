@@ -162,7 +162,10 @@ class MemoryContextService:
             self_recall=self_recall,
         )
         if runtime.memory.retrieval_enabled:
-            result = await self._retriever.retrieve(query)
+            result = await self._retriever.retrieve(
+                query,
+                diversify=query.mode is MemoryRetrievalMode.RELEVANT,
+            )
             if (
                 query.mode is MemoryRetrievalMode.RELEVANT
                 and runtime.memory.self_enabled

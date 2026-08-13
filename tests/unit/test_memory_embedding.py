@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
 from qq_ai_bot.memory.embedding.fake import FakeEmbeddingProvider
@@ -459,6 +459,114 @@ async def test_worker_reconciles_batches_and_semantic_search_hard_filters_identi
     assert other.id not in {hit.fact.id for hit in result.hits}
     assert provider.query_requests == 1
     assert result.embedding_profile == profile.profile.fingerprint
+
+
+@pytest.mark.asyncio
+async def test_relevant_retrieval_mmr_prefers_a_diverse_valid_vector(database: Database) -> None:
+    facts = MemoryFactService(MemoryFactRepository(database))
+    first = await _fact(facts, user_id="1001", content="偏爱浓烈咖啡风味", key="drink:1")
+    duplicate = await _fact(
+        facts,
+        user_id="1001",
+        content="喜欢浓郁咖啡风味",
+        key="drink:2",
+    )
+    diverse = await _fact(
+        facts,
+        user_id="1001",
+        content="也喜欢清爽水果茶",
+        key="drink:3",
+    )
+    documents = EmbeddingDocumentBuilder(template_version=1, max_characters=4000)
+    provider = FakeEmbeddingProvider(
+        dimensions=4,
+        vectors={
+            documents.build(first): (0.9, 0.4358899, 0.0, 0.0),
+            documents.build(duplicate): (0.9, 0.4358899, 0.0, 0.0),
+            documents.build(diverse): (0.8, -0.6, 0.0, 0.0),
+            "饮品偏好": (1.0, 0.0, 0.0, 0.0),
+        },
+    )
+    embeddings = MemoryEmbeddingRepository(database)
+    profile = await embeddings.ensure_profile(provider.profile)
+    jobs = MemoryEmbeddingJobRepository(database, profile=profile, documents=documents)
+    await jobs.reconcile()
+    worker = MemoryEmbeddingWorker(
+        provider=provider,
+        jobs=jobs,
+        interval_seconds=1,
+        claim_limit=20,
+        max_attempts=3,
+        retry_initial_seconds=1,
+    )
+    assert await worker.process_once() == 3
+    retriever = MemoryRetriever(
+        repository=facts.repository,
+        lexical_index=SQLiteMemoryFTSIndex(database),
+        semantic_index=MemorySemanticIndex(embeddings, documents=documents),
+        embedding_provider=provider,
+        embedding_profile=profile,
+        embedding_queries=EmbeddingQueryBuilder(max_characters=4000),
+        mmr_enabled=True,
+        mmr_lambda=0.75,
+        mmr_candidate_pool_size=20,
+    )
+    result = await retriever.retrieve(
+        MemoryQuery(
+            text="饮品偏好",
+            normalized_text="饮品偏好",
+            mode=MemoryRetrievalMode.RELEVANT,
+            targets=(_target("1001"),),
+            candidate_limit=20,
+            limit_per_target=2,
+            always_on_explicit_preference_limit=0,
+            query_term_limit=5,
+            semantic_min_similarity=-1,
+        ),
+        diversify=True,
+    )
+
+    assert [hit.fact.id for hit in result.hits] == [first.id, diverse.id]
+    assert duplicate.id not in {hit.fact.id for hit in result.hits}
+
+
+@pytest.mark.asyncio
+async def test_embedding_queue_keeps_contested_vectors_for_offline_dream(
+    database: Database,
+) -> None:
+    facts = MemoryFactService(MemoryFactRepository(database))
+    contested = await _fact(
+        facts,
+        user_id="1001",
+        content="这条长期事实仍处于争议中",
+        key="contested:dream",
+    )
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(MemoryFactModel)
+            .where(MemoryFactModel.id == contested.id)
+            .values(status="contested", conflict_state="contested")
+        )
+    documents = EmbeddingDocumentBuilder(template_version=1, max_characters=4000)
+    provider = FakeEmbeddingProvider(dimensions=4)
+    embeddings = MemoryEmbeddingRepository(database)
+    profile = await embeddings.ensure_profile(provider.profile)
+    jobs = MemoryEmbeddingJobRepository(database, profile=profile, documents=documents)
+    assert await jobs.reconcile() == 1
+    worker = MemoryEmbeddingWorker(
+        provider=provider,
+        jobs=jobs,
+        interval_seconds=1,
+        claim_limit=20,
+        max_attempts=3,
+        retry_initial_seconds=1,
+    )
+    assert await worker.process_once() == 1
+    vectors = await embeddings.load_vectors_for_fact_ids(
+        fact_ids=(contested.id,),
+        profile_id=profile.id,
+    )
+    assert contested.id in vectors
 
 
 @pytest.mark.asyncio

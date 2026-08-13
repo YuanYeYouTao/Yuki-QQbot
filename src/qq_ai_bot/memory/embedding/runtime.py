@@ -72,6 +72,14 @@ class MemoryEmbeddingRuntime:
     def enabled(self) -> bool:
         return self._settings.memory_embedding_enabled
 
+    @property
+    def profile_id(self) -> int | None:
+        return self._profile_id
+
+    @property
+    def dimensions(self) -> int:
+        return self._settings.memory_embedding_dimensions
+
     async def start(self) -> None:
         if self.provider is None:
             return

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -18,6 +19,14 @@ from qq_ai_bot.memory.auditing import (
     UserMemoryAuditor,
 )
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
+from qq_ai_bot.memory.dream.repository import DreamRepository
+from qq_ai_bot.memory.dream.service import DreamService
+from qq_ai_bot.memory.dream.worker import DreamWorker
+from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
+from qq_ai_bot.memory.evidence_compaction import (
+    EvidenceCompactionService,
+    EvidenceCompactionWorker,
+)
 from qq_ai_bot.memory.governance import MemoryGovernanceRepository, MemoryGovernanceWorker
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
@@ -79,6 +88,8 @@ class ConversationBundle:
     memory_maintenance_worker: MemoryMaintenanceWorker
     memory_reflection_worker: MemoryGovernanceWorker
     memory_self_reflection_worker: SelfReflectionWorker
+    memory_dream_worker: DreamWorker
+    memory_evidence_compaction_worker: EvidenceCompactionWorker
     relationship_worker: RelationshipWorker
 
 
@@ -99,6 +110,7 @@ class ConversationModule:
         speech: SpeechService,
         speech_effects: VoiceReplyEffectService,
         voice_preferences: VoicePreferenceService,
+        memory_embeddings: MemoryEmbeddingRuntime,
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_invocations: ToolInvocationRecorder | None = None,
     ) -> None:
@@ -115,6 +127,7 @@ class ConversationModule:
         self._speech = speech
         self._speech_effects = speech_effects
         self._voice_preferences = voice_preferences
+        self._memory_embeddings = memory_embeddings
         self._tool_artifacts = tool_artifacts
         self._tool_invocations = tool_invocations
 
@@ -283,6 +296,32 @@ class ConversationModule:
             ),
             metrics=persistence.memory_metrics,
         )
+        memory_dream_repository = DreamRepository(persistence.database)
+        memory_maintenance_lock = asyncio.Lock()
+        memory_evidence_compaction_worker = EvidenceCompactionWorker(
+            settings=settings,
+            service=EvidenceCompactionService(
+                settings=settings,
+                database=persistence.database,
+                facts=persistence.memories,
+            ),
+            process_lock=memory_maintenance_lock,
+        )
+        memory_dream_worker = DreamWorker(
+            settings=settings,
+            repository=memory_dream_repository,
+            service=DreamService(
+                settings=settings,
+                repository=memory_dream_repository,
+                facts=persistence.memories,
+                mutations=memory_mutations,
+                embeddings=self._memory_embeddings,
+                models=models,
+                concurrency=self._concurrency,
+            ),
+            process_lock=memory_maintenance_lock,
+            compaction_active=lambda: memory_evidence_compaction_worker.holding_lock,
+        )
         relationship_worker = RelationshipWorker(
             settings=settings,
             jobs=persistence.relationship_jobs,
@@ -311,6 +350,8 @@ class ConversationModule:
             memory_maintenance_worker,
             memory_reflection_worker,
             memory_self_reflection_worker,
+            memory_dream_worker,
+            memory_evidence_compaction_worker,
             relationship_worker,
         )
 
@@ -340,6 +381,17 @@ class ConversationModule:
             "memory_self_reflection_worker",
             start=bundle.memory_self_reflection_worker.start,
             close=bundle.memory_self_reflection_worker.close,
+        )
+        lifecycle.register(
+            "memory_dream_worker",
+            start=bundle.memory_dream_worker.start,
+            close=bundle.memory_dream_worker.close,
+            health=bundle.memory_dream_worker.health,
+        )
+        lifecycle.register(
+            "memory_evidence_compaction_worker",
+            start=bundle.memory_evidence_compaction_worker.start,
+            close=bundle.memory_evidence_compaction_worker.close,
         )
         lifecycle.register(
             "relationship_worker",

@@ -29,7 +29,7 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
-_ALEMBIC_HEAD = "0031"
+_ALEMBIC_HEAD = "0034"
 
 
 class MemoryReleaseCheck:
@@ -44,7 +44,7 @@ class MemoryReleaseCheck:
         items.append(
             self._item(
                 "version",
-                __version__ == "3.4.6",
+                __version__ == "3.5.0",
                 f"project version is {__version__}",
             )
         )

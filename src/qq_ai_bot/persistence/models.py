@@ -616,6 +616,13 @@ class MemoryMutationReceiptModel(Base):
             "'no_change','rejected')",
             name="ck_memory_mutation_outcome",
         ),
+        CheckConstraint(
+            "(trigger_source_type = 'chat_event' AND trigger_event_id IS NOT NULL "
+            "AND dream_operation_id IS NULL) OR "
+            "(trigger_source_type = 'dream_operation' AND trigger_event_id IS NULL "
+            "AND dream_operation_id IS NOT NULL)",
+            name="ck_memory_mutation_trigger_source",
+        ),
         Index(
             "ix_memory_mutation_receipts_event_created",
             "trigger_event_id",
@@ -635,8 +642,14 @@ class MemoryMutationReceiptModel(Base):
     idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
     claim_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     target_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
-    trigger_event_id: Mapped[int] = mapped_column(
-        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    trigger_source_type: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="chat_event", server_default="chat_event"
+    )
+    trigger_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=True
+    )
+    dream_operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_dream_operations.id", ondelete="CASCADE"), nullable=True
     )
     conversation_key: Mapped[str] = mapped_column(String(255), nullable=False)
     current_group_id: Mapped[str | None] = mapped_column(
@@ -837,6 +850,33 @@ class MemorySelfReflectionRunModel(Base):
     error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MemorySelfReflectionResultModel(Base):
+    """Atomic mapping from a reflection run to each durable result."""
+
+    __tablename__ = "memory_self_reflection_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "result_kind", "result_index", name="uq_self_reflection_result_position"
+        ),
+        CheckConstraint(
+            "result_kind IN ('episode','proposal')",
+            name="ck_self_reflection_result_kind",
+        ),
+        Index("ix_self_reflection_results_fact", "fact_id", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_self_reflection_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    result_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    result_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class MemoryReflectionJobModel(Base):

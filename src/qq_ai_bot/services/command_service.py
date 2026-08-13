@@ -533,6 +533,8 @@ class CommandService:
             "/ai memory conflicts [user <QQ号>] | correct | invalidate | restore\n"
             "/ai memory merge|resolve|doctor|maintenance（超级管理员操作按权限执行）\n"
             "/ai memory self-reflection run（超级管理员立即运行一轮自省）\n"
+            "/ai memory dream plan|start|list|status|show|preview|cancel|resume|retry|rollback"
+            "（超级管理员）\n"
             "/ai memory search person <QQ号> <query>（超级管理员）\n"
             "/ai memory search group <群号> <query>（超级管理员）\n"
             "/ai memory index status|rebuild（超级管理员）\n"

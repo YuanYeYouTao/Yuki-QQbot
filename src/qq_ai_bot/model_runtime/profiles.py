@@ -71,6 +71,7 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
     ModelTask.MEMORY_EXTRACTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.MEMORY_SELF_REFLECTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.MEMORY_CONSOLIDATION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
+    ModelTask.MEMORY_DREAM: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.RELATIONSHIP_EVALUATION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.EMOJI_REPLACEMENT: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.AUTOMATION_TEXT_GENERATION: frozenset(),
@@ -170,6 +171,16 @@ def load_model_profile_catalog(
             )
             raw_routes[ModelTask.MEMORY_CONSOLIDATION.value] = raw_routes[
                 ModelTask.MEMORY_EXTRACTION.value
+            ]
+        if (
+            ModelTask.MEMORY_DREAM.value not in raw_routes
+            and ModelTask.MEMORY_CONSOLIDATION.value in raw_routes
+        ):
+            logger.warning(
+                "model_route_compatibility task=memory_dream source=memory_consolidation"
+            )
+            raw_routes[ModelTask.MEMORY_DREAM.value] = raw_routes[
+                ModelTask.MEMORY_CONSOLIDATION.value
             ]
         routes = {
             ModelTask(task_name): ModelRoute(

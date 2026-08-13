@@ -194,6 +194,25 @@ class Settings(BaseSettings):
     memory_consolidation_min_relevance: float = 0.25
     memory_consolidation_model_task: str = "memory_consolidation"
     memory_consolidation_max_output_tokens: int = 1200
+    memory_dream_enabled: bool = True
+    memory_dream_schedule_hour: int = Field(default=5, ge=0, le=23)
+    memory_dream_timezone: str = "Asia/Shanghai"
+    memory_dream_poll_seconds: float = Field(default=60.0, gt=0)
+    memory_dream_max_clusters_per_run: int = Field(default=12, gt=0, le=100)
+    memory_dream_max_model_calls_per_run: int = Field(default=12, gt=0, le=200)
+    memory_dream_similarity_threshold: float = Field(default=0.70, ge=-1, le=1)
+    memory_dream_max_cluster_size: int = Field(default=6, ge=2, le=20)
+    memory_dream_max_input_characters: int = Field(default=24_000, gt=0, le=100_000)
+    memory_dream_max_output_tokens: int = Field(default=2400, gt=0)
+    memory_dream_episode_max_characters: int = Field(default=800, ge=200, le=4000)
+    memory_dream_episode_compression_ratio: float = Field(default=0.45, gt=0, le=1)
+    memory_dream_evidence_per_fact: int = Field(default=2, ge=1, le=10)
+    memory_dream_evidence_excerpt_characters: int = Field(default=300, gt=0, le=2000)
+    memory_evidence_compaction_enabled: bool = True
+    memory_evidence_compaction_batch_size: int = Field(default=20, ge=1, le=100)
+    memory_mmr_enabled: bool = True
+    memory_mmr_lambda: float = Field(default=0.75, ge=0, le=1)
+    memory_mmr_candidate_pool_size: int = Field(default=20, gt=0, le=100)
     memory_evidence_weight_explicit: float = 1.0
     memory_evidence_weight_self: float = 0.9
     memory_evidence_weight_group: float = 0.7
@@ -529,6 +548,16 @@ class Settings(BaseSettings):
             ZoneInfo(normalized)
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError("DEFAULT_TIMEZONE must be a valid IANA timezone") from exc
+        return normalized
+
+    @field_validator("memory_dream_timezone")
+    @classmethod
+    def _valid_memory_dream_timezone(cls, value: str) -> str:
+        normalized = value.strip()
+        try:
+            ZoneInfo(normalized)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("MEMORY_DREAM_TIMEZONE must be a valid IANA timezone") from exc
         return normalized
 
     @field_validator("plugin_api_version")

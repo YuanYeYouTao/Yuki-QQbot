@@ -1,6 +1,6 @@
 [project]
 name = "qq-ai-bot"
-version = "3.4.6"
+version = "3.5.0"
 description = "基于 NoneBot2、OneBot v11 与 NapCatQQ 的个人 QQ AI 聊天机器人"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

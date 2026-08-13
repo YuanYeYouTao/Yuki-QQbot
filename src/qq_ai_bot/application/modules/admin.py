@@ -18,6 +18,7 @@ from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.emoji.worker import EmojiWorker
 from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.dream.worker import DreamWorker
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
@@ -83,6 +84,7 @@ class AdminModule:
         memory_mutations: MemoryMutationService,
         ledger: EventLedgerRepository,
         memory_self_reflection: SelfReflectionWorker,
+        memory_dream: DreamWorker,
     ) -> None:
         self._settings = settings
         self._database = database
@@ -108,6 +110,7 @@ class AdminModule:
         self._memory_mutations = memory_mutations
         self._ledger = ledger
         self._memory_self_reflection = memory_self_reflection
+        self._memory_dream = memory_dream
 
     def build(self) -> AdminBundle:
         audit = AdminAuditService(self._database)
@@ -130,6 +133,7 @@ class AdminModule:
             mutations=self._memory_mutations,
             ledger=self._ledger,
             self_reflection=self._memory_self_reflection,
+            dream=self._memory_dream,
         )
         preferences = PreferenceAdminService(
             settings=self._settings,
