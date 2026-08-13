@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -21,6 +23,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamRunStatus,
 )
 from qq_ai_bot.memory.dream.repository import DreamRepository, fact_signature
+from qq_ai_bot.memory.dream.service import DreamService
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryEvidenceRelation,
@@ -30,7 +33,12 @@ from qq_ai_bot.memory.enums import (
     MemorySourceType,
     MemoryStatus,
 )
-from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFact, MemoryFactCreate
+from qq_ai_bot.memory.models import (
+    MemoryEvidence,
+    MemoryEvidenceCreate,
+    MemoryFact,
+    MemoryFactCreate,
+)
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
@@ -68,6 +76,22 @@ def _services(
         ledger,
         DreamRepository(database),
     )
+
+
+def test_dream_selects_only_first_and_last_evidence_when_limit_is_two() -> None:
+    service = object.__new__(DreamService)
+    service._settings = cast(
+        object,
+        SimpleNamespace(memory_dream_evidence_per_fact=2),
+    )
+    now = datetime.now(UTC)
+    rows = tuple(
+        SimpleNamespace(id=index, created_at=now + timedelta(seconds=index)) for index in range(5)
+    )
+
+    selected = service._select_evidence(cast(tuple[MemoryEvidence, ...], rows))
+
+    assert [item.id for item in selected] == [0, 4]  # type: ignore[attr-defined]
 
 
 async def _fact_with_evidence(

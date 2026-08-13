@@ -510,6 +510,8 @@ class DreamService:
             return ordered
         if limit == 1:
             return (ordered[-1],)
+        if limit == 2:
+            return (ordered[0], ordered[-1])
         middle = ordered[1:-1]
         return (ordered[0], *middle[-(limit - 2) :], ordered[-1])
 
