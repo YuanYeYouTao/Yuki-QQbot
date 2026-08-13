@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from math import cos, radians, sin
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import func, select
@@ -133,6 +134,47 @@ def test_episode_recompose_can_split_one_source_into_multiple_outputs() -> None:
     assert len(action.outputs) == 2
 
 
+def test_dream_keep_can_explicitly_preserve_several_independent_sources() -> None:
+    service = object.__new__(DreamService)
+    service._settings = cast(
+        object,
+        SimpleNamespace(
+            memory_dream_episode_max_characters=800,
+            memory_dream_episode_compression_ratio=0.45,
+            memory_dream_episode_hard_compression_ratio=0.70,
+        ),
+    )
+    memories = tuple(
+        DreamMemoryInput(
+            ref=f"memory_{index}",
+            kind="episode",
+            category="self_episode",
+            memory_key=f"episode:keep:{index}",
+            content=f"第 {index} 件已经清楚而独立的经历",
+            importance=3,
+            confidence=1.0,
+            source_type="automatic",
+            authority="agent_reflection",
+            status="active",
+            conflict_state="clear",
+        )
+        for index in range(1, 6)
+    )
+    output = DreamOutput(
+        actions=(
+            DreamAction(
+                operation=DreamOperationType.KEEP,
+                source_refs=tuple(memory.ref for memory in memories),
+            ),
+        )
+    )
+
+    service._validate_output(
+        DreamInput(scope_type="self", kind="episode", memories=memories),
+        output,
+    )
+
+
 def test_episode_recompose_rejects_an_uncompressed_long_output() -> None:
     service = object.__new__(DreamService)
     service._settings = cast(
@@ -140,6 +182,7 @@ def test_episode_recompose_rejects_an_uncompressed_long_output() -> None:
         SimpleNamespace(
             memory_dream_episode_max_characters=800,
             memory_dream_episode_compression_ratio=0.45,
+            memory_dream_episode_hard_compression_ratio=0.70,
         ),
     )
     payload = DreamInput(
@@ -170,7 +213,7 @@ def test_episode_recompose_rejects_an_uncompressed_long_output() -> None:
                     DreamRecomposeOutput(
                         focus="未充分压缩的经历",
                         source_refs=("memory_1",),
-                        content="乙" * 600,
+                        content="乙" * 750,
                         importance=3,
                     ),
                 ),
@@ -238,6 +281,7 @@ def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits()
         SimpleNamespace(
             memory_dream_episode_max_characters=800,
             memory_dream_episode_compression_ratio=0.45,
+            memory_dream_episode_hard_compression_ratio=0.70,
         ),
     )
     memories = tuple(
@@ -274,8 +318,155 @@ def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits()
             ),
         )
     )
+    service._validate_output(payload, output)
     with pytest.raises(ValueError, match="did not compress"):
-        service._validate_output(payload, output)
+        service._validate_compression_target(payload, output)
+
+
+@pytest.mark.asyncio
+async def test_episode_decision_keeps_first_hard_valid_proposal_when_repair_fails() -> None:
+    service = object.__new__(DreamService)
+    service._settings = cast(
+        object,
+        SimpleNamespace(
+            memory_dream_episode_max_characters=800,
+            memory_dream_episode_compression_ratio=0.45,
+            memory_dream_episode_hard_compression_ratio=0.70,
+            memory_dream_max_output_tokens=2400,
+            bot_display_name="Yuki",
+            bot_persona="测试人格",
+        ),
+    )
+    payload = DreamInput(
+        scope_type="self",
+        kind="episode",
+        memories=(
+            DreamMemoryInput(
+                ref="memory_1",
+                kind="episode",
+                category="self_episode",
+                memory_key="episode:fallback",
+                content="甲" * 1000,
+                importance=3,
+                confidence=1.0,
+                source_type="automatic",
+                authority="agent_reflection",
+                status="active",
+                conflict_state="clear",
+            ),
+        ),
+    )
+    first = DreamOutput(
+        actions=(
+            DreamAction(
+                operation=DreamOperationType.RECOMPOSE,
+                source_refs=("memory_1",),
+                outputs=(
+                    DreamRecomposeOutput(
+                        focus="第一次合法但未达到目标的整理",
+                        source_refs=("memory_1",),
+                        content="乙" * 600,
+                        importance=3,
+                    ),
+                ),
+            ),
+        )
+    )
+    repaired = first.model_copy(
+        update={
+            "actions": (
+                first.actions[0].model_copy(
+                    update={
+                        "outputs": (
+                            first.actions[0].outputs[0].model_copy(
+                                update={"content": "丙" * 750}
+                            ),
+                        )
+                    }
+                ),
+            )
+        }
+    )
+    service._run_model = AsyncMock(side_effect=(first, repaired))  # type: ignore[method-assign]
+    service._reserve_model_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    result, calls = await service._decide(
+        payload,
+        self_memory=False,
+        run=cast(object, SimpleNamespace(public_id="run-1")),  # type: ignore[arg-type]
+        cluster=cast(object, SimpleNamespace(id=1)),  # type: ignore[arg-type]
+    )
+
+    assert result == first
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_episode_decision_prefers_shorter_hard_valid_repair() -> None:
+    service = object.__new__(DreamService)
+    service._settings = cast(
+        object,
+        SimpleNamespace(
+            memory_dream_episode_max_characters=800,
+            memory_dream_episode_compression_ratio=0.45,
+            memory_dream_episode_hard_compression_ratio=0.70,
+            memory_dream_max_output_tokens=2400,
+            bot_display_name="Yuki",
+            bot_persona="测试人格",
+        ),
+    )
+    payload = DreamInput(
+        scope_type="self",
+        kind="episode",
+        memories=(
+            DreamMemoryInput(
+                ref="memory_1",
+                kind="episode",
+                category="self_episode",
+                memory_key="episode:shorter",
+                content="甲" * 1000,
+                importance=3,
+                confidence=1.0,
+                source_type="automatic",
+                authority="agent_reflection",
+                status="active",
+                conflict_state="clear",
+            ),
+        ),
+    )
+
+    def proposal(character: str, length: int) -> DreamOutput:
+        return DreamOutput(
+            actions=(
+                DreamAction(
+                    operation=DreamOperationType.RECOMPOSE,
+                    source_refs=("memory_1",),
+                    outputs=(
+                        DreamRecomposeOutput(
+                            focus="压缩后的单一经历",
+                            source_refs=("memory_1",),
+                            content=character * length,
+                            importance=3,
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    first = proposal("乙", 600)
+    repaired = proposal("丙", 500)
+    service._run_model = AsyncMock(side_effect=(first, repaired))  # type: ignore[method-assign]
+    service._reserve_model_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    result, calls = await service._decide(
+        payload,
+        self_memory=False,
+        run=cast(object, SimpleNamespace(public_id="run-2")),  # type: ignore[arg-type]
+        cluster=cast(object, SimpleNamespace(id=2)),  # type: ignore[arg-type]
+    )
+
+    assert result == repaired
+    assert calls == 2
 
 
 async def _fact_with_evidence(

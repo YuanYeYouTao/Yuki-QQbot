@@ -232,6 +232,7 @@ class MemorySettings(DomainSettings):
     memory_dream_max_output_tokens: int = Field(gt=0)
     memory_dream_episode_max_characters: int = Field(ge=200, le=4000)
     memory_dream_episode_compression_ratio: float = Field(gt=0, le=1)
+    memory_dream_episode_hard_compression_ratio: float = Field(gt=0, le=1)
     memory_dream_evidence_per_fact: int = Field(ge=1, le=10)
     memory_dream_evidence_excerpt_characters: int = Field(gt=0, le=2000)
     memory_evidence_compaction_enabled: bool
@@ -328,6 +329,13 @@ class MemorySettings(DomainSettings):
             raise ValueError(
                 "memory self-reflection high character watermark cannot exceed "
                 "batch character limit"
+            )
+        if (
+            self.memory_dream_episode_hard_compression_ratio
+            < self.memory_dream_episode_compression_ratio
+        ):
+            raise ValueError(
+                "memory Dream hard compression ratio cannot be below its target ratio"
             )
         return self
 

@@ -39,13 +39,24 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 logger = logging.getLogger(__name__)
 
+
+class DreamQualityError(ValueError):
+    """A deterministic Dream proposal rule failed after schema validation."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
 _RECOMPOSE_QUALITY_INSTRUCTION = """\
 For Episode recompose, memory_N is a source container, not an indivisible event. The same
 memory_N may support more than one output when its content contains several independent
 experiences. Each output must include a unique focus (1-120 characters) for decision and audit;
 focus is not part of the Episode body. Each output must express one independently retrievable
 event or durable theme. It is acceptable to omit ordinary chat details with no long-term value,
-but every source container must be handled by at least one action. Before returning, check every
+but every source container must be handled by at least one action. A reviewed cluster does not
+have to be changed: use one keep action for several independent, already-clear memories. Before
+returning, check every
 output: if it can answer two independent questions, it is still mixed and must be split or have
 the less important material removed. Every sentence in content must directly support its focus;
 remove side topics, unrelated tasks, and chronological bridges even when they came from the same
@@ -61,8 +72,9 @@ _INSTRUCTION = """\
 先比较全部输入，再按以下顺序决策：
 1. 一条记忆只是另一条的重复、缩写、子集或近义改写，没有值得单独保留的新内容时，使用 merge。
 2. 非 Episode 记忆确属同一个稳定事实或偏好的互补表达时，才使用 synthesize。
-3. 输入代表相互独立的事实、偏好或经历时分别 keep；同一天、同一群、相同参与者或前后相邻，
-   都不能单独证明它们属于同一件事。
+3. 输入代表相互独立的事实、偏好或经历时使用 keep；同一天、同一群、相同参与者或前后相邻，
+   都不能单独证明它们属于同一件事。Dream 没有义务修改每个候选簇；多条独立且已经清楚的来源
+   可以放进同一个 keep action，表示它们都经过检查但保持原样。
 4. evidence 冲突且暂时无法判断时使用 contest；已有争议且证据足以确定可信锚点时使用 resolve。
 
 处理 Episode 时，先判断材料中有几个能够被独立回忆和独立召回的中心事件，再使用 recompose 输出
@@ -77,15 +89,16 @@ _INSTRUCTION = """\
 
 整个簇最多使用一个 recompose action。需要改写或拆分的所有来源都放进这个 action.source_refs；
 所有新 Episode 都放进同一个 action.outputs。同一个 memory_N 若支持多个事件，就在这个 outputs 数组中
-重复引用它，绝不能把同一个 memory_N 分散到两个 action。边界已经清楚且无需改写的来源可以各自 keep。
+重复引用它，绝不能把同一个 memory_N 分散到两个 action。边界已经清楚且无需改写的来源应当 keep；
+多个相互独立、均无需改写的来源可以由同一个 keep action 一次覆盖。
 例如两个来源要拆为两件事时，应返回一个 source_refs=[memory_1,memory_2] 的 recompose action，下面
 放两个都完整包含 focus、source_refs、content、importance 的 output。
 
 Episode 要略写和压缩。保留核心经过、结果、关系或认识的变化，以及值得长期记住的主要感受；省略
-逐轮问答、候选枚举、重复解释、无关玩笑和不影响结果的工具中间步骤。普通正文以 150 至 450 字为宜，
+逐轮问答、候选枚举、重复解释、无关玩笑和不影响结果的工具中间步骤。普通正文以 80 至 300 字为宜，
 复杂经历也不得超过 800 字。宁可输出两条边界清楚的短回忆，也不要输出一条跨越多个话题的长回忆。
 
-每条 memory_N 必须且只能出现在一个 action 中，不得遗漏；keep 每次只能包含一个 source_ref。
+每条 memory_N 必须且只能出现在一个 action 中，不得遗漏；一个 keep 可以包含多条无需改写的来源。
 merge、synthesize、resolve 必须提供属于 source_refs 的 anchor_ref；不同 action 的 source_refs 不能
 重叠。只有 synthesize 必须输出 content，并且可以输出 importance；keep、merge、contest、resolve
 必须省略 content、importance 和 outputs。recompose 必须省略 anchor_ref、content 和 importance，
@@ -592,45 +605,100 @@ class DreamService:
         expected = {item.ref for item in payload.memories}
         used = {ref for action in output.actions for ref in action.source_refs}
         if used != expected:
-            raise ValueError("dream output must cover every input memory exactly once")
+            raise DreamQualityError(
+                "dream_source_coverage_failed",
+                "dream output must cover every input memory exactly once",
+            )
         by_ref = {item.ref: item for item in payload.memories}
-        recomposed_refs: set[str] = set()
         for action in output.actions:
             if payload.kind != MemoryKind.EPISODE.value:
                 if action.operation is DreamOperationType.RECOMPOSE:
-                    raise ValueError("dream recompose is only available for episodes")
+                    raise DreamQualityError(
+                        "dream_episode_operation_invalid",
+                        "dream recompose is only available for episodes",
+                    )
                 continue
             if action.operation is DreamOperationType.SYNTHESIZE:
-                raise ValueError("episodes must use recompose instead of synthesize")
+                raise DreamQualityError(
+                    "dream_episode_operation_invalid",
+                    "episodes must use recompose instead of synthesize",
+                )
             if action.operation is not DreamOperationType.RECOMPOSE:
                 continue
-            recomposed_refs.update(action.source_refs)
             source_rows = tuple(by_ref[ref] for ref in action.source_refs)
             if any(
                 row.source_type == MemorySourceType.EXPLICIT.value
                 or row.authority == MemoryAuthority.EXPLICIT.value
                 for row in source_rows
             ):
-                raise ValueError("dream cannot recompose an explicit episode")
+                raise DreamQualityError(
+                    "dream_explicit_episode_protected",
+                    "dream cannot recompose an explicit episode",
+                )
             contents = tuple(item.content.strip() for item in action.outputs)
             if len({item.casefold() for item in contents}) != len(contents):
-                raise ValueError("dream recompose emitted duplicate episode outputs")
+                raise DreamQualityError(
+                    "dream_duplicate_outputs",
+                    "dream recompose emitted duplicate episode outputs",
+                )
             if any(
                 len(content) > self._settings.memory_dream_episode_max_characters
                 for content in contents
             ):
-                raise ValueError("dream recompose episode exceeds the character limit")
-            source_characters = sum(len(row.content) for row in source_rows)
-            output_characters = sum(len(content) for content in contents)
-            allowed = self._episode_compression_limit(source_characters)
+                raise DreamQualityError(
+                    "dream_output_too_long",
+                    "dream recompose episode exceeds the character limit",
+                )
+        self._validate_episode_compression(
+            payload,
+            output,
+            ratio=self._settings.memory_dream_episode_hard_compression_ratio,
+            code="dream_compression_hard_failed",
+        )
+
+    def _validate_compression_target(self, payload: DreamInput, output: DreamOutput) -> None:
+        self._validate_episode_compression(
+            payload,
+            output,
+            ratio=self._settings.memory_dream_episode_compression_ratio,
+            code="dream_compression_soft_miss",
+        )
+
+    def _validate_episode_compression(
+        self,
+        payload: DreamInput,
+        output: DreamOutput,
+        *,
+        ratio: float,
+        code: str,
+    ) -> None:
+        if payload.kind != MemoryKind.EPISODE.value:
+            return
+        by_ref = {item.ref: item for item in payload.memories}
+        recomposed_refs: set[str] = set()
+        for action in output.actions:
+            if action.operation is not DreamOperationType.RECOMPOSE:
+                continue
+            recomposed_refs.update(action.source_refs)
+            source_characters = sum(len(by_ref[ref].content) for ref in action.source_refs)
+            output_characters = sum(len(item.content.strip()) for item in action.outputs)
+            allowed = self._episode_compression_limit(source_characters, ratio=ratio)
             if output_characters > allowed:
-                raise ValueError("dream recompose did not compress the source episodes")
+                raise DreamQualityError(
+                    code,
+                    "dream recompose did not compress the source episodes "
+                    f"enough: output={output_characters} allowed={allowed}",
+                )
         if recomposed_refs:
             source_characters = sum(len(by_ref[ref].content) for ref in recomposed_refs)
             output_characters = self._output_characters(output)
-            allowed = self._episode_compression_limit(source_characters)
+            allowed = self._episode_compression_limit(source_characters, ratio=ratio)
             if output_characters > allowed:
-                raise ValueError("dream output did not meet the total episode compression ratio")
+                raise DreamQualityError(
+                    code,
+                    "dream output did not meet the total episode compression ratio: "
+                    f"output={output_characters} allowed={allowed}",
+                )
 
     @staticmethod
     def _output_characters(output: DreamOutput) -> int:
@@ -699,37 +767,47 @@ class DreamService:
     ) -> tuple[DreamOutput, int]:
         instruction = self._instruction(self_memory=self_memory, payload=payload)
         calls = 0
+        first_hard_valid: DreamOutput | None = None
         try:
             if not await self._reserve_model_call(run, cluster):
                 raise RuntimeError("memory_dream_model_call_budget_exhausted")
             calls += 1
             result = await self._run_model(instruction, payload)
             self._validate_output(payload, result)
+            first_hard_valid = result
+            self._validate_compression_target(payload, result)
         except (StructuredTaskError, ValueError) as exc:
             if not await self._reserve_model_call(run, cluster):
+                if first_hard_valid is not None:
+                    return first_hard_valid, calls
                 raise
             calls += 1
-            reason = exc.reason_code if isinstance(exc, StructuredTaskError) else str(exc)
+            reason = self._quality_reason(exc)
             repair = self._repair_instruction(instruction, exc, reason=reason)
             try:
-                result = await self._run_model(repair, payload)
-                self._validate_output(payload, result)
+                repaired = await self._run_model(repair, payload)
+                self._validate_output(payload, repaired)
             except (StructuredTaskError, ValueError) as repair_exc:
-                reason_code = (
-                    repair_exc.reason_code
-                    if isinstance(repair_exc, StructuredTaskError)
-                    else "dream_quality_validation_failed"
-                )
+                if first_hard_valid is not None:
+                    logger.info(
+                        "memory_dream_quality_fallback run_id=%s cluster_id=%d "
+                        "repair_error=%s",
+                        run.public_id,
+                        cluster.id,
+                        self._quality_reason(repair_exc),
+                    )
+                    return first_hard_valid, calls
                 raise StructuredTaskError(
                     "Memory Dream structured output remained invalid after repair",
-                    reason_code=reason_code,
-                    detail=(
-                        repair_exc.detail
-                        if isinstance(repair_exc, StructuredTaskError)
-                        else str(repair_exc)
-                    ),
+                    reason_code=self._quality_reason(repair_exc),
+                    detail=self._quality_detail(repair_exc),
                     attempts=calls,
                 ) from repair_exc
+            result = (
+                self._preferred_output(first_hard_valid, repaired)
+                if first_hard_valid is not None
+                else repaired
+            )
         refs = {item.ref for item in payload.memories}
         for action in result.actions:
             if not set(action.source_refs).issubset(refs):
@@ -743,16 +821,52 @@ class DreamService:
         self_memory: bool,
     ) -> tuple[DreamOutput, int]:
         instruction = self._instruction(self_memory=self_memory, payload=payload)
+        first_hard_valid: DreamOutput | None = None
         try:
             result = await self._run_model(instruction, payload)
             self._validate_output(payload, result)
+            first_hard_valid = result
+            self._validate_compression_target(payload, result)
             return result, 1
         except (StructuredTaskError, ValueError) as exc:
-            reason = exc.reason_code if isinstance(exc, StructuredTaskError) else str(exc)
+            reason = self._quality_reason(exc)
             repair = self._repair_instruction(instruction, exc, reason=reason)
-            result = await self._run_model(repair, payload)
-            self._validate_output(payload, result)
-            return result, 2
+            try:
+                repaired = await self._run_model(repair, payload)
+                self._validate_output(payload, repaired)
+            except (StructuredTaskError, ValueError):
+                if first_hard_valid is not None:
+                    return first_hard_valid, 2
+                raise
+            return (
+                self._preferred_output(first_hard_valid, repaired)
+                if first_hard_valid is not None
+                else repaired,
+                2,
+            )
+
+    @classmethod
+    def _preferred_output(cls, first: DreamOutput, repaired: DreamOutput) -> DreamOutput:
+        return min(
+            (first, repaired),
+            key=lambda item: (cls._output_characters(item), len(item.actions)),
+        )
+
+    @staticmethod
+    def _quality_reason(error: StructuredTaskError | ValueError) -> str:
+        if isinstance(error, StructuredTaskError):
+            return error.reason_code
+        if isinstance(error, DreamQualityError):
+            return error.code
+        return "dream_quality_validation_failed"
+
+    @staticmethod
+    def _quality_detail(error: StructuredTaskError | ValueError) -> str:
+        if isinstance(error, StructuredTaskError):
+            return error.detail
+        if isinstance(error, DreamQualityError):
+            return error.detail
+        return str(error)
 
     @staticmethod
     def _repair_instruction(
@@ -765,6 +879,8 @@ class DreamService:
         return (
             f"{instruction}\n上一次输出无效：{reason}；具体位置：{detail or 'unknown'}。"
             "请重新划分语义事件、删掉所有不直接服务 focus 的旁支，并充分压缩。"
+            "如果这些来源只是主题接近但各自独立，或继续压缩会损害独立召回，请使用一个 keep "
+            "action 覆盖所有无需改写的来源，不要为了产生新记忆而强行合并。"
             "必须重新返回完整结果：每个 recompose output 都要同时包含 focus、source_refs、"
             "content、importance；整个簇最多一个 recompose action、合计最多 4 个 outputs。"
             "同一来源的拆分必须放在该 action 的 outputs 内，不能把来源重复放进多个 action。"
@@ -774,13 +890,20 @@ class DreamService:
         instruction = f"{_INSTRUCTION}\n{_RECOMPOSE_QUALITY_INSTRUCTION}"
         if payload.kind == MemoryKind.EPISODE.value:
             source_characters = sum(len(item.content) for item in payload.memories)
-            hard_limit = self._episode_compression_limit(source_characters)
-            target = max(150, min(450, int(hard_limit * 0.8)))
+            target = self._episode_compression_limit(
+                source_characters,
+                ratio=self._settings.memory_dream_episode_compression_ratio,
+            )
+            hard_limit = self._episode_compression_limit(
+                source_characters,
+                ratio=self._settings.memory_dream_episode_hard_compression_ratio,
+            )
             instruction += (
                 f"\n本簇 Episode 原文共 {source_characters} 字。若全部 recompose，所有 output "
-                f"正文合计硬上限为 {hard_limit} 字，建议控制在 {target} 字以内；若部分来源 "
-                "keep，recompose 可用上限会按其实际来源进一步缩小。这个预算是整个簇合计，"
-                "不是每条 output 各自可用。"
+                f"正文合计目标为 {target} 字以内，最终硬上限为 {hard_limit} 字；优先达到目标，"
+                "但不要为了硬压缩而混合或损坏独立经历。若来源彼此独立且已经清楚，应直接 keep。"
+                "若部分来源 keep，recompose 的目标和硬上限会按其实际来源进一步缩小。"
+                "这些预算都是整个簇合计，不是每条 output 各自可用。"
             )
         if self_memory:
             instruction += (
@@ -799,10 +922,13 @@ class DreamService:
             )
         return instruction
 
-    def _episode_compression_limit(self, source_characters: int) -> int:
+    def _episode_compression_limit(self, source_characters: int, *, ratio: float) -> int:
         return max(
-            min(450, self._settings.memory_dream_episode_max_characters),
-            int(source_characters * self._settings.memory_dream_episode_compression_ratio),
+            1,
+            min(
+                self._settings.memory_dream_episode_max_characters,
+                int(source_characters * ratio),
+            ),
         )
 
     async def _reserve_model_call(self, run: DreamRun, cluster: DreamCluster) -> bool:

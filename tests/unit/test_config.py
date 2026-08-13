@@ -18,6 +18,25 @@ def test_deepseek_reasoning_effort_accepts_max() -> None:
     assert settings.model_runtime.llm_reasoning_effort is ReasoningEffort.MAX
 
 
+def test_memory_dream_hard_compression_ratio_cannot_be_below_target() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="hard compression ratio cannot be below its target ratio",
+    ):
+        Settings(
+            _env_file=None,
+            memory_dream_episode_compression_ratio=0.70,
+            memory_dream_episode_hard_compression_ratio=0.45,
+        )
+
+
+def test_memory_dream_compression_defaults_keep_quality_headroom() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.memory_dream_episode_compression_ratio == 0.45
+    assert settings.memory_dream_episode_hard_compression_ratio == 0.70
+
+
 def test_system_prompt_file_overrides_inline_prompt(tmp_path: Path) -> None:
     prompt_file = tmp_path / "system_prompt.md"
     prompt_file.write_text("# Role\n\nExternal prompt\n", encoding="utf-8")

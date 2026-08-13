@@ -206,6 +206,7 @@ class Settings(BaseSettings):
     memory_dream_max_output_tokens: int = Field(default=2400, gt=0)
     memory_dream_episode_max_characters: int = Field(default=800, ge=200, le=4000)
     memory_dream_episode_compression_ratio: float = Field(default=0.45, gt=0, le=1)
+    memory_dream_episode_hard_compression_ratio: float = Field(default=0.70, gt=0, le=1)
     memory_dream_evidence_per_fact: int = Field(default=2, ge=1, le=10)
     memory_dream_evidence_excerpt_characters: int = Field(default=300, gt=0, le=2000)
     memory_evidence_compaction_enabled: bool = True
