@@ -11,7 +11,11 @@ from sqlalchemy import func, select
 from tests.conftest import make_settings
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.memory.dream.db_models import MemoryDreamClusterPreviewModel
+from qq_ai_bot.memory.dream.db_models import (
+    MemoryDreamClusterModel,
+    MemoryDreamClusterPreviewModel,
+    MemoryDreamRunModel,
+)
 from qq_ai_bot.memory.dream.models import (
     DreamAction,
     DreamOperationType,
@@ -20,7 +24,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamRecomposeOutput,
     DreamRunMode,
 )
-from qq_ai_bot.memory.dream.repository import DreamRepository
+from qq_ai_bot.memory.dream.repository import DreamRepository, fact_signature
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryEvidenceRelation,
@@ -101,30 +105,25 @@ async def test_preview_is_immutable_superseded_and_stale_checked(database: Datab
         output_characters=3,
     )
     assert first != second
-    ready = await repository.ready_preview(
-        cluster_id=cluster.id, source_fingerprint="fingerprint"
-    )
+    ready = await repository.ready_preview(cluster_id=cluster.id, source_fingerprint="fingerprint")
     assert ready is not None
     _id, public_id, proposal = ready
     assert public_id == second
     assert proposal.actions[0].outputs[0].content == "第二版"
     assert (
-        await repository.ready_preview(
-            cluster_id=cluster.id, source_fingerprint="changed"
-        )
-        is None
+        await repository.ready_preview(cluster_id=cluster.id, source_fingerprint="changed") is None
     )
     async with database.sessions() as session:
-            statuses = dict(
-                (
-                    await session.execute(
+        statuses = dict(
+            (
+                await session.execute(
                     select(
-                    MemoryDreamClusterPreviewModel.public_id,
-                    MemoryDreamClusterPreviewModel.status,
+                        MemoryDreamClusterPreviewModel.public_id,
+                        MemoryDreamClusterPreviewModel.status,
                     )
-                    )
-                ).all()
-            )
+                )
+            ).all()
+        )
     assert statuses[first] == "superseded"
     assert statuses[second] == "stale"
 
@@ -259,3 +258,144 @@ async def test_reflection_compactor_preserves_window_lineage_and_bounds_direct_e
     assert 1 <= count <= 8
     lineage = await facts.list_evidence_lineage(created.id, limit=50)
     assert len(cast(SimpleNamespace, lineage).items) >= 10
+
+
+@pytest.mark.asyncio
+async def test_compactor_prefers_latest_dream_provenance_over_reflection_mapping(
+    database: Database,
+) -> None:
+    settings = make_settings(database.url)
+    ledger = EventLedgerRepository(database)
+    facts = MemoryFactService(MemoryFactRepository(database))
+    repository = DreamRepository(database)
+    await PeopleRepository(database).observe(user_id="8100", nickname="Yuki", is_bot=True)
+    events = []
+    for index in range(13):
+        event, _ = await ledger.append(
+            bot_user_id="8100",
+            platform_message_id=f"quality-provenance-{index}",
+            scope_type=ScopeType.GROUP,
+            sender_user_id="8100",
+            direction="outbound",
+            content=f"来源消息 {index}",
+            group_id="3100",
+            sender_is_bot=True,
+        )
+        events.append(event)
+    created = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.GROUP,
+            visibility_group_id="3100",
+            kind=MemoryKind.EPISODE,
+            memory_key="self_episode:dream-provenance",
+            category="self_episode",
+            content="一段后来又被 Dream 处理过的经历。",
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+        ),
+        evidence=MemoryEvidenceCreate(
+            event_id=events[0].id,
+            source_speaker_user_id="8100",
+            relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+            confidence=0.9,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+            excerpt=events[0].content,
+        ),
+    )
+    async with facts.repository.transaction() as session:
+        await facts.append_evidence_bundle(
+            created.id,
+            tuple(
+                MemoryEvidenceCreate(
+                    event_id=event.id,
+                    source_speaker_user_id="8100",
+                    relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+                    confidence=0.9,
+                    authority=MemoryAuthority.AGENT_REFLECTION,
+                    excerpt=event.content,
+                )
+                for event in events[1:]
+            ),
+            confirmed_at=events[-1].occurred_at,
+            session=session,
+        )
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        reflection_run = MemorySelfReflectionRunModel(
+            conversation_key_hash="quality-provenance",
+            bot_user_id="8100",
+            scheduled_slot="2026-08-13:04:provenance",
+            trigger_reason="manual",
+            first_event_id=events[0].id,
+            last_event_id=events[-1].id,
+            status="completed",
+            proposal_count=1,
+            committed_count=1,
+            error_category=None,
+            started_at=now,
+            completed_at=now,
+        )
+        session.add(reflection_run)
+        await session.flush()
+        session.add(
+            MemorySelfReflectionResultModel(
+                run_id=reflection_run.id,
+                fact_id=created.id,
+                result_kind="episode",
+                result_index=1,
+                created_at=now,
+            )
+        )
+    dream_run = await repository.create_run(
+        mode=DreamRunMode.FULL,
+        statistics=DreamPlanStatistics(
+            eligible_facts=1,
+            ready_facts=1,
+            missing_embeddings=0,
+            ambiguous_bot_facts=0,
+            partitions=1,
+            candidate_clusters=1,
+            isolated_facts=0,
+            estimated_model_calls=1,
+        ),
+        clusters=(("quality", "self", "8100", "episode", (created.id,), "f" * 64),),
+        snapshot_max_fact_id=created.id,
+        actor_user_id=None,
+        scheduled_slot=None,
+    )
+    async with facts.repository.transaction() as session:
+        cluster_id_value = await session.scalar(
+            select(MemoryDreamClusterModel.id)
+            .join(
+                MemoryDreamRunModel,
+                MemoryDreamRunModel.id == MemoryDreamClusterModel.run_id,
+            )
+            .where(MemoryDreamRunModel.public_id == dream_run.public_id)
+        )
+        assert cluster_id_value is not None
+        cluster_id = int(cluster_id_value)
+        current = await facts.repository.get_fact(created.id, session=session)
+        assert current is not None
+        operation = await repository.create_operation(
+            cluster_id=cluster_id,
+            action_index=0,
+            operation_type=DreamOperationType.MERGE,
+            source_facts=(current,),
+            anchor_fact_id=current.id,
+            session=session,
+        )
+        signature = fact_signature(current)
+        await repository.commit_operation(
+            operation.id,
+            output_fact_id=current.id,
+            output_results=((current.id, signature),),
+            added_evidence_ids=(),
+            added_relation_ids=(),
+            result_signature=signature,
+            source_signatures={current.id: signature},
+            session=session,
+        )
+    service = EvidenceCompactionService(settings=settings, database=database, facts=facts)
+    candidates = await service._candidate_facts(limit=20)
+    assert candidates == ((created.id, "dream", operation.id, 13),)

@@ -168,9 +168,7 @@ class DreamService:
             scheduled_slot=scheduled_slot,
         )
 
-    async def preview_cluster(
-        self, run_public_id: str, cluster_id: int
-    ) -> DreamClusterPreview:
+    async def preview_cluster(self, run_public_id: str, cluster_id: int) -> DreamClusterPreview:
         """Generate a read-only model proposal for one stored snapshot cluster."""
 
         run = await self._repository.get_run(run_public_id)
@@ -186,7 +184,6 @@ class DreamService:
             or self._cluster_fingerprint(facts) != cluster.fingerprint
         ):
             raise RuntimeError("Dream 候选簇快照已经变化，请重新 plan")
-        await self._repository.stale_previews(cluster.id)
         payload, _ref_map = await self._input(facts)
         output, calls = await self._preview_decide(
             payload,
@@ -210,9 +207,7 @@ class DreamService:
             fact_ids=cluster.fact_ids,
             source_characters=source_characters,
             output_characters=output_characters,
-            compression_ratio=(
-                output_characters / source_characters if source_characters else 0.0
-            ),
+            compression_ratio=(output_characters / source_characters if source_characters else 0.0),
             actions=output.actions,
         )
 
@@ -303,9 +298,7 @@ class DreamService:
                     embedding_ids.update(source.id for source in sources)
                 loaded_outputs: list[MemoryFact] = []
                 for fact_id in result.output_fact_ids:
-                    loaded_output = await self._facts.repository.get_fact(
-                        fact_id, session=session
-                    )
+                    loaded_output = await self._facts.repository.get_fact(fact_id, session=session)
                     if loaded_output is not None:
                         loaded_outputs.append(loaded_output)
                 output_facts = tuple(loaded_outputs)
@@ -313,22 +306,16 @@ class DreamService:
                     raise RuntimeError("dream output fact disappeared before commit")
                 latest_sources: dict[int, MemoryFact] = {}
                 for source in sources:
-                    latest = await self._facts.repository.get_fact(
-                        source.id, session=session
-                    )
+                    latest = await self._facts.repository.get_fact(source.id, session=session)
                     if latest is not None:
                         latest_sources[source.id] = latest
                 await self._repository.commit_operation(
                     operation.id,
                     output_fact_id=result.output_fact_id,
-                    output_results=tuple(
-                        (fact.id, fact_signature(fact)) for fact in output_facts
-                    ),
+                    output_results=tuple((fact.id, fact_signature(fact)) for fact in output_facts),
                     added_evidence_ids=result.added_evidence_ids,
                     added_relation_ids=result.added_relation_ids,
-                    result_signature=(
-                        fact_signature(output_facts[0]) if output_facts else None
-                    ),
+                    result_signature=(fact_signature(output_facts[0]) if output_facts else None),
                     source_signatures={
                         fact_id: fact_signature(latest)
                         for fact_id, latest in latest_sources.items()
@@ -574,16 +561,16 @@ class DreamService:
             )
         first = facts[0]
         payload = DreamInput(
-                scope_type=first.scope_type.value,
-                subject_user_id=first.subject_user_id,
-                group_id=first.group_id,
-                visibility_type=(
-                    first.visibility_type.value if first.visibility_type is not None else None
-                ),
-                visibility_user_id=first.visibility_user_id,
-                visibility_group_id=first.visibility_group_id,
-                kind=first.kind.value,
-                memories=tuple(rows),
+            scope_type=first.scope_type.value,
+            subject_user_id=first.subject_user_id,
+            group_id=first.group_id,
+            visibility_type=(
+                first.visibility_type.value if first.visibility_type is not None else None
+            ),
+            visibility_user_id=first.visibility_user_id,
+            visibility_group_id=first.visibility_group_id,
+            kind=first.kind.value,
+            memories=tuple(rows),
         )
         return self._fit_input(payload), ref_map
 
@@ -621,10 +608,7 @@ class DreamService:
             output_characters = sum(len(content) for content in contents)
             allowed = max(
                 min(450, self._settings.memory_dream_episode_max_characters),
-                int(
-                    source_characters
-                    * self._settings.memory_dream_episode_compression_ratio
-                ),
+                int(source_characters * self._settings.memory_dream_episode_compression_ratio),
             )
             if output_characters > allowed:
                 raise ValueError("dream recompose did not compress the source episodes")
@@ -632,8 +616,7 @@ class DreamService:
     @staticmethod
     def _output_characters(output: DreamOutput) -> int:
         return sum(
-            len(action.content or "")
-            + sum(len(item.content) for item in action.outputs)
+            len(action.content or "") + sum(len(item.content) for item in action.outputs)
             for action in output.actions
         )
 
@@ -673,9 +656,7 @@ class DreamService:
             current = current.model_copy(update={"memories": tuple(rows)})
         return current
 
-    def _select_evidence(
-        self, rows: tuple[MemoryEvidence, ...]
-    ) -> tuple[MemoryEvidence, ...]:
+    def _select_evidence(self, rows: tuple[MemoryEvidence, ...]) -> tuple[MemoryEvidence, ...]:
         limit = self._settings.memory_dream_evidence_per_fact
         if not rows or limit <= 0:
             return ()

@@ -96,12 +96,16 @@ class MemoryLineageService:
             )
             for item in direct
         )
-        mapping = await session.scalar(
-            select(MemorySelfReflectionResultModel).where(
-                MemorySelfReflectionResultModel.fact_id == fact_id
-            )
+        mappings = tuple(
+            (
+                await session.scalars(
+                    select(MemorySelfReflectionResultModel).where(
+                        MemorySelfReflectionResultModel.fact_id == fact_id
+                    )
+                )
+            ).all()
         )
-        if mapping is not None:
+        for mapping in mappings:
             run = await session.get(MemorySelfReflectionRunModel, mapping.run_id)
             first_event = None
             if run is not None:
@@ -116,16 +120,9 @@ class MemoryLineageService:
                     query = query.where(ChatEventModel.group_id == first_event.group_id)
                 else:
                     query = query.where(
-                        ChatEventModel.private_peer_user_id
-                        == first_event.private_peer_user_id
+                        ChatEventModel.private_peer_user_id == first_event.private_peer_user_id
                     )
-                events = tuple(
-                    (
-                        await session.scalars(
-                            query.order_by(ChatEventModel.id)
-                        )
-                    ).all()
-                )
+                events = tuple((await session.scalars(query.order_by(ChatEventModel.id))).all())
                 rows.extend(
                     MemoryLineageItem(
                         kind="reflection_window",
@@ -170,9 +167,7 @@ class MemoryLineageService:
             sources = tuple(
                 await session.scalars(
                     select(MemoryDreamOperationSourceModel.fact_id)
-                    .where(
-                        MemoryDreamOperationSourceModel.operation_id == result.operation_id
-                    )
+                    .where(MemoryDreamOperationSourceModel.operation_id == result.operation_id)
                     .order_by(MemoryDreamOperationSourceModel.position)
                 )
             )

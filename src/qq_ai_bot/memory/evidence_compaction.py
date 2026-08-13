@@ -190,9 +190,7 @@ class EvidenceCompactionService:
             await session.flush()
             return row.id
 
-    async def _candidate_facts(
-        self, *, limit: int
-    ) -> tuple[tuple[int, str, int | None, int], ...]:
+    async def _candidate_facts(self, *, limit: int) -> tuple[tuple[int, str, int | None, int], ...]:
         async with self._database.sessions() as session:
             counts = (
                 select(
@@ -202,50 +200,65 @@ class EvidenceCompactionService:
                 .group_by(MemoryEvidenceModel.fact_id)
                 .subquery()
             )
+            reflection_facts = (
+                select(MemorySelfReflectionResultModel.fact_id.label("fact_id"))
+                .where(MemorySelfReflectionResultModel.result_kind == "episode")
+                .distinct()
+                .subquery()
+            )
+            dream_results = (
+                select(
+                    MemoryDreamOperationResultModel.fact_id.label("fact_id"),
+                    func.max(MemoryDreamOperationResultModel.operation_id).label("operation_id"),
+                )
+                .join(
+                    MemoryDreamOperationModel,
+                    MemoryDreamOperationModel.id == MemoryDreamOperationResultModel.operation_id,
+                )
+                .where(
+                    MemoryDreamOperationModel.operation_type.in_(
+                        ("merge", "synthesize", "recompose")
+                    ),
+                    MemoryDreamOperationModel.status == "committed",
+                )
+                .group_by(MemoryDreamOperationResultModel.fact_id)
+                .subquery()
+            )
             rows = (
                 await session.execute(
                     select(
                         counts.c.fact_id,
                         counts.c.evidence_count,
-                        MemorySelfReflectionResultModel.id.label("reflection_result_id"),
-                        MemoryDreamOperationResultModel.operation_id,
-                        MemoryDreamOperationModel.operation_type,
+                        reflection_facts.c.fact_id.label("reflection_fact_id"),
+                        dream_results.c.operation_id,
                     )
                     .outerjoin(
-                        MemorySelfReflectionResultModel,
-                        MemorySelfReflectionResultModel.fact_id == counts.c.fact_id,
+                        reflection_facts,
+                        reflection_facts.c.fact_id == counts.c.fact_id,
                     )
                     .outerjoin(
-                        MemoryDreamOperationResultModel,
-                        MemoryDreamOperationResultModel.fact_id == counts.c.fact_id,
-                    )
-                    .outerjoin(
-                        MemoryDreamOperationModel,
-                        MemoryDreamOperationModel.id
-                        == MemoryDreamOperationResultModel.operation_id,
+                        dream_results,
+                        dream_results.c.fact_id == counts.c.fact_id,
                     )
                     .where(
                         (
-                            (MemorySelfReflectionResultModel.id.is_not(None))
+                            (reflection_facts.c.fact_id.is_not(None))
+                            & (dream_results.c.operation_id.is_(None))
                             & (counts.c.evidence_count > 8)
                         )
                         | (
-                            MemoryDreamOperationModel.operation_type.in_(
-                                ("synthesize", "recompose")
-                            )
-                            & (MemoryDreamOperationModel.status == "committed")
+                            (dream_results.c.operation_id.is_not(None))
                             & (counts.c.evidence_count > 12)
                         )
                     )
                     .order_by(counts.c.fact_id)
-                    .limit(max(1, limit * 4))
+                    .limit(max(1, limit))
                 )
             ).all()
             result: list[tuple[int, str, int | None, int]] = []
             for row in rows:
-                provenance = (
-                    "self_reflection" if row.reflection_result_id is not None else "dream"
-                )
+                fact_id = int(row.fact_id)
+                provenance = "dream" if row.operation_id is not None else "self_reflection"
                 operation_id = int(row.operation_id) if row.operation_id is not None else None
                 previous = await session.scalar(
                     select(MemoryEvidenceCompactionItemModel)
@@ -262,9 +275,7 @@ class EvidenceCompactionService:
                 )
                 if previous is not None:
                     continue
-                result.append(
-                    (int(row.fact_id), provenance, operation_id, int(row.evidence_count))
-                )
+                result.append((fact_id, provenance, operation_id, int(row.evidence_count)))
                 if len(result) >= limit:
                     break
         return tuple(result)
@@ -381,21 +392,27 @@ class EvidenceCompactionService:
         run = await session.get(MemorySelfReflectionRunModel, mapping.run_id)
         if run is None:
             return {row.id for row in evidence}
-        receipt = await session.scalar(
-            select(MemoryMutationReceiptModel)
-            .where(
-                MemoryMutationReceiptModel.new_fact_id == fact_id,
-                MemoryMutationReceiptModel.decision_actor_type == "reflection",
-            )
-            .order_by(MemoryMutationReceiptModel.id)
-            .limit(1)
+        receipts = tuple(
+            (
+                await session.scalars(
+                    select(MemoryMutationReceiptModel)
+                    .where(
+                        MemoryMutationReceiptModel.new_fact_id == fact_id,
+                        MemoryMutationReceiptModel.decision_actor_type == "reflection",
+                    )
+                    .order_by(MemoryMutationReceiptModel.id)
+                )
+            ).all()
         )
-        if receipt is None:
+        if not receipts:
             return {row.id for row in evidence}
         by_event = {row.event_id: row for row in evidence if row.event_id is not None}
         selected: list[Any] = []
-        if receipt.trigger_event_id in by_event:
-            selected.append(by_event[receipt.trigger_event_id])
+        selected.extend(
+            by_event[receipt.trigger_event_id]
+            for receipt in receipts
+            if receipt.trigger_event_id in by_event
+        )
         event_rows = tuple(row for row in evidence if row.event_id is not None)
         nonempty_ids = set(
             await session.scalars(
@@ -459,7 +476,7 @@ class EvidenceCompactionService:
             operation is None
             or result is None
             or operation.status != "committed"
-            or operation.operation_type not in {"synthesize", "recompose"}
+            or operation.operation_type not in {"merge", "synthesize", "recompose"}
             or result.result_signature != current_signature
         ):
             return {row.id for row in evidence}
@@ -469,8 +486,7 @@ class EvidenceCompactionService:
                 .select_from(MemoryDreamOperationSourceModel)
                 .join(
                     MemoryDreamOperationModel,
-                    MemoryDreamOperationModel.id
-                    == MemoryDreamOperationSourceModel.operation_id,
+                    MemoryDreamOperationModel.id == MemoryDreamOperationSourceModel.operation_id,
                 )
                 .where(
                     MemoryDreamOperationSourceModel.fact_id == fact_id,
@@ -483,7 +499,8 @@ class EvidenceCompactionService:
         if dependency:
             return {row.id for row in evidence}
         added_ids = {int(item) for item in json.loads(operation.added_evidence_ids_json)}
-        if any(row.id not in added_ids for row in evidence):
+        original = [row for row in evidence if row.id not in added_ids]
+        if operation.operation_type != "merge" and original:
             return {row.id for row in evidence}
         source_ids = tuple(
             await session.scalars(
@@ -501,23 +518,23 @@ class EvidenceCompactionService:
                 .order_by(MemoryDreamOperationSourceModel.position)
             )
         )
-        chosen: list[Any] = []
+        chosen: list[Any] = list(original)
         for source_id in source_ids:
             source_keys = {
                 (event_id, tool_receipt_id)
                 for event_id, tool_receipt_id in (
                     await session.execute(
-                    select(
-                        MemoryEvidenceModel.event_id,
-                        MemoryEvidenceModel.tool_receipt_id,
-                    ).where(MemoryEvidenceModel.fact_id == source_id)
+                        select(
+                            MemoryEvidenceModel.event_id,
+                            MemoryEvidenceModel.tool_receipt_id,
+                        ).where(MemoryEvidenceModel.fact_id == source_id)
                     )
                 ).all()
             }
             matches = [
                 row
                 for row in evidence
-                if (row.event_id, row.tool_receipt_id) in source_keys
+                if row.id in added_ids and (row.event_id, row.tool_receipt_id) in source_keys
             ]
             if len(matches) <= 2:
                 chosen.extend(matches)
@@ -530,7 +547,7 @@ class EvidenceCompactionService:
                 continue
             seen.add(row.id)
             unique.append(row)
-            if len(unique) >= 12:
+            if operation.operation_type != "merge" and len(unique) >= 12:
                 break
         return {row.id for row in unique}
 
@@ -698,7 +715,5 @@ class EvidenceCompactionWorker:
                 )
                 processed = 0
             await asyncio.sleep(
-                1.0
-                if processed
-                else min(60.0, self._settings.memory_dream_poll_seconds)
+                1.0 if processed else min(60.0, self._settings.memory_dream_poll_seconds)
             )
