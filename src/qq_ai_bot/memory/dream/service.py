@@ -788,6 +788,14 @@ class DreamService:
                 f"{self._settings.bot_persona}\n"
                 "SELF 记忆应保持第一人称和这一人格的自然口吻。"
             )
+        if payload.kind == MemoryKind.EPISODE.value:
+            instruction += (
+                "\n【返回前最终验收】\n"
+                "1. 每个 focus 只能命名一件可独立提问的经历，不能用时间顺序把两件事粘起来。\n"
+                "2. 错误示例：同一 output 同时记录深夜私密谈话和第二天点单、提醒；"
+                "正确做法是拆成两个 output，或在预算不足时只保留更重要的一件。\n"
+                "3. 逐句删除不直接支撑 focus 的内容；整个簇最多 4 个 outputs，且不得超过上述总预算。"
+            )
         return instruction
 
     def _episode_compression_limit(self, source_characters: int) -> int:
