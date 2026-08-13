@@ -18,6 +18,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamOperationType,
     DreamPlanStatistics,
     DreamRunMode,
+    DreamRunStatus,
 )
 from qq_ai_bot.memory.dream.repository import DreamRepository, fact_signature
 from qq_ai_bot.memory.enums import (
@@ -113,6 +114,35 @@ async def _fact_with_evidence(
             excerpt=content,
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_dream_run_can_enter_rollback(database: Database) -> None:
+    dreams = DreamRepository(database)
+    await PeopleRepository(database).observe(user_id="1001", nickname="owner")
+    run = await dreams.create_run(
+        mode=DreamRunMode.FULL,
+        statistics=DreamPlanStatistics(
+            eligible_facts=0,
+            ready_facts=0,
+            missing_embeddings=0,
+            ambiguous_bot_facts=0,
+            partitions=0,
+            candidate_clusters=0,
+            isolated_facts=0,
+            estimated_model_calls=0,
+        ),
+        clusters=(),
+        snapshot_max_fact_id=0,
+        actor_user_id="1001",
+        scheduled_slot=None,
+    )
+    assert await dreams.start_run(run.public_id)
+    assert await dreams.cancel(run.public_id)
+    assert await dreams.mark_run_rolling_back(run.public_id)
+    current = await dreams.get_run(run.public_id)
+    assert current is not None
+    assert current.status is DreamRunStatus.ROLLING_BACK
 
 
 @pytest.mark.asyncio

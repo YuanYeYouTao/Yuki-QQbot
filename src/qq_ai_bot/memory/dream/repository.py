@@ -907,6 +907,7 @@ class DreamRepository:
                         (
                             DreamRunStatus.COMPLETED.value,
                             DreamRunStatus.PARTIAL_FAILED.value,
+                            DreamRunStatus.CANCELLED.value,
                             DreamRunStatus.ROLLING_BACK.value,
                         )
                     ),
