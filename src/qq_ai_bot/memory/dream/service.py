@@ -47,7 +47,10 @@ focus is not part of the Episode body. Each output must express one independentl
 event or durable theme. It is acceptable to omit ordinary chat details with no long-term value,
 but every source container must be handled by at least one action. Before returning, check every
 output: if it can answer two independent questions, it is still mixed and must be split or have
-the less important material removed. Episode changes must use recompose, never synthesize.
+the less important material removed. Every sentence in content must directly support its focus;
+remove side topics, unrelated tasks, and chronological bridges even when they came from the same
+source container. A broad day, conversation, or sequence is not itself a durable theme. Episode
+changes must use recompose, never synthesize.
 """
 
 _INSTRUCTION = """\
@@ -65,7 +68,9 @@ _INSTRUCTION = """\
 处理 Episode 时，先判断材料中有几个能够被独立回忆和独立召回的中心事件，再使用 recompose 输出
 1 至 4 条 Episode。recompose 可以拆分一条臃肿 Episode、合并多个碎片，也可以把混合材料重新分组。
 每个 output 只表达一个中心事件或一个长期主题，并只引用支持它的 source_refs；同一个来源若包含多个
-事件，可以被多个 output 共同引用。不要写“一整天先后聊了很多话题”的流水账。
+事件，可以被多个 output 共同引用。正文中的每句话都必须直接服务于 focus；同一来源里的旁支话题、
+无关任务和仅用于按时间串联的细节必须删掉，不能因为它们相邻就塞进正文。focus 若需要用“从 A 到 B”、
+“A 并 B”或“一整天聊了很多事”才能概括，通常仍是混合事件，应继续拆分或只保留更重要的一件。
 
 Episode 要略写和压缩。保留核心经过、结果、关系或认识的变化，以及值得长期记住的主要感受；省略
 逐轮问答、候选枚举、重复解释、无关玩笑和不影响结果的工具中间步骤。普通正文以 150 至 450 字为宜，
@@ -691,10 +696,7 @@ class DreamService:
                 raise
             calls += 1
             reason = exc.reason_code if isinstance(exc, StructuredTaskError) else str(exc)
-            repair = (
-                f"{instruction}\n上一次输出无效：{reason}。"
-                "请重新划分语义事件、充分压缩，并只返回符合 schema 的最终结果。"
-            )
+            repair = self._repair_instruction(instruction, exc, reason=reason)
             try:
                 result = await self._run_model(repair, payload)
                 self._validate_output(payload, result)
@@ -733,13 +735,25 @@ class DreamService:
             return result, 1
         except (StructuredTaskError, ValueError) as exc:
             reason = exc.reason_code if isinstance(exc, StructuredTaskError) else str(exc)
-            repair = (
-                f"{instruction}\n上一次输出无效：{reason}。"
-                "请重新划分语义事件、充分压缩，并只返回符合 schema 的最终结果。"
-            )
+            repair = self._repair_instruction(instruction, exc, reason=reason)
             result = await self._run_model(repair, payload)
             self._validate_output(payload, result)
             return result, 2
+
+    @staticmethod
+    def _repair_instruction(
+        instruction: str,
+        error: StructuredTaskError | ValueError,
+        *,
+        reason: str,
+    ) -> str:
+        detail = error.detail if isinstance(error, StructuredTaskError) else str(error)
+        return (
+            f"{instruction}\n上一次输出无效：{reason}；具体位置：{detail or 'unknown'}。"
+            "请重新划分语义事件、删掉所有不直接服务 focus 的旁支，并充分压缩。"
+            "必须重新返回完整结果：每个 recompose output 都要同时包含 focus、source_refs、"
+            "content、importance；每个 action 最多 4 个 outputs，不能省略必填字段。"
+        )
 
     def _instruction(self, *, self_memory: bool) -> str:
         instruction = f"{_INSTRUCTION}\n{_RECOMPOSE_QUALITY_INSTRUCTION}"
