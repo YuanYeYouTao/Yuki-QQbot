@@ -756,12 +756,18 @@ async def test_episode_recompose_is_atomic_one_to_many_and_reversible(
 ) -> None:
     mutations, facts, ledger, dreams = _services(database)
     await PeopleRepository(database).observe(user_id="8000", nickname="Yuki")
+    source_content = "上午处理点单失败；晚上和群友讨论音乐。" * 60
+    first_output = "一次点单工具链失败后，我确认需要减少无意义的中间步骤。" * 12
+    second_output = "晚上和群友集中聊了音乐，留下了几次有趣的推荐和争论。" * 12
+    output_characters = len(first_output) + len(second_output)
+    assert output_characters > int(len(source_content) * 0.45)
+    assert output_characters <= int(len(source_content) * 0.70)
     source = await _fact_with_evidence(
         facts,
         ledger,
         message_id="dream-recompose-source",
         memory_key="episode:mixed-day",
-        content="上午处理点单失败；晚上和群友讨论音乐。" * 30,
+        content=source_content,
         kind=MemoryKind.EPISODE,
     )
     run = await dreams.create_run(
@@ -806,12 +812,12 @@ async def test_episode_recompose_is_atomic_one_to_many_and_reversible(
             recompose_outputs=(
                 DreamRecomposePlan(
                     source_facts=(current_source,),
-                    content="一次点单工具链失败后，我确认需要减少无意义的中间步骤。",
+                    content=first_output,
                     importance=3,
                 ),
                 DreamRecomposePlan(
                     source_facts=(current_source,),
-                    content="晚上和群友集中聊了音乐，留下了几次有趣的推荐和争论。",
+                    content=second_output,
                     importance=3,
                 ),
             ),

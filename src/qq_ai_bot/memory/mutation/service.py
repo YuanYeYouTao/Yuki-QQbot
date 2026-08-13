@@ -32,6 +32,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamOperationStatus,
     DreamOperationType,
 )
+from qq_ai_bot.memory.dream.quality import episode_compression_limit
 from qq_ai_bot.memory.dream.repository import fact_signature
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -463,9 +464,10 @@ class MemoryMutationService:
                 raise ValueError("dream recompose content exceeds the character limit")
             source_characters = sum(len(item.content) for item in sources)
             output_characters = sum(len(item) for item in normalized_outputs)
-            if output_characters > max(
-                min(450, self._settings.memory_dream_episode_max_characters),
-                int(source_characters * self._settings.memory_dream_episode_compression_ratio),
+            if output_characters > episode_compression_limit(
+                source_characters,
+                ratio=self._settings.memory_dream_episode_hard_compression_ratio,
+                maximum=self._settings.memory_dream_episode_max_characters,
             ):
                 raise ValueError("dream recompose did not compress its source episodes")
             for source in sources:

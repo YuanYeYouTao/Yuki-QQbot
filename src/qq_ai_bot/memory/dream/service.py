@@ -20,6 +20,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamRun,
     DreamRunMode,
 )
+from qq_ai_bot.memory.dream.quality import episode_compression_limit
 from qq_ai_bot.memory.dream.repository import (
     DreamCandidate,
     DreamCandidateLoad,
@@ -923,12 +924,10 @@ class DreamService:
         return instruction
 
     def _episode_compression_limit(self, source_characters: int, *, ratio: float) -> int:
-        return max(
-            1,
-            min(
-                self._settings.memory_dream_episode_max_characters,
-                int(source_characters * ratio),
-            ),
+        return episode_compression_limit(
+            source_characters,
+            ratio=ratio,
+            maximum=self._settings.memory_dream_episode_max_characters,
         )
 
     async def _reserve_model_call(self, run: DreamRun, cluster: DreamCluster) -> bool:
