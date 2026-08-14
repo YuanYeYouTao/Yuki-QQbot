@@ -13,6 +13,7 @@ from qq_ai_bot.application.modules.persistence import PersistenceBundle
 from qq_ai_bot.capabilities import ToolArtifactWriter
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
+from qq_ai_bot.memory.attribution import MemoryAttributionWorker
 from qq_ai_bot.memory.auditing import (
     MemoryAuditCoordinator,
     SelfMemoryAuditor,
@@ -83,6 +84,7 @@ class ConversationBundle:
     memory_mutations: MemoryMutationService
     memory_auditor: MemoryAuditCoordinator
     memory_worker: MemoryWorker
+    memory_attribution_worker: MemoryAttributionWorker
     memory_rebuild_service: MemoryRebuildService
     memory_rebuild_worker: MemoryRebuildWorker
     memory_maintenance_worker: MemoryMaintenanceWorker
@@ -233,6 +235,12 @@ class ConversationModule:
             permission_catalog=self._permission_catalog,
         )
         plugin_agent_tools = PluginAgentToolBackend(agent_tools)
+        memory_attribution_worker = MemoryAttributionWorker(
+            models=models,
+            memory_context=persistence.memory_context,
+            runtime_config=self._runtime_config,
+            metrics=persistence.memory_metrics,
+        )
         chat = ChatService(
             settings=settings,
             model_executor=models,
@@ -241,6 +249,7 @@ class ConversationModule:
             people=persistence.people,
             memories=persistence.memories,
             memory_context=persistence.memory_context,
+            memory_attribution=memory_attribution_worker,
             relationships=persistence.relationships,
             tools=agent_tools,
             web_sources=persistence.web_sources,
@@ -346,6 +355,7 @@ class ConversationModule:
             memory_mutations,
             memory_auditor,
             memory_worker,
+            memory_attribution_worker,
             memory_rebuild_service,
             memory_rebuild_worker,
             memory_maintenance_worker,
@@ -362,6 +372,11 @@ class ConversationModule:
             "memory_worker",
             start=bundle.memory_worker.start,
             close=bundle.memory_worker.close,
+        )
+        lifecycle.register(
+            "memory_attribution_worker",
+            start=bundle.memory_attribution_worker.start,
+            close=bundle.memory_attribution_worker.close,
         )
         lifecycle.register(
             "memory_rebuild_worker",

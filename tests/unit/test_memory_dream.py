@@ -378,9 +378,7 @@ async def test_episode_decision_keeps_first_hard_valid_proposal_when_repair_fail
                 first.actions[0].model_copy(
                     update={
                         "outputs": (
-                            first.actions[0].outputs[0].model_copy(
-                                update={"content": "丙" * 750}
-                            ),
+                            first.actions[0].outputs[0].model_copy(update={"content": "丙" * 750}),
                         )
                     }
                 ),

@@ -370,7 +370,7 @@ class MemoryContextService:
             retention_days=runtime.memory.recall_receipt_retention_days,
         )
 
-    async def record_usage(
+    async def mark_attributed_used(
         self,
         turn_id: str,
         fact_ids: tuple[int, ...],
@@ -378,7 +378,7 @@ class MemoryContextService:
         if self._receipts is None:
             self.metrics.record_recall_stage("used", len(fact_ids))
             return fact_ids
-        recorded = await self._receipts.mark_used(turn_id, fact_ids)
+        recorded = await self._receipts.mark_attributed_used(turn_id, fact_ids)
         used = fact_ids if recorded is None else recorded
         self.metrics.record_recall_stage("used", len(used))
         return used

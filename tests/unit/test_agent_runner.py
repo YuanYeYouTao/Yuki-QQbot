@@ -29,7 +29,6 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
 from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.receipt import REPORT_MEMORY_USAGE_TOOL, MemoryUsageControl
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.chat import ChatService, _ChatAgentBackend
@@ -305,78 +304,6 @@ class NonTerminalMutationBackend(VoiceEffectBackend):
         )
 
 
-class MemoryUsageProvider(LLMProvider):
-    def __init__(self, *, refs: tuple[str, ...] | None) -> None:
-        self.refs = refs
-        self.requests: list[ChatRequest] = []
-
-    async def complete(self, request: ChatRequest) -> ChatResponse:
-        self.requests.append(request)
-        if self.refs is None or len(self.requests) > 1:
-            return ChatResponse(content="记得你偏好深烘咖啡。", latency_seconds=0)
-        assert request.tool_choice == "auto"
-        assert {tool.name for tool in request.tools} == {REPORT_MEMORY_USAGE_TOOL}
-        return ChatResponse(
-            content="",
-            latency_seconds=0,
-            tool_calls=(
-                ToolCall(
-                    id="memory-usage-1",
-                    function=ToolFunction(
-                        name=REPORT_MEMORY_USAGE_TOOL,
-                        arguments=json.dumps({"memory_refs": list(self.refs)}),
-                    ),
-                ),
-            ),
-        )
-
-
-class MemoryUsageBackend(VoiceEffectBackend):
-    def __init__(self) -> None:
-        super().__init__()
-        self.usage = MemoryUsageControl(
-            turn_id="turn-terminal",
-            injected_fact_ids=(249,),
-            enabled=True,
-        )
-
-    def definitions(
-        self,
-        runtime: AgentRuntime,
-        *,
-        web_was_used: bool,
-    ) -> tuple[ChatTool, ...]:
-        del runtime, web_was_used
-        if not self.usage.report_available:
-            return ()
-        return (
-            ChatTool(
-                name=REPORT_MEMORY_USAGE_TOOL,
-                description="report memory usage",
-                parameters={"type": "object"},
-            ),
-        )
-
-    def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
-        del runtime
-        self.usage.begin_batch(tuple(call.function.name for call in calls))
-
-    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
-        del runtime
-        self.usage.note_call(name)
-        assert name == REPORT_MEMORY_USAGE_TOOL
-        return self.usage.apply(arguments_json)
-
-    def counts_toward_limit(self, name: str, runtime: AgentRuntime) -> bool:
-        del runtime
-        return name != REPORT_MEMORY_USAGE_TOOL
-
-    def finalize(self, content: str, runtime: AgentRuntime) -> str:
-        del runtime
-        self.usage.finalize(content)
-        return content
-
-
 def _agent_runtime() -> AgentRuntime:
     now = datetime.now(UTC)
     config = cast(
@@ -545,32 +472,6 @@ async def test_non_terminal_mutation_can_continue_with_another_tool_round() -> N
     assert result.tool_calls_used == 2
     assert len(backend.effects) == 2
     assert all(request.tools for request in provider.requests)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("refs", "used", "model_requests"),
-    [(("M249",), (249,), 2), (None, (), 1)],
-)
-async def test_memory_usage_report_is_optional_and_outside_business_budget(
-    refs: tuple[str, ...] | None,
-    used: tuple[int, ...],
-    model_requests: int,
-) -> None:
-    provider = MemoryUsageProvider(refs=refs)
-    backend = MemoryUsageBackend()
-
-    result = await AgentRunner(provider, ConcurrencyManager(1)).run(
-        (ChatMessage(role="user", content="我喜欢哪种咖啡？"),),
-        _agent_runtime(),
-        backend,
-    )
-
-    assert result.text == "记得你偏好深烘咖啡。"
-    assert result.model_requests == model_requests
-    assert result.tool_calls_used == 0
-    assert backend.usage.used_fact_ids == used
-    assert len(provider.requests) == model_requests
 
 
 def test_voice_effect_cannot_complete_chat_without_text() -> None:

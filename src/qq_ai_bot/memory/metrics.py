@@ -35,7 +35,20 @@ OPERATIONAL_LIFECYCLE_COUNTERS = (
 )
 
 ADAPTIVE_MEMORY_STAGES = ("candidate", "selected", "injected", "used", "reinforced")
-ADAPTIVE_USAGE_REPORT_OUTCOMES = ("valid", "empty", "missing", "invalid")
+ADAPTIVE_ATTRIBUTION_OUTCOMES = (
+    "enqueue",
+    "duplicate",
+    "queue_full",
+    "expired",
+    "preempted",
+    "timeout",
+    "model_error",
+    "invalid",
+    "success",
+    "no_used",
+    "disabled",
+)
+ADAPTIVE_ATTRIBUTION_LATENCY_BUCKETS = ("lt_1s", "1_3s", "3_10s", "gte_10s")
 ADAPTIVE_REINFORCEMENT_SKIP_REASONS = (
     "disabled",
     "activation_unavailable",
@@ -74,6 +87,7 @@ class MemoryRetrievalMetrics:
     def __init__(self) -> None:
         self._latest: MemoryRetrievalMetric | None = None
         self._counts: Counter[str] = Counter()
+        self._attribution_queue_depth = 0
 
     @property
     def latest(self) -> MemoryRetrievalMetric | None:
@@ -183,7 +197,11 @@ class MemoryLifecycleMetrics:
             *(f"memory_intent_mode_{mode.value}" for mode in MemoryContextMode),
             *(f"memory_intent_purpose_{purpose.value}" for purpose in MemoryRecallPurpose),
             *(f"memory_recall_{stage}_count" for stage in ADAPTIVE_MEMORY_STAGES),
-            *(f"memory_usage_report_{outcome}_count" for outcome in ADAPTIVE_USAGE_REPORT_OUTCOMES),
+            *(f"memory_attribution_{outcome}_count" for outcome in ADAPTIVE_ATTRIBUTION_OUTCOMES),
+            *(
+                f"memory_attribution_latency_{bucket}_count"
+                for bucket in ADAPTIVE_ATTRIBUTION_LATENCY_BUCKETS
+            ),
             *(
                 f"memory_reinforcement_skipped_{reason}_count"
                 for reason in ADAPTIVE_REINFORCEMENT_SKIP_REASONS
@@ -191,9 +209,12 @@ class MemoryLifecycleMetrics:
             *(f"memory_activation_bucket_{bucket}_count" for bucket in ADAPTIVE_ACTIVATION_BUCKETS),
             "memory_activation_state_missing_count",
             "memory_recall_receipts_cleaned_count",
-            "memory_usage_report_extra_model_request_count",
+            "memory_attribution_used_count",
+            "memory_attribution_reinforced_count",
         ]
-        return {name: int(self._counts[name]) for name in names}
+        snapshot = {name: int(self._counts[name]) for name in names}
+        snapshot["memory_attribution_queue_depth"] = self._attribution_queue_depth
+        return snapshot
 
     def record_intent(self, *, mode: MemoryContextMode, purpose: MemoryRecallPurpose) -> None:
         self.increment(f"memory_intent_mode_{mode.value}")
@@ -204,10 +225,24 @@ class MemoryLifecycleMetrics:
             raise ValueError(f"unsupported memory recall stage: {stage}")
         self.increment(f"memory_recall_{stage}_count", count)
 
-    def record_usage_report(self, outcome: str) -> None:
-        if outcome not in ADAPTIVE_USAGE_REPORT_OUTCOMES:
-            raise ValueError(f"unsupported memory usage report outcome: {outcome}")
-        self.increment(f"memory_usage_report_{outcome}_count")
+    def record_attribution(self, outcome: str) -> None:
+        if outcome not in ADAPTIVE_ATTRIBUTION_OUTCOMES:
+            raise ValueError(f"unsupported memory attribution outcome: {outcome}")
+        self.increment(f"memory_attribution_{outcome}_count")
+
+    def set_attribution_queue_depth(self, depth: int) -> None:
+        self._attribution_queue_depth = max(0, depth)
+
+    def record_attribution_latency(self, seconds: float) -> None:
+        if seconds < 1:
+            bucket = "lt_1s"
+        elif seconds < 3:
+            bucket = "1_3s"
+        elif seconds < 10:
+            bucket = "3_10s"
+        else:
+            bucket = "gte_10s"
+        self.increment(f"memory_attribution_latency_{bucket}_count")
 
     def record_reinforcement_skip(self, reason: str, count: int = 1) -> None:
         if reason not in ADAPTIVE_REINFORCEMENT_SKIP_REASONS:

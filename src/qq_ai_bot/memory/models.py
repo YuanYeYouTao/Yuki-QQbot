@@ -541,19 +541,6 @@ class MemoryActivationState(_MemoryModel):
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-class MemoryUsageReport(_MemoryModel):
-    turn_id: str = Field(min_length=1, max_length=64)
-    memory_refs: tuple[str, ...] = Field(default=(), max_length=100)
-
-    @field_validator("memory_refs", mode="after")
-    @classmethod
-    def _valid_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        refs = tuple(dict.fromkeys(value))
-        if any(not item.startswith("M") or not item[1:].isdigit() for item in refs):
-            raise ValueError("memory refs must use M<fact_id>")
-        return refs
-
-
 class MemoryRecallItem(_MemoryModel):
     fact_id: int = Field(gt=0)
     target_role: MemoryTargetRole

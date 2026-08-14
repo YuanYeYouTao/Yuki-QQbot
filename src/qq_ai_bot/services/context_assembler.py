@@ -20,6 +20,7 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.domain.relationships import RelationshipSnapshot
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
+from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureSource
 from qq_ai_bot.memory.context import (
     MemoryContextService,
     retrieval_fact_context,
@@ -68,6 +69,7 @@ class AssembledContext:
     external_events: tuple[dict[str, object], ...] = ()
     memory_turn_id: str = ""
     injected_memory_ids: tuple[int, ...] = ()
+    memory_exposures: tuple[MemoryExposure, ...] = ()
     memory_intent: MemoryQueryIntent | None = None
 
 
@@ -263,6 +265,7 @@ class ContextAssembler:
             int(total_budget * self._settings.context_metadata_budget_ratio),
         )
         metadata_payload, selected_fact_ids = self._fit_metadata(context, metadata_budget)
+        memory_exposures = self._memory_exposures(retrieval, selected_fact_ids)
         await self._memory_context.mark_injected(retrieval, selected_fact_ids)
         recall_turn = await self._memory_context.record_recall(
             conversation_key=identity.key,
@@ -326,6 +329,7 @@ class ContextAssembler:
             external_events=external_events,
             memory_turn_id=recall_turn.turn_id if recall_turn is not None else "",
             injected_memory_ids=selected_fact_ids,
+            memory_exposures=memory_exposures,
             memory_intent=memory_intent,
         )
 
@@ -576,6 +580,34 @@ class ContextAssembler:
             "relationship_weight": snapshot.relationship_weight,
             "stage": snapshot.stage.value,
         }
+
+    def _memory_exposures(
+        self,
+        retrieval: Any,
+        selected_fact_ids: tuple[int, ...],
+    ) -> tuple[MemoryExposure, ...]:
+        selected = set(selected_fact_ids)
+        by_id: dict[int, MemoryExposure] = {}
+        for block in retrieval.blocks:
+            for hit in block.hits:
+                fact = hit.fact
+                if fact.id not in selected:
+                    continue
+                by_id[fact.id] = MemoryExposure(
+                    memory_ref=f"M{fact.id}",
+                    fact_id=fact.id,
+                    kind=fact.kind.value,
+                    category=fact.category[:64],
+                    content=fact.content[:4_000],
+                    occurred_at=(
+                        local_iso(fact.valid_from, self._settings.default_timezone)
+                        if fact.valid_from is not None
+                        else None
+                    ),
+                    target_role=block.target.role.value,
+                    source=MemoryExposureSource.AUTOMATIC,
+                )
+        return tuple(by_id[fact_id] for fact_id in selected_fact_ids if fact_id in by_id)
 
     @classmethod
     def _fit_metadata(

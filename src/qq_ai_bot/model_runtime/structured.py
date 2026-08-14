@@ -10,7 +10,11 @@ from pydantic import BaseModel, ValidationError
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse, ChatTool
 from qq_ai_bot.model_runtime.executor import ModelExecutor
-from qq_ai_bot.model_runtime.models import ModelTask, StructuredOutputMode
+from qq_ai_bot.model_runtime.models import (
+    ModelExecutionPriority,
+    ModelTask,
+    StructuredOutputMode,
+)
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
 logger = logging.getLogger(__name__)
@@ -55,6 +59,7 @@ class StructuredTaskRunner:
         compact_schema: bool = False,
         validation_retries: int = 0,
         validation_repair_hint: str = "",
+        priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
     ) -> OutputT:
         result, _response = await self.run_with_response(
             task=task,
@@ -68,6 +73,7 @@ class StructuredTaskRunner:
             compact_schema=compact_schema,
             validation_retries=validation_retries,
             validation_repair_hint=validation_repair_hint,
+            priority=priority,
         )
         return result
 
@@ -85,6 +91,7 @@ class StructuredTaskRunner:
         compact_schema: bool = False,
         validation_retries: int = 0,
         validation_repair_hint: str = "",
+        priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
     ) -> tuple[OutputT, ChatResponse]:
         """Return validated data together with provider-safe usage metadata."""
 
@@ -143,20 +150,21 @@ class StructuredTaskRunner:
         )
         messages: tuple[ChatMessage, ...] = base_messages
         for attempt in range(validation_retries + 1):
-            response = await self._models.execute(
-                task,
-                ChatRequest(
-                    messages=messages,
-                    model=self._models.model_name(task),
-                    temperature=temperature,
-                    max_output_tokens=max_output_tokens,
-                    thinking_enabled=False,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    response_format=response_format,
-                    structured_output=True,
-                ),
+            request = ChatRequest(
+                messages=messages,
+                model=self._models.model_name(task),
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                thinking_enabled=False,
+                tools=tools,
+                tool_choice=tool_choice,
+                response_format=response_format,
+                structured_output=True,
             )
+            if priority is ModelExecutionPriority.FOREGROUND:
+                response = await self._models.execute(task, request)
+            else:
+                response = await self._models.execute(task, request, priority=priority)
             try:
                 decoded = _decode_response(
                     response,

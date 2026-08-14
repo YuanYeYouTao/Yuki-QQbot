@@ -7,7 +7,8 @@ import json
 import logging
 import random
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Protocol, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -69,12 +70,17 @@ from qq_ai_bot.emoji.models import (
     PendingReplyEffect,
 )
 from qq_ai_bot.llm.base import LLMEmptyResponseError
+from qq_ai_bot.memory.attribution import (
+    MemoryAttributionJob,
+    MemoryAttributionWorker,
+    MemoryExposure,
+    MemoryExposureRegistry,
+)
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import MemoryContextMode
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.models import MemoryQueryIntent
 from qq_ai_bot.memory.query import MemoryQueryBuilder
-from qq_ai_bot.memory.receipt import REPORT_MEMORY_USAGE_TOOL, MemoryUsageControl
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
@@ -142,27 +148,6 @@ _INHERITED_CANDIDATE_POOL_LIMIT = 24
 _ARTIFACT_PROVIDER_ID = "artifacts"
 _ARTIFACT_READER_NAME = "read_tool_artifact"
 _SET_REPLY_TARGET_NAME = "set_reply_target"
-_REPORT_MEMORY_USAGE_TOOL = ChatTool(
-    name=REPORT_MEMORY_USAGE_TOOL,
-    description=(
-        "仅当本轮最终正文在事实、偏好、判断或共同经历上实质依赖已提供的长期记忆时调用。"
-        "memory_refs 只能从本轮上下文或记忆工具结果中的 memory_ref=M<fact_id> 选择；仅看过、"
-        "只影响语气或未写入最终正文的记忆不要报告。必须单独调用，至多一次，并且作为最终正文前"
-        "最后一次工具调用；调用后直接生成正文，不再调用其他工具。"
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "memory_refs": {
-                "type": "array",
-                "items": {"type": "string", "pattern": "^M[1-9][0-9]*$"},
-                "maxItems": 100,
-            }
-        },
-        "required": ["memory_refs"],
-        "additionalProperties": False,
-    },
-)
 _SET_REPLY_TARGET_TOOL = ChatTool(
     name=_SET_REPLY_TARGET_NAME,
     description=(
@@ -358,6 +343,12 @@ class ToolInvocationRecorder(Protocol):
         bot_user_id: str,
         result_excerpt: str,
     ) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _CompletedAgentRun:
+    result: AgentRunResult
+    memory_exposures: tuple[MemoryExposure, ...]
 
 
 class _ChatAgentBackend(AgentToolBackend):
@@ -701,10 +692,6 @@ class _ChatAgentBackend(AgentToolBackend):
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
         del runtime
         self._batch = list(calls)
-        if self._runtime.memory_usage_control is not None:
-            self._runtime.memory_usage_control.begin_batch(
-                tuple(call.function.name for call in calls)
-            )
 
     def did_use_web(self) -> bool:
         """Expose a provider-metadata-derived effect to the shared Agent loop."""
@@ -712,9 +699,6 @@ class _ChatAgentBackend(AgentToolBackend):
         return self._web_was_used
 
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
-        usage_control = self._runtime.memory_usage_control
-        if usage_control is not None:
-            usage_control.note_call(name)
         if not self._batch:
             return json.dumps(
                 {"ok": False, "error": "tool_batch_state_missing"}, ensure_ascii=False
@@ -732,12 +716,6 @@ class _ChatAgentBackend(AgentToolBackend):
                 {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
             )
         call = self._batch.pop(call_index)
-        if name == REPORT_MEMORY_USAGE_TOOL:
-            return (
-                usage_control.apply(arguments_json)
-                if usage_control is not None
-                else json.dumps({"ok": False, "error": "memory_usage_report_unavailable"})
-            )
         if name == _SET_REPLY_TARGET_NAME:
             return self._set_reply_target(arguments_json)
         if self._tools_closed:
@@ -1009,15 +987,6 @@ class _ChatAgentBackend(AgentToolBackend):
             persisted=self._automation_persisted,
         )
 
-    @property
-    def used_memory_fact_ids(self) -> tuple[int, ...]:
-        control = self._runtime.memory_usage_control
-        return control.used_fact_ids if control is not None else ()
-
-    def finalize_memory_usage(self, content: str) -> None:
-        if self._runtime.memory_usage_control is not None:
-            self._runtime.memory_usage_control.finalize(content)
-
     def has_visible_effects(self) -> bool:
         """Return whether queued effects can produce a reply without model text."""
 
@@ -1098,7 +1067,7 @@ class _ChatAgentBackend(AgentToolBackend):
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
         del runtime
-        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME, REPORT_MEMORY_USAGE_TOOL}:
+        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME}:
             return False
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         return bool(entry is not None and entry.descriptor.parallel_safe)
@@ -1112,7 +1081,7 @@ class _ChatAgentBackend(AgentToolBackend):
         """Classify cache invalidation through the same descriptor used for execution."""
 
         del runtime
-        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME, REPORT_MEMORY_USAGE_TOOL}:
+        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME}:
             return False
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         descriptor = entry.descriptor if entry is not None else None
@@ -1131,7 +1100,6 @@ class _ChatAgentBackend(AgentToolBackend):
         return name not in {
             _SET_REPLY_TARGET_NAME,
             _ARTIFACT_READER_NAME,
-            REPORT_MEMORY_USAGE_TOOL,
         }
 
     def _mutation_identity(self, call: ToolCall) -> tuple[str, str] | None:
@@ -1156,13 +1124,9 @@ class _ChatAgentBackend(AgentToolBackend):
             TurnOrigin.AUTONOMOUS_GROUP,
         }:
             return ()
-        controls: list[ChatTool] = []
         if self._runtime.reply_target_control is not None:
-            controls.append(_SET_REPLY_TARGET_TOOL)
-        usage = self._runtime.memory_usage_control
-        if usage is not None and usage.report_available:
-            controls.append(_REPORT_MEMORY_USAGE_TOOL)
-        return tuple(controls)
+            return (_SET_REPLY_TARGET_TOOL,)
+        return ()
 
     def _set_reply_target(self, arguments_json: str) -> str:
         control = self._runtime.reply_target_control
@@ -1351,6 +1315,7 @@ class ChatService:
         source_policy: SourceDisplayPolicy | None = None,
         source_renderer: SourceRenderer | None = None,
         memory_context: MemoryContextService | None = None,
+        memory_attribution: MemoryAttributionWorker | None = None,
         context_assembler: ContextAssembler | None = None,
         prompt_composer: PromptComposer | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
@@ -1406,6 +1371,7 @@ class ChatService:
                 facts=self._memories,
             )
         self._memory_context = memory_context
+        self._memory_attribution = memory_attribution
         self._context_assembler = context_assembler or ContextAssembler(
             settings=settings,
             ledger=self._ledger,
@@ -1793,14 +1759,14 @@ class ChatService:
                 messages: tuple[ChatMessage, ...] = ()
                 visible_event_ids: frozenset[int] = frozenset()
                 memory_turn_id = ""
-                injected_memory_ids: tuple[int, ...] = ()
+                automatic_memory_exposures: tuple[MemoryExposure, ...] = ()
                 memory_intent: MemoryQueryIntent | None = None
             else:
                 (
                     messages,
                     visible_event_ids,
                     memory_turn_id,
-                    injected_memory_ids,
+                    automatic_memory_exposures,
                     memory_intent,
                 ) = await self._build_messages(
                     inbound,
@@ -1947,7 +1913,7 @@ class ChatService:
                 ),
                 web_route=web_route,
                 memory_turn_id=memory_turn_id,
-                memory_usage_allowed_fact_ids=injected_memory_ids,
+                memory_exposures=automatic_memory_exposures,
                 memory_intent=memory_intent,
                 planner_fallback=fallback_plan,
             )
@@ -1955,10 +1921,12 @@ class ChatService:
                 response_text = ""
             elif turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
-                    agent_result = await self._run_agent(identity.key, messages, runtime)
+                    completed_agent = await self._run_agent(identity.key, messages, runtime)
             else:
-                agent_result = await self._run_agent(identity.key, messages, runtime)
+                completed_agent = await self._run_agent(identity.key, messages, runtime)
             if not planner_emoji_only:
+                agent_result = completed_agent.result
+                attributed_exposures = completed_agent.memory_exposures
                 response_text = agent_result.text
                 if agent_result.native_tool_events:
                     native_response = recover_native_web_response(
@@ -2005,22 +1973,14 @@ class ChatService:
                                 ),
                                 max_model_requests_override=fallback_limit,
                             )
-                            agent_result = await self._run_agent(
+                            completed_agent = await self._run_agent(
                                 identity.key,
                                 messages,
                                 fallback_runtime,
                             )
+                            agent_result = completed_agent.result
+                            attributed_exposures = completed_agent.memory_exposures
                             response_text = agent_result.text
-                if agent_result.used_memory_fact_ids:
-                    recorded_usage = await self._memory_context.record_usage(
-                        agent_result.memory_turn_id,
-                        agent_result.used_memory_fact_ids,
-                    )
-                    agent_result = replace(
-                        agent_result,
-                        used_memory_fact_ids=recorded_usage,
-                        memory_usage_reported=bool(recorded_usage),
-                    )
             sources = await self._web_sources.for_trigger(
                 conversation_key=identity.key,
                 trigger_message_id=inbound.message_id,
@@ -2047,6 +2007,7 @@ class ChatService:
                 if not emoji_effects:
                     raise
                 rendered = ""
+            attribution_response_text = rendered
             prepared_effects: list[tuple[PendingReplyEffect, OutboundMessage]] = []
             preparation_fallbacks: list[OutboundMessage] = []
             if self._emoji_effects is not None:
@@ -2270,10 +2231,11 @@ class ChatService:
                     reply_to_message_id=reply_to_message_id,
                 )
                 if not planner_emoji_only and agent_body_delivered and not sequence.cancelled:
-                    await self._reinforce_delivered_memory(
-                        agent_result,
-                        memory_intent,
-                        runtime_config,
+                    self._enqueue_memory_attribution(
+                        runtime=runtime,
+                        user_question=content,
+                        final_response=attribution_response_text,
+                        exposures=attributed_exposures,
                     )
                 return sequence.sent_messages
             chunks = self._render_chunks(rendered, runtime_config) if rendered else ()
@@ -2417,26 +2379,47 @@ class ChatService:
                     await self._record_outbound(inbound, source_text, receipt)
                     sent_count += 1
             if not planner_emoji_only and agent_body_delivered:
-                await self._reinforce_delivered_memory(
-                    agent_result,
-                    memory_intent,
-                    runtime_config,
+                self._enqueue_memory_attribution(
+                    runtime=runtime,
+                    user_question=content,
+                    final_response=attribution_response_text,
+                    exposures=attributed_exposures,
                 )
             return sent_count
 
-    async def _reinforce_delivered_memory(
+    def _enqueue_memory_attribution(
         self,
-        result: AgentRunResult,
-        intent: MemoryQueryIntent | None,
-        runtime: RuntimeConfigSnapshot,
-    ) -> None:
-        if intent is None or not result.used_memory_fact_ids:
-            return
-        await self._memory_context.reinforce_usage(
-            turn_id=result.memory_turn_id,
-            fact_ids=result.used_memory_fact_ids,
-            intent=intent,
-            runtime=runtime,
+        *,
+        runtime: ToolRuntime,
+        user_question: str,
+        final_response: str,
+        exposures: tuple[MemoryExposure, ...],
+    ) -> bool:
+        config = runtime.runtime_config
+        if (
+            self._memory_attribution is None
+            or config is None
+            or not config.memory.usage_attribution_enabled
+            or not runtime.memory_turn_id
+            or runtime.memory_intent is None
+            or runtime.planner_fallback
+            or runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+            or not final_response.strip()
+            or not exposures
+        ):
+            return False
+        return self._memory_attribution.enqueue(
+            MemoryAttributionJob(
+                turn_id=runtime.memory_turn_id,
+                user_id=runtime.inbound.sender.user_id,
+                group_id=runtime.inbound.group_id,
+                user_question=user_question,
+                final_response=final_response,
+                intent=runtime.memory_intent,
+                exposures=exposures,
+                runtime=config,
+                enqueued_at=datetime.now(UTC),
+            )
         )
 
     async def _build_messages(
@@ -2455,7 +2438,7 @@ class ChatService:
         tuple[ChatMessage, ...],
         frozenset[int],
         str,
-        tuple[int, ...],
+        tuple[MemoryExposure, ...],
         MemoryQueryIntent | None,
     ]:
         context = await self._context_assembler.assemble(
@@ -2491,7 +2474,7 @@ class ChatService:
             ),
             context.visible_event_ids,
             context.memory_turn_id,
-            context.injected_memory_ids,
+            context.memory_exposures,
             context.memory_intent,
         )
 
@@ -2534,7 +2517,7 @@ class ChatService:
         conversation_key: str,
         initial_messages: tuple[ChatMessage, ...],
         runtime: ToolRuntime,
-    ) -> AgentRunResult:
+    ) -> _CompletedAgentRun:
         config = runtime.runtime_config
         if config is None:
             config = await self._runtime_config.snapshot(
@@ -2542,18 +2525,8 @@ class ChatService:
                 group_id=runtime.inbound.group_id,
             )
             runtime = replace(runtime, runtime_config=config)
-        usage_control = MemoryUsageControl(
-            turn_id=runtime.memory_turn_id,
-            injected_fact_ids=runtime.memory_usage_allowed_fact_ids,
-            enabled=bool(
-                config.memory.usage_reporting_enabled
-                and runtime.memory_turn_id
-                and not runtime.planner_fallback
-                and runtime.origin in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
-            ),
-            metrics=self._memory_context.metrics,
-        )
-        runtime = replace(runtime, memory_usage_control=usage_control)
+        exposure_registry = MemoryExposureRegistry(runtime.memory_exposures)
+        runtime = replace(runtime, memory_exposure_registry=exposure_registry)
         runtime = await self._prepare_tool_candidates(runtime)
         current_time = await self._time.current(runtime.inbound.sender.user_id)
         backend = _ChatAgentBackend(self, runtime)
@@ -2585,12 +2558,9 @@ class ChatService:
             ),
             backend,
         )
-        backend.finalize_memory_usage(result.text)
-        return replace(
-            result,
-            memory_turn_id=runtime.memory_turn_id,
-            used_memory_fact_ids=backend.used_memory_fact_ids,
-            memory_usage_reported=bool(backend.used_memory_fact_ids),
+        return _CompletedAgentRun(
+            result=result,
+            memory_exposures=exposure_registry.snapshot(),
         )
 
     async def generate_external_reply(
@@ -2659,7 +2629,8 @@ class ChatService:
             selected_tool_names=frozenset(),
             max_model_requests_override=min(2, runtime.agent.max_model_requests),
         )
-        result = await self._run_agent(conversation_key, messages, tool_runtime)
+        completed = await self._run_agent(conversation_key, messages, tool_runtime)
+        result = completed.result
         try:
             rendered = clean_model_output(
                 result.text,

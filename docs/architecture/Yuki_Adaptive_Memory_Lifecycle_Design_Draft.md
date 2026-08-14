@@ -18,9 +18,8 @@
   字符串处理，但不能参与 Recall Intent 分类。
 - 当前 `last_used_at` 的真实含义是最终预算后的 Context 注入时间；迁移后统一命名为
   `last_injected_at`，历史值不能作为真正 Recall 或强化证据。
-- Agent 当前没有隐藏 JSON 最终回复协议。真实使用归因通过受本轮注入白名单约束的
-  `report_memory_usage` 本地响应控制工具完成；它只提交 refs，随后由 Agent 正常生成正文。
-  只有合法报告对应的最终正文/语音获得发送回执后才强化。
+- Agent 不承担记忆使用自报。最终正文或对应语音获得发送回执后，由可抢占的后台 Flash 任务
+  基于本轮问题、实际发送正文和实际呈现的 Exposure 判断真正使用；只有白名单内的 refs 才能进入强化。
 - 没有 Planner 轮次的 Plugin/Admin 显式搜索保持中性、只读和 Plugin API 1.0 兼容。
 
 ---
@@ -446,7 +445,7 @@ recall_count
 ```text
 Agent Response
       ↓
-MemoryUsageReport
+Post-delivery Attribution
       ↓
 Reinforcement Service
       ↓
@@ -862,7 +861,7 @@ recall
 injected == used
 ```
 
-## 14.1 Agent Usage Attribution
+## 14.1 Asynchronous Usage Attribution
 
 所有注入上下文的 Memory 都携带稳定内部 ID，例如：
 
@@ -872,22 +871,21 @@ M481
 M602
 ```
 
-当本轮最终正文实质依赖长期记忆时，Agent 通过后端提供的本地响应控制工具提交隐藏使用报告：
+最终 Agent 运行期间，系统只在内存中登记实际进入上下文或由记忆工具实际返回的 Exposure：
 
-```yaml
-tool: report_memory_usage
-memory_refs:
-  - M312
+```text
+MemoryExposure(memory_ref=M312, source=automatic)
+MemoryExposure(memory_ref=M481, source=agent_tool)
 ```
 
-工具必须单独、至多调用一次，并作为最终正文前的最后一次工具调用；refs 必须来自本轮真正呈现过的
-白名单。调用后需要一次模型请求生成正常正文，但不计入业务工具次数；未实质使用记忆时不调用。
-模型直接返回正文时不强制重试，避免对普通记忆轮次增加延迟，此时按“无使用报告”处理且不强化。
+Agent 直接生成正文，不调用任何归因工具。完整正文或由该正文生成的语音成功发送后，主链仅执行一次
+非阻塞内存入队；后台 Flash 根据本轮用户问题、最终发送正文和 Exposure 判断哪些 refs 构成实质依赖。
+后台归因可以被新的前台模型请求抢占；抢占、超时、非法输出和进程重启均按未归因处理，不做强化。
 
 系统内部得到：
 
 ```text
-MemoryUsageReport
+MemoryAttributionOutput(used_refs=[M312])
 ```
 
 然后：
@@ -1154,7 +1152,7 @@ Store
 10. 实现 Lazy Exponential Decay。
 11. Activation 作为温和 Ranking Feature，而非硬过滤器。
 12. 建立 `retrieved → selected → injected → used → reinforced` 生命周期。
-13. Agent 返回隐藏的 `MemoryUsageReport`。
+13. 发送成功后由后台 Flash 返回白名单约束的 `MemoryAttributionOutput`。
 14. 只有真正 `used` 的 Memory 才进入 Reinforcement Path。
 15. 实现 Activation Reinforcement。
 16. Recall Intent 可以影响 Reinforcement 强度。
@@ -1212,7 +1210,10 @@ Agent / Yuki
             ▼
           Agent
             │
-            │ MemoryUsageReport
+            │ delivered reply + MemoryExposure
+            ▼
+      Async Attribution
+            │ used refs
             ▼
       Reinforcement
 ```
@@ -1232,7 +1233,8 @@ Regex Intent Detector
 ```text
 MemoryQueryIntent
 MemoryRetrievalResult
-MemoryUsageReport
+MemoryExposure
+MemoryAttributionOutput
 ```
 
 这样未来才能自然抽成独立记忆引擎。

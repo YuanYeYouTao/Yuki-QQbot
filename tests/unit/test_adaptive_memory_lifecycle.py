@@ -28,7 +28,6 @@ from qq_ai_bot.memory.enums import (
     MemoryTemporalIntentMode,
 )
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import (
     MemoryActivationState,
     MemoryEntityTarget,
@@ -41,7 +40,7 @@ from qq_ai_bot.memory.models import (
     MemoryTemporalIntent,
 )
 from qq_ai_bot.memory.query import MemoryQueryBuilder
-from qq_ai_bot.memory.receipt import MemoryRecallRepository, MemoryUsageControl
+from qq_ai_bot.memory.receipt import MemoryRecallRepository
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
@@ -231,47 +230,6 @@ async def test_preferred_kind_is_soft_and_overview_trace_is_bounded(database: Da
     assert unchanged is not None and unchanged.last_injected_at is None
 
 
-def test_usage_control_accepts_refs_and_rejects_invalid_batches() -> None:
-    metrics = MemoryLifecycleMetrics()
-    valid = MemoryUsageControl(
-        turn_id="turn", injected_fact_ids=(1, 2), enabled=True, metrics=metrics
-    )
-    valid.begin_batch(("report_memory_usage",))
-    result = valid.apply('{"memory_refs":["M2"]}')
-    assert '"ok":true' in result
-    valid.finalize("正文依赖 M2")
-    assert valid.used_fact_ids == (2,)
-
-    unavailable = MemoryUsageControl(turn_id="turn", injected_fact_ids=(1,), enabled=True)
-    unavailable.begin_batch(("report_memory_usage",))
-    assert '"ok":false' in unavailable.apply('{"memory_refs":["M9"]}')
-    unavailable.finalize("正文")
-    assert unavailable.used_fact_ids == ()
-
-    parallel = MemoryUsageControl(turn_id="turn", injected_fact_ids=(1,), enabled=True)
-    parallel.begin_batch(("report_memory_usage", "get_memory_fact"))
-    parallel.apply('{"memory_refs":["M1"]}')
-    parallel.finalize("正文")
-    assert parallel.used_fact_ids == ()
-
-    nonfinal = MemoryUsageControl(turn_id="turn", injected_fact_ids=(1,), enabled=True)
-    nonfinal.begin_batch(("report_memory_usage",))
-    nonfinal.apply('{"memory_refs":["M1"]}')
-    nonfinal.note_call("web_search")
-    nonfinal.finalize("正文")
-    assert nonfinal.used_fact_ids == ()
-
-    missing = MemoryUsageControl(
-        turn_id="turn", injected_fact_ids=(1,), enabled=True, metrics=metrics
-    )
-    missing.finalize("正文")
-
-    snapshot = metrics.adaptive_snapshot()
-    assert snapshot["memory_usage_report_valid_count"] == 1
-    assert snapshot["memory_usage_report_missing_count"] == 1
-    assert snapshot["memory_usage_report_extra_model_request_count"] == 1
-
-
 @pytest.mark.asyncio
 async def test_strict_temporal_range_excludes_outside_and_undated_facts(
     database: Database,
@@ -390,7 +348,7 @@ async def test_receipt_usage_reinforcement_is_idempotent(database: Database) -> 
         settings=make_settings(database.url),
         database=database,
     ).snapshot(user_id="1001")
-    assert await service.record_usage(turn.turn_id, (fact.id,)) == (fact.id,)
+    assert await service.mark_attributed_used(turn.turn_id, (fact.id,)) == (fact.id,)
     first = await service.reinforce_usage(
         turn_id=turn.turn_id,
         fact_ids=(fact.id,),
@@ -449,7 +407,7 @@ async def test_concurrent_same_receipt_reinforces_once(database: Database) -> No
         injected_fact_ids=(fact.id,),
         retention_days=30,
     )
-    await receipts.mark_used(turn.turn_id, (fact.id,))
+    await receipts.mark_attributed_used(turn.turn_id, (fact.id,))
     activation = MemoryActivationRepository(database)
     facts = MemoryFactService(MemoryFactRepository(database))
     service = MemoryContextService(

@@ -191,7 +191,10 @@ class Settings(BaseSettings):
     memory_hybrid_rrf_k: int = 60
     memory_intent_rerank_enabled: bool = True
     memory_activation_ranking_enabled: bool = True
-    memory_usage_reporting_enabled: bool = True
+    memory_usage_attribution_enabled: bool = True
+    memory_usage_attribution_timeout_seconds: float = Field(default=12.0, gt=0, le=120)
+    memory_usage_attribution_job_ttl_seconds: float = Field(default=120.0, gt=0, le=3600)
+    memory_usage_attribution_queue_limit: int = Field(default=128, gt=0, le=4096)
     memory_reinforcement_enabled: bool = True
     memory_recall_receipts_enabled: bool = True
     memory_activation_half_life_episode_days: float = Field(default=14.0, gt=0)

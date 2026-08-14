@@ -22,6 +22,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
+from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureRegistry
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
     MemoryRetrievalMode,
@@ -41,7 +42,6 @@ from qq_ai_bot.memory.mutation.models import (
 )
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.query import MemoryQueryBuilder
-from qq_ai_bot.memory.receipt import MemoryUsageControl
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
@@ -122,8 +122,8 @@ class ToolRuntime:
     native_web_fallback: bool = False
     web_route: WebRouteDecision | None = None
     memory_turn_id: str = ""
-    memory_usage_allowed_fact_ids: tuple[int, ...] = ()
-    memory_usage_control: MemoryUsageControl | None = None
+    memory_exposures: tuple[MemoryExposure, ...] = ()
+    memory_exposure_registry: MemoryExposureRegistry | None = None
     memory_intent: MemoryQueryIntent | None = None
     planner_fallback: bool = False
 
@@ -1816,7 +1816,13 @@ class AgentToolService:
         def visit(value: object) -> None:
             if isinstance(value, dict):
                 ref = value.get("memory_ref")
-                if isinstance(ref, str) and ref.startswith("M") and ref[1:].isdigit():
+                if (
+                    isinstance(ref, str)
+                    and ref.startswith("M")
+                    and len(ref) <= 20
+                    and ref[1:].isdigit()
+                    and int(ref[1:]) > 0
+                ):
                     fact_ids.append(int(ref[1:]))
                 for child in value.values():
                     visit(child)
@@ -1828,8 +1834,8 @@ class AgentToolService:
         unique_ids = tuple(dict.fromkeys(fact_ids))
         if unique_ids:
             await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
-            if runtime.memory_usage_control is not None:
-                runtime.memory_usage_control.register_presented(unique_ids)
+            if runtime.memory_exposure_registry is not None:
+                runtime.memory_exposure_registry.register_tool_payload(payload)
             if isinstance(payload, dict):
                 payload["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
                 return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

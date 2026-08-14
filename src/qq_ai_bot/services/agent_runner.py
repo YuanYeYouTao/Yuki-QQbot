@@ -77,9 +77,6 @@ class AgentRunResult:
     citations: tuple[ResponseCitation, ...] = ()
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
     web_route: WebRouteDecision | None = None
-    memory_turn_id: str = ""
-    used_memory_fact_ids: tuple[int, ...] = ()
-    memory_usage_reported: bool = False
 
 
 class AgentToolBackend(Protocol):

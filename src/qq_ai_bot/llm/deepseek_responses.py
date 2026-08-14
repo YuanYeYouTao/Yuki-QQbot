@@ -182,8 +182,7 @@ class DeepSeekResponsesProvider(LLMProvider):
             # DeepSeek V4 thinking mode rejects the tool_choice field even though
             # the non-thinking OpenAI-compatible surface accepts it. Keep the tool
             # schemas available and let the model select them from instructions;
-            # AgentRunner still validates the terminal response locally and treats
-            # a missing usage report as non-reinforceable.
+            # AgentRunner still validates the terminal response locally.
             if not request.thinking_enabled:
                 payload["tool_choice"] = request.tool_choice
         if request.thinking_enabled and request.reasoning_effort is not None:

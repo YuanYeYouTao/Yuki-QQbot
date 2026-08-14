@@ -155,7 +155,10 @@ class MemoryRetrievalRuntimeConfig:
     hybrid_rrf_k: int = 60
     intent_rerank_enabled: bool = True
     activation_ranking_enabled: bool = True
-    usage_reporting_enabled: bool = True
+    usage_attribution_enabled: bool = True
+    usage_attribution_timeout_seconds: float = 12.0
+    usage_attribution_job_ttl_seconds: float = 120.0
+    usage_attribution_queue_limit: int = 128
     reinforcement_enabled: bool = True
     recall_receipts_enabled: bool = True
     activation_half_life_episode_days: float = 14.0

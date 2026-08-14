@@ -334,9 +334,7 @@ class MemorySettings(DomainSettings):
             self.memory_dream_episode_hard_compression_ratio
             < self.memory_dream_episode_compression_ratio
         ):
-            raise ValueError(
-                "memory Dream hard compression ratio cannot be below its target ratio"
-            )
+            raise ValueError("memory Dream hard compression ratio cannot be below its target ratio")
         return self
 
 

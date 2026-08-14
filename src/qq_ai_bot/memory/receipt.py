@@ -1,21 +1,17 @@
-"""Content-free recall receipts and local response usage control."""
+"""Content-free recall receipts for adaptive memory retrieval."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, func, select, update
 
-from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryRetrievalHit, MemoryRetrievalResult
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import MemoryRecallItemModel, MemoryRecallReceiptModel
-
-REPORT_MEMORY_USAGE_TOOL = "report_memory_usage"
 
 
 def hashed_identifier(value: str) -> str:
@@ -26,118 +22,6 @@ def hashed_identifier(value: str) -> str:
 class MemoryRecallTurn:
     turn_id: str
     injected_fact_ids: tuple[int, ...]
-
-
-class MemoryUsageControl:
-    """One-run whitelist; never trusts identity or fact ids supplied by the model."""
-
-    def __init__(
-        self,
-        *,
-        turn_id: str,
-        injected_fact_ids: tuple[int, ...],
-        enabled: bool,
-        metrics: MemoryLifecycleMetrics | None = None,
-    ) -> None:
-        self.turn_id = turn_id
-        self.enabled = enabled
-        self._available = set(injected_fact_ids)
-        self._attempted = False
-        self._reported = False
-        self._valid = True
-        self._finalized = False
-        self._used: tuple[int, ...] = ()
-        self._report_batch_valid = True
-        self._metrics = metrics
-        self._invalid_recorded = False
-
-    @property
-    def available_refs(self) -> tuple[str, ...]:
-        return tuple(f"M{fact_id}" for fact_id in sorted(self._available))
-
-    @property
-    def report_available(self) -> bool:
-        return self.enabled and bool(self._available) and not self._attempted
-
-    @property
-    def used_fact_ids(self) -> tuple[int, ...]:
-        if not (self._reported and self._valid and self._finalized):
-            return ()
-        return self._used
-
-    @property
-    def reported(self) -> bool:
-        return bool(self.used_fact_ids)
-
-    def register_presented(self, fact_ids: tuple[int, ...]) -> None:
-        if self._reported:
-            self._valid = False
-            return
-        self._available.update(fact_ids)
-
-    def begin_batch(self, names: tuple[str, ...]) -> None:
-        self._report_batch_valid = not (REPORT_MEMORY_USAGE_TOOL in names and len(names) != 1)
-
-    def note_call(self, name: str) -> None:
-        if self._reported and name != REPORT_MEMORY_USAGE_TOOL:
-            self._valid = False
-            self._record_invalid()
-
-    def apply(self, arguments_json: str) -> str:
-        self._attempted = True
-        if not self.enabled or not self._report_batch_valid:
-            self._valid = False
-            self._record_invalid()
-            return _result(False, "memory_usage_report_unavailable")
-        if self._reported:
-            self._valid = False
-            self._record_invalid()
-            return _result(False, "memory_usage_report_duplicate")
-        try:
-            arguments = json.loads(arguments_json)
-        except json.JSONDecodeError:
-            arguments = None
-        refs = arguments.get("memory_refs") if isinstance(arguments, dict) else None
-        if (
-            not isinstance(arguments, dict)
-            or set(arguments) != {"memory_refs"}
-            or not isinstance(refs, list)
-            or len(refs) > 100
-            or any(not isinstance(ref, str) for ref in refs)
-        ):
-            self._valid = False
-            self._record_invalid()
-            return _result(False, "memory_usage_report_invalid")
-        unique_refs = tuple(dict.fromkeys(refs))
-        if any(not ref.startswith("M") or not ref[1:].isdigit() for ref in unique_refs):
-            self._valid = False
-            self._record_invalid()
-            return _result(False, "memory_usage_ref_invalid")
-        fact_ids = tuple(int(ref[1:]) for ref in unique_refs)
-        if any(fact_id not in self._available for fact_id in fact_ids):
-            self._valid = False
-            self._record_invalid()
-            return _result(False, "memory_usage_ref_not_presented")
-        self._reported = True
-        self._used = fact_ids
-        if self._metrics is not None:
-            self._metrics.record_usage_report("valid" if fact_ids else "empty")
-            self._metrics.increment("memory_usage_report_extra_model_request_count")
-        return json.dumps(
-            {"ok": True, "accepted": len(fact_ids)},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-
-    def finalize(self, content: str) -> None:
-        self._finalized = bool(content.strip())
-        if self.enabled and self._available and not self._attempted and self._metrics is not None:
-            self._metrics.record_usage_report("missing")
-
-    def _record_invalid(self) -> None:
-        if not self._invalid_recorded and self._metrics is not None:
-            self._metrics.record_usage_report("invalid")
-            self._invalid_recorded = True
 
 
 class MemoryRecallRepository:
@@ -209,7 +93,7 @@ class MemoryRecallRepository:
                 )
         return MemoryRecallTurn(turn_id=turn_id, injected_fact_ids=injected_fact_ids)
 
-    async def mark_used(
+    async def mark_attributed_used(
         self,
         turn_id: str,
         fact_ids: tuple[int, ...],
@@ -452,7 +336,3 @@ class MemoryRecallRepository:
             }
             for receipt, item in rows
         )
-
-
-def _result(ok: bool, error: str) -> str:
-    return json.dumps({"ok": ok, "error": error}, ensure_ascii=False, separators=(",", ":"))

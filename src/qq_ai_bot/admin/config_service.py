@@ -1088,7 +1088,16 @@ class RuntimeConfigService:
                 hybrid_rrf_k=int(cast(int, value("memory.hybrid_rrf_k"))),
                 intent_rerank_enabled=bool(value("memory.intent_rerank_enabled")),
                 activation_ranking_enabled=bool(value("memory.activation_ranking_enabled")),
-                usage_reporting_enabled=bool(value("memory.usage_reporting_enabled")),
+                usage_attribution_enabled=bool(value("memory.usage_attribution_enabled")),
+                usage_attribution_timeout_seconds=float(
+                    cast(float | int, value("memory.usage_attribution_timeout_seconds"))
+                ),
+                usage_attribution_job_ttl_seconds=float(
+                    cast(float | int, value("memory.usage_attribution_job_ttl_seconds"))
+                ),
+                usage_attribution_queue_limit=int(
+                    cast(int, value("memory.usage_attribution_queue_limit"))
+                ),
                 reinforcement_enabled=bool(value("memory.reinforcement_enabled")),
                 recall_receipts_enabled=bool(value("memory.recall_receipts_enabled")),
                 activation_half_life_episode_days=float(
