@@ -1,11 +1,11 @@
 # Memory V2 Quality Report
 
 - Suite: `memory-v2-quality-v1` / `full`
-- Commit: `63dd47977a46538cc9db5b0a0fc17b0d85bdfd30`
+- Commit: `22901752a653f67b0c8bee4369203ea1489dc567`
 - Dataset: `84b7aa3cc6c099548e63b84e4cd6e2b3763d2bdf98f1b33724192493cf776ca3`
 - Cases: 18/18 passed
 - Failed IDs: none
-- Duration: 3.509s
+- Duration: 3.621s
 
 | Metric | Value | Numerator/denominator |
 |---|---:|---:|
@@ -20,7 +20,7 @@
 | `conflict_coactivation_rate` | 0.0 | 0/1 |
 | `conflict_resolution_accuracy` | 1.0 | 1/1 |
 | `contested_context_leak_rate` | 0.0 | 0/1 |
-| `context_latency_p50_ms` | 0.035800039768218994 | 0.0358/1 |
+| `context_latency_p50_ms` | 0.03599992487579584 | 0.0359999/1 |
 | `context_latency_p95_ms` | null | 0/0 |
 | `context_precision` | 1.0 | 14/14 |
 | `context_recall` | 1.0 | 14/14 |
@@ -31,7 +31,7 @@
 | `duplicate_evidence_rate` | 0.0 | 0/12 |
 | `empty_query_fact_leak_rate` | 0.0 | 0/1 |
 | `evidence_provenance_accuracy` | 1.0 | 12/12 |
-| `extraction_latency_p50_ms` | 14.654199942015111 | 14.6542/1 |
+| `extraction_latency_p50_ms` | 14.102799934335053 | 14.1028/1 |
 | `extraction_latency_p95_ms` | null | 0/0 |
 | `fact_accuracy` | 1.0 | 23/23 |
 | `fact_state_accuracy` | 1.0 | 23/23 |
@@ -43,7 +43,7 @@
 | `outbound_evidence_rate` | 0.0 | 0/1 |
 | `pipeline_error_rate` | 0.0 | 0/18 |
 | `precision_at_k` | 1.0 | 14/14 |
-| `quality_suite_total_ms` | 714.4739002687857 | 714.474/1 |
+| `quality_suite_total_ms` | 768.2034996105358 | 768.203/1 |
 | `rebuild_duplicate_commit_rate` | 0.0 | 0/1 |
 | `rebuild_historical_overwrite_rate` | 0.0 | 0/1 |
 | `rebuild_receipt_accuracy` | 1.0 | 1/1 |
@@ -51,7 +51,7 @@
 | `rebuild_review_bypass_rate` | 0.0 | 0/1 |
 | `recall_at_k` | 1.0 | 14/14 |
 | `retraction_resolution_accuracy` | null | 0/0 |
-| `retrieval_latency_p50_ms` | 5.710100056603551 | 5.7101/1 |
+| `retrieval_latency_p50_ms` | 5.841000005602837 | 5.841/1 |
 | `retrieval_latency_p95_ms` | null | 0/0 |
 | `scope_attribution_accuracy` | 1.0 | 12/12 |
 | `source_event_mismatch_rate` | 0.0 | 0/12 |

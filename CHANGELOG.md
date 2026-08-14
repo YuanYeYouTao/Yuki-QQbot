@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 3.5.1 - 2026-08-15
+
+### 自适应记忆生命周期
+
+- Planner 在单次规划中输出结构化记忆访问方式、目的、主体、实体、时间和类型提示；后端保持
+  人物、群和 SELF 可见性硬边界，并在 FTS/Semantic、RRF 之后按意图和 Activation 重排。
+- 新增按记忆类型指数衰减的 Activation、Recall Receipt、发送后使用归因和 CAS 强化；归因由
+  可抢占的后台 Flash Worker 完成，不再要求主 Agent 自报，也不阻塞正文发送。
+- Alembic `0035` 增加 Activation 与 Recall Receipt，`0036` 将旧归因配置键迁移到异步归因开关；
+  Plugin Memory Facade 和管理搜索继续保持纯读取与既有合同。
+
+### 召回与写入隔离
+
+- 自动召回、显式记忆工具读取和记忆修改形成互斥路径；自动召回按 purpose 使用全局 3/4/6/8
+  条上限，并保留每目标 4 条上限，减少上下文和重复工具调用。
+- 记忆创建、纠正、撤回和恢复只开放 `memory/write_state` 能力；最终回复由真实 mutation receipt
+  完成门约束，未提交、歧义或未找到时不能声称成功。
+- DeepSeek Chat Completions 与 Responses 请求均省略不受支持的 `tool_choice`；mutation 写能力
+  不受通用候选工具裁剪，用户可见标签只能返回有界候选，不能触发模糊写入。
+
+### 验证
+
+- Ruff、mypy、1111 项 pytest 与 Memory Quality 18/18 cases、38/38 gates 通过；唯一跳过项为
+  需要显式凭据的真实 Qwen Embedding 在线测试。
+- 生产小批测试完成创建、自动读取、显式工具读取、纠正、撤回和重复撤回；事实版本链、mutation
+  receipt、数据库完整性、Bot 健康状态和 OneBot 连接均通过核验。
+
 ## 3.4.5 - 2026-08-08
 
 ### Memory V2 写入质量与自主反思

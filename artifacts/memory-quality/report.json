@@ -2,7 +2,7 @@
   "schema_version": "1",
   "suite_version": "memory-v2-quality-v1",
   "suite_mode": "full",
-  "commit": "63dd47977a46538cc9db5b0a0fc17b0d85bdfd30",
+  "commit": "22901752a653f67b0c8bee4369203ea1489dc567",
   "python_version": "3.12.13",
   "sqlite_version": "3.53.1",
   "dataset_hash": "84b7aa3cc6c099548e63b84e4cd6e2b3763d2bdf98f1b33724192493cf776ca3",
@@ -12,8 +12,8 @@
   "deterministic": true,
   "model_provider_id": null,
   "embedding_provider_id": null,
-  "started_at": "2026-08-14T17:43:23.335800Z",
-  "duration_seconds": 3.5094332000007853,
+  "started_at": "2026-08-14T20:34:34.756967Z",
+  "duration_seconds": 3.6211608999874443,
   "case_count": 18,
   "passed_count": 18,
   "failed_count": 0,
@@ -51,14 +51,14 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 576,
-        "extraction_latency_ms": 93.48989999853075,
+        "extraction_latency_ms": 71.64839992765337,
         "retrieval_latency_ms": [
-          8.919100044295192,
-          5.710100056603551
+          7.0356999058276415,
+          5.357100046239793
         ],
         "context_latency_ms": [
-          0.03860006108880043,
-          0.04179996903985739
+          0.0439999857917428,
+          0.036800047382712364
         ],
         "error_code": null
       }
@@ -96,14 +96,14 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 582,
-        "extraction_latency_ms": 73.90529999975115,
+        "extraction_latency_ms": 63.324599992483854,
         "retrieval_latency_ms": [
-          4.420100012794137,
-          3.11729998793453
+          4.435200011357665,
+          3.072099993005395
         ],
         "context_latency_ms": [
-          0.033400021493434906,
-          0.03959995228797197
+          0.038100057281553745,
+          0.0323000131174922
         ],
         "error_code": null
       }
@@ -136,14 +136,14 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 301,
-        "extraction_latency_ms": 43.48079999908805,
+        "extraction_latency_ms": 113.93950006458908,
         "retrieval_latency_ms": [
-          4.971100017428398,
-          4.347199923358858
+          4.417399992235005,
+          4.303500056266785
         ],
         "context_latency_ms": [
-          0.03750005271285772,
-          0.013299984857439995
+          0.03829994238913059,
+          0.011100084520876408
         ],
         "error_code": null
       }
@@ -166,7 +166,7 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 0,
-        "extraction_latency_ms": 14.654199942015111,
+        "extraction_latency_ms": 14.102799934335053,
         "retrieval_latency_ms": [],
         "context_latency_ms": [],
         "error_code": null
@@ -190,7 +190,7 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 0,
-        "extraction_latency_ms": 16.78380009252578,
+        "extraction_latency_ms": 15.267700073309243,
         "retrieval_latency_ms": [],
         "context_latency_ms": [],
         "error_code": null
@@ -214,7 +214,7 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 0,
-        "extraction_latency_ms": 3.1135999597609043,
+        "extraction_latency_ms": 3.0943999299779534,
         "retrieval_latency_ms": [],
         "context_latency_ms": [],
         "error_code": null
@@ -248,12 +248,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 301,
-        "extraction_latency_ms": 39.86150003038347,
+        "extraction_latency_ms": 44.51159993186593,
         "retrieval_latency_ms": [
-          8.59480001963675
+          6.9951999466866255
         ],
         "context_latency_ms": [
-          0.03850006032735109
+          0.03599992487579584
         ],
         "error_code": null
       }
@@ -286,12 +286,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 287,
-        "extraction_latency_ms": 48.99979999754578,
+        "extraction_latency_ms": 40.69179994985461,
         "retrieval_latency_ms": [
-          8.147899992763996
+          7.021100027486682
         ],
         "context_latency_ms": [
-          0.037400051951408386
+          0.03650004509836435
         ],
         "error_code": null
       }
@@ -326,12 +326,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 289,
-        "extraction_latency_ms": 84.26869998220354,
+        "extraction_latency_ms": 59.32630004826933,
         "retrieval_latency_ms": [
-          8.306299918331206
+          6.028600037097931
         ],
         "context_latency_ms": [
-          0.03639992792159319
+          0.033800024539232254
         ],
         "error_code": null
       }
@@ -367,14 +367,14 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 291,
-        "extraction_latency_ms": 62.63729999773204,
+        "extraction_latency_ms": 119.11530001088977,
         "retrieval_latency_ms": [
-          6.619099993258715,
-          3.368500038050115
+          8.96659994032234,
+          3.2461000373587012
         ],
         "context_latency_ms": [
-          0.046600005589425564,
-          0.012899981811642647
+          0.042599975131452084,
+          0.010899966582655907
         ],
         "error_code": null
       }
@@ -402,12 +402,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 2,
-        "extraction_latency_ms": 2.9709000373259187,
+        "extraction_latency_ms": 3.035999950952828,
         "retrieval_latency_ms": [
-          3.5177000099793077
+          4.720700089819729
         ],
         "context_latency_ms": [
-          0.00909995287656784
+          0.010399962775409222
         ],
         "error_code": null
       }
@@ -432,12 +432,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 2,
-        "extraction_latency_ms": 3.0457000248134136,
+        "extraction_latency_ms": 3.0822999542579055,
         "retrieval_latency_ms": [
-          3.983799950219691
+          5.841000005602837
         ],
         "context_latency_ms": [
-          0.009599956683814526
+          0.011599971912801266
         ],
         "error_code": null
       }
@@ -467,12 +467,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 287,
-        "extraction_latency_ms": 2.867800067178905,
+        "extraction_latency_ms": 3.3747999696061015,
         "retrieval_latency_ms": [
-          6.574900005944073
+          6.901700049638748
         ],
         "context_latency_ms": [
-          0.03879994619637728
+          0.03560003824532032
         ],
         "error_code": null
       }
@@ -501,12 +501,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 283,
-        "extraction_latency_ms": 2.7177000883966684,
+        "extraction_latency_ms": 3.1621999805793166,
         "retrieval_latency_ms": [
-          6.616399972699583
+          7.3491999646648765
         ],
         "context_latency_ms": [
-          0.03429991193115711
+          0.039400067180395126
         ],
         "error_code": null
       }
@@ -536,12 +536,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 1,
         "context_characters": 288,
-        "extraction_latency_ms": 3.016800037585199,
+        "extraction_latency_ms": 3.172599943354726,
         "retrieval_latency_ms": [
-          10.022500064224005
+          9.024000028148293
         ],
         "context_latency_ms": [
-          0.035800039768218994
+          0.03659992944449186
         ],
         "error_code": null
       }
@@ -566,12 +566,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 2,
-        "extraction_latency_ms": 2.9223000165075064,
+        "extraction_latency_ms": 2.972699934616685,
         "retrieval_latency_ms": [
-          2.654000069014728
+          4.492899985052645
         ],
         "context_latency_ms": [
-          0.010100076906383038
+          0.010200077667832375
         ],
         "error_code": null
       }
@@ -601,12 +601,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 290,
-        "extraction_latency_ms": 3.0860999831929803,
+        "extraction_latency_ms": 2.9033999890089035,
         "retrieval_latency_ms": [
-          4.079199978150427
+          4.394099931232631
         ],
         "context_latency_ms": [
-          0.03430002834647894
+          0.032100011594593525
         ],
         "error_code": null
       }
@@ -647,12 +647,12 @@
         "consolidation_requests": 0,
         "query_embedding_requests": 0,
         "context_characters": 287,
-        "extraction_latency_ms": 212.6517000142485,
+        "extraction_latency_ms": 201.47710002493113,
         "retrieval_latency_ms": [
-          6.813500076532364
+          7.326200022362173
         ],
         "context_latency_ms": [
-          0.030399998649954796
+          0.04079996142536402
         ],
         "error_code": null
       }
@@ -936,8 +936,8 @@
       "unit": "characters"
     },
     "extraction_latency_p50_ms": {
-      "value": 14.654199942015111,
-      "numerator": 14.654199942015111,
+      "value": 14.102799934335053,
+      "numerator": 14.102799934335053,
       "denominator": 1.0,
       "unit": "milliseconds"
     },
@@ -948,8 +948,8 @@
       "unit": "milliseconds"
     },
     "retrieval_latency_p50_ms": {
-      "value": 5.710100056603551,
-      "numerator": 5.710100056603551,
+      "value": 5.841000005602837,
+      "numerator": 5.841000005602837,
       "denominator": 1.0,
       "unit": "milliseconds"
     },
@@ -960,8 +960,8 @@
       "unit": "milliseconds"
     },
     "context_latency_p50_ms": {
-      "value": 0.035800039768218994,
-      "numerator": 0.035800039768218994,
+      "value": 0.03599992487579584,
+      "numerator": 0.03599992487579584,
       "denominator": 1.0,
       "unit": "milliseconds"
     },
@@ -972,8 +972,8 @@
       "unit": "milliseconds"
     },
     "quality_suite_total_ms": {
-      "value": 714.4739002687857,
-      "numerator": 714.4739002687857,
+      "value": 768.2034996105358,
+      "numerator": 768.2034996105358,
       "denominator": 1.0,
       "unit": "milliseconds"
     },
