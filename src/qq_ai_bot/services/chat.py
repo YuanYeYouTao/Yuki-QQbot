@@ -578,7 +578,10 @@ class _ChatAgentBackend(AgentToolBackend):
                     or entry.descriptor.model_name in self._requested_tool_names
                 ),
             )
-        if self._runtime.selected_tool_names is not None:
+        if (
+            self._runtime.selected_tool_names is not None
+            and self._runtime.memory_access is not MemoryAccessMode.MUTATION
+        ):
             filtered_catalog = replace(
                 filtered_catalog,
                 entries=tuple(

@@ -465,7 +465,10 @@ class AgentToolService:
                             | {
                                 "description": (
                                     "没有 fact_id 时使用；至少提供 memory_key 或 old_content，"
-                                    "并同时提供合法 target。仅唯一精确命中时执行变更。"
+                                    "并同时提供合法 target。memory_key 是内部稳定键；不知道时"
+                                    "不要根据用户说法自行编造，应把用户可见标签或原陈述放入"
+                                    "old_content。仅唯一精确命中时执行；返回候选后使用其 fact_id"
+                                    "重试。"
                                 )
                             },
                             "merge_selector": _object_schema(

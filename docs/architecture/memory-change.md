@@ -26,6 +26,9 @@
   不得声称原请求已完成；`invalidate` 必须表述为撤回/失效且保留审计，不得表述为物理删除。
 - mutation 轮次只向主 Agent 暴露唯一写能力并追加有界执行契约；DeepSeek 的 wire payload
   始终省略不受支持的 `tool_choice`，因此正确性必须来自能力隔离和后端完成门。
+- 通用工具候选裁剪不得移除 mutation 写能力。Agent 不知道内部 `memory_key` 时应使用
+  `old_content`；若误将用户可见标签填作 key，后端只可将其用于返回正文词法候选，再由 Agent
+  使用真实 `fact_id` 重试，不能直接模糊变更。
 
 ## 1. 摘要
 

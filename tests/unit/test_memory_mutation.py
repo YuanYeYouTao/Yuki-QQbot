@@ -421,6 +421,47 @@ async def test_mutation_selector_returns_three_bounded_lexical_candidates_withou
 
 
 @pytest.mark.asyncio
+async def test_user_visible_label_in_memory_key_surfaces_content_candidate_without_writing(
+    database: Database,
+) -> None:
+    service, facts, ledger, _processor = _service(database)
+    fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            kind=MemoryKind.PREFERENCE,
+            memory_key="shell_prompt",
+            category="preference",
+            content="用户的写路径测试 Shell 提示符是 Pure",
+            source_type=MemorySourceType.EXPLICIT,
+        )
+    )
+    event = await _event(
+        ledger,
+        message_id="selector-visible-label",
+        sender_user_id="1001",
+        content="再次撤回写路径测试 Shell 提示符",
+    )
+
+    result = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.INVALIDATE,
+            selector=MemoryMutationSelector(memory_key="写路径测试 Shell 提示符"),
+            target=MemoryMutationTarget(
+                subject_ref="current_speaker",
+                scope_type=MemoryScopeType.PERSON,
+            ),
+        ),
+        _context(event),
+    )
+
+    assert not result.ok
+    assert result.reason_code == "memory_candidate_ambiguous"
+    assert [candidate.fact_id for candidate in result.candidates] == [fact.id]
+    assert (await facts.get_fact(fact.id)).status is MemoryStatus.ACTIVE  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
 async def test_mutation_selector_cannot_cross_resolved_identity_target(database: Database) -> None:
     service, facts, ledger, _processor = _service(database)
     other = await facts.remember(

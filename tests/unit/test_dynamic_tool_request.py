@@ -353,7 +353,7 @@ def test_mutation_access_exposes_only_memory_write_capability_initially() -> Non
         allow_admin_actions=True,
         memory_access=MemoryAccessMode.MUTATION,
         tool_groups=frozenset({"memory", "admin", "web"}),
-        selected_tool_names=None,
+        selected_tool_names=frozenset({"web_search"}),
     )
     backend = _ChatAgentBackend(_Service(registry), runtime)  # type: ignore[arg-type]
 
@@ -375,7 +375,11 @@ def test_mutation_access_exposes_only_memory_write_capability_initially() -> Non
 
     read_backend = _ChatAgentBackend(  # type: ignore[arg-type]
         _Service(registry),
-        replace(runtime, memory_access=MemoryAccessMode.TOOL),
+        replace(
+            runtime,
+            memory_access=MemoryAccessMode.TOOL,
+            selected_tool_names=None,
+        ),
     )
     read_names = {
         tool.name for tool in read_backend.definitions(SimpleNamespace(), web_was_used=False)

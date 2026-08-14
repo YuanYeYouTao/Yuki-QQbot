@@ -377,6 +377,13 @@ class MemoryFactRepository:
         if memory_key is not None:
             exact_parts.append(MemoryFactModel.memory_key == memory_key)
             lexical_parts.append(MemoryFactModel.memory_key.contains(memory_key, autoescape=True))
+            # The Agent may only know the user's visible label, not the
+            # canonical internal key assigned when the fact was created. Use
+            # that label to surface bounded candidates from content as well;
+            # _locate_fact still requires an exact selector before execution.
+            lexical_parts.append(
+                MemoryFactModel.normalized_content.contains(memory_key.casefold(), autoescape=True)
+            )
         if normalized_content is not None:
             exact_parts.append(MemoryFactModel.normalized_content == normalized_content)
             lexical_parts.append(
