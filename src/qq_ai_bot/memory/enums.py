@@ -239,6 +239,48 @@ class MemoryContextMode(StrEnum):
     OVERVIEW = "overview"
 
 
+class MemoryAccessMode(StrEnum):
+    """Planner-selected first-round access path for long-term memory."""
+
+    NONE = "none"
+    AUTOMATIC = "automatic"
+    TOOL = "tool"
+    MUTATION = "mutation"
+
+
+class MemoryRecallPurpose(StrEnum):
+    """Planner-owned semantic reason for recalling long-term memory."""
+
+    BACKGROUND = "background"
+    RECALL = "recall"
+    CONTINUATION = "continuation"
+    VERIFY = "verify"
+    CORRECT = "correct"
+
+
+class MemorySubjectRole(StrEnum):
+    """Semantic subject hints; these values never grant an identity scope."""
+
+    CURRENT_PERSON = "current_person"
+    CURRENT_GROUP = "current_group"
+    REFERENCED_PERSON = "referenced_person"
+    CURRENT_SELF = "current_self"
+
+
+class MemoryTemporalIntentMode(StrEnum):
+    UNSPECIFIED = "unspecified"
+    RECENT = "recent"
+    HISTORICAL = "historical"
+    RANGE = "range"
+
+
+class MemoryTemporalConstraint(StrEnum):
+    """Whether temporal intent only ranks facts or excludes unverifiable dates."""
+
+    SOFT = "soft"
+    STRICT = "strict"
+
+
 class MemoryRetrievalMode(StrEnum):
     RELEVANT = "relevant"
     OVERVIEW = "overview"

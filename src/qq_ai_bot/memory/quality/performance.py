@@ -154,7 +154,7 @@ class MemoryQualityPerformanceRunner:
                 "INSERT INTO memory_facts(scope_type,subject_user_id,group_id,kind,memory_key,"
                 "category,content,normalized_content,importance,confidence,source_type,authority,"
                 "status,conflict_state,supersedes_id,valid_from,created_at,updated_at,"
-                "last_confirmed_at,invalidated_reason,last_used_at) "
+                "last_confirmed_at,invalidated_reason,last_injected_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 facts,
             )

@@ -9,14 +9,23 @@ from sqlalchemy import text
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
+from qq_ai_bot.memory.activation import (
+    MemoryActivationRepository,
+    effective_activation,
+    initial_activation,
+)
+from qq_ai_bot.memory.enums import MemoryRetrievalMode
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import (
+    MemoryActivationState,
     MemoryConsistencyHealth,
     MemoryEvidence,
     MemoryFact,
     MemoryFactRelation,
     MemoryFactStateEvent,
+    MemoryQuery,
 )
+from qq_ai_bot.memory.receipt import MemoryRecallRepository
 from qq_ai_bot.memory.repository import MemoryFactRepository
 
 
@@ -28,11 +37,15 @@ class MemoryAuditService:
         metrics: MemoryLifecycleMetrics | None = None,
         settings: Settings | None = None,
         runtime_config: RuntimeConfigService | None = None,
+        activation: MemoryActivationRepository | None = None,
+        receipts: MemoryRecallRepository | None = None,
     ) -> None:
         self._repository = repository
         self._metrics = metrics or MemoryLifecycleMetrics()
         self._settings = settings
         self._runtime_config = runtime_config
+        self._activation = activation
+        self._receipts = receipts
 
     async def get_fact(self, fact_id: int) -> MemoryFact | None:
         return await self._repository.get_fact(fact_id)
@@ -83,6 +96,25 @@ class MemoryAuditService:
         relations = await self.get_relations(fact_id)
         state_events = await self.get_state_history(fact_id)
         chain = await self.get_supersession_chain(fact_id)
+        activation = None
+        if self._activation is not None:
+            activation = (await self._activation.load((fact_id,))).get(fact_id)
+            if activation is None:
+                activation = MemoryActivationState(
+                    fact_id=fact.id,
+                    activation=initial_activation(fact),
+                    activation_updated_at=fact.created_at,
+                )
+                self._metrics.increment("memory_activation_state_missing_count")
+        policy = await self._activation_policy_query()
+        effective = (
+            effective_activation(activation, fact, policy, now=datetime.now(UTC))
+            if activation is not None
+            else None
+        )
+        recent_receipts = (
+            await self._receipts.recent_for_fact(fact_id) if self._receipts is not None else ()
+        )
         return {
             "fact_id": fact.id,
             "status": fact.status.value,
@@ -101,6 +133,20 @@ class MemoryAuditService:
                 for row in evidence[-20:]
             ],
             "last_confirmed_at": fact.last_confirmed_at.isoformat(),
+            "last_injected_at": (
+                fact.last_injected_at.isoformat() if fact.last_injected_at is not None else None
+            ),
+            "activation": effective,
+            "activation_updated_at": (
+                activation.activation_updated_at.isoformat() if activation is not None else None
+            ),
+            "last_recalled_at": (
+                activation.last_recalled_at.isoformat()
+                if activation is not None and activation.last_recalled_at is not None
+                else None
+            ),
+            "recall_count": activation.recall_count if activation is not None else 0,
+            "recent_recall_receipts": list(recent_receipts),
             "supersession_chain": [row.id for row in chain],
             "relations": [
                 {
@@ -120,6 +166,39 @@ class MemoryAuditService:
                 for row in state_events[-20:]
             ],
         }
+
+    async def _activation_policy_query(self) -> MemoryQuery:
+        if self._runtime_config is not None:
+            memory = (await self._runtime_config.snapshot()).memory
+            values = (
+                memory.activation_half_life_episode_days,
+                memory.activation_half_life_fact_days,
+                memory.activation_half_life_preference_days,
+                memory.activation_half_life_explicit_days,
+            )
+        elif self._settings is not None:
+            values = (
+                self._settings.memory_activation_half_life_episode_days,
+                self._settings.memory_activation_half_life_fact_days,
+                self._settings.memory_activation_half_life_preference_days,
+                self._settings.memory_activation_half_life_explicit_days,
+            )
+        else:
+            values = (14.0, 60.0, 120.0, 365.0)
+        return MemoryQuery(
+            text="",
+            normalized_text="",
+            mode=MemoryRetrievalMode.RELEVANT,
+            targets=(),
+            candidate_limit=1,
+            limit_per_target=1,
+            always_on_explicit_preference_limit=0,
+            query_term_limit=1,
+            activation_half_life_episode_days=values[0],
+            activation_half_life_fact_days=values[1],
+            activation_half_life_preference_days=values[2],
+            activation_half_life_explicit_days=values[3],
+        )
 
     async def health(self) -> MemoryConsistencyHealth:
         queries = {

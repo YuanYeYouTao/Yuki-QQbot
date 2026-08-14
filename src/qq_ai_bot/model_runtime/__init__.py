@@ -6,10 +6,12 @@ from importlib import import_module
 from typing import Any
 
 __all__ = [
+    "BackgroundModelPreempted",
     "LegacyTaskModelExecutor",
     "ModelCapability",
     "ModelClientPool",
     "ModelCompleter",
+    "ModelExecutionPriority",
     "ModelExecutor",
     "ModelInvocationRecord",
     "ModelInvocationRepository",
@@ -31,11 +33,13 @@ __all__ = [
 
 _EXPORT_MODULES = {
     "LegacyTaskModelExecutor": "executor",
+    "BackgroundModelPreempted": "executor",
     "ModelCompleter": "executor",
     "ModelExecutor": "executor",
     "TaskModelExecutor": "executor",
     "require_model_executor": "executor",
     "ModelCapability": "models",
+    "ModelExecutionPriority": "models",
     "ModelInvocationRecord": "models",
     "ModelProfile": "models",
     "ModelProtocol": "models",

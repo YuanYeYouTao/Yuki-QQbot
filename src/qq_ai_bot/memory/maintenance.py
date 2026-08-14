@@ -15,6 +15,7 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationOperation,
 )
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
+from qq_ai_bot.memory.receipt import MemoryRecallRepository
 from qq_ai_bot.memory.service import MemoryFactService
 
 
@@ -40,6 +41,7 @@ class MemoryMaintenanceWorker:
         policy: MemoryLifecyclePolicy | None = None,
         metrics: MemoryLifecycleMetrics | None = None,
         mutations: MemoryMutationService | None = None,
+        receipts: MemoryRecallRepository | None = None,
     ) -> None:
         self._settings = settings
         self._facts = facts
@@ -47,6 +49,7 @@ class MemoryMaintenanceWorker:
         self._policy = policy or MemoryLifecyclePolicy()
         self.metrics = metrics or MemoryLifecycleMetrics()
         self._mutations = mutations
+        self._receipts = receipts
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -87,6 +90,13 @@ class MemoryMaintenanceWorker:
         if not runtime.enabled:
             return 0
         now = datetime.now(UTC)
+        if self._receipts is not None:
+            cleaned = await self._receipts.cleanup_expired(
+                now=now,
+                limit=runtime.batch_limit,
+            )
+            if cleaned:
+                self.metrics.increment("memory_recall_receipts_cleaned_count", cleaned)
         config = MemoryLifecycleConfig(
             automatic_stale_days=runtime.automatic_stale_days,
             third_party_stale_days=runtime.third_party_stale_days,

@@ -31,6 +31,7 @@ from qq_ai_bot.memory.models import (
     MemoryFactCreate,
     MemoryLexicalCandidate,
     MemoryQuery,
+    MemoryQueryIntent,
 )
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.ranking import MemoryRanker
@@ -546,6 +547,7 @@ async def test_personal_overview_drops_referenced_people(database: Database) -> 
         content=inbound.text,
         planner_intent="回顾当前用户",
         runtime=runtime,
+        memory_intent=MemoryQueryIntent(mode=MemoryContextMode.OVERVIEW),
     )
 
     assert query.mode is MemoryRetrievalMode.OVERVIEW

@@ -19,6 +19,7 @@ class ModelTask(StrEnum):
     MEMORY_SELF_REFLECTION = "memory_self_reflection"
     MEMORY_CONSOLIDATION = "memory_consolidation"
     MEMORY_DREAM = "memory_dream"
+    MEMORY_ATTRIBUTION = "memory_attribution"
     RELATIONSHIP_EVALUATION = "relationship_evaluation"
     EMOJI_REPLACEMENT = "emoji_replacement"
     AUTOMATION_TEXT_GENERATION = "automation_text_generation"
@@ -26,6 +27,13 @@ class ModelTask(StrEnum):
     PLUGIN_AGENT_SESSION = "plugin_agent_session"
     TOOL_SELECTION = "tool_selection"
     UTILITY_STRUCTURED = "utility_structured"
+
+
+class ModelExecutionPriority(StrEnum):
+    """Scheduling priority for provider calls inside the shared executor."""
+
+    FOREGROUND = "foreground"
+    BEST_EFFORT_BACKGROUND = "best_effort_background"
 
 
 class ModelCapability(StrEnum):

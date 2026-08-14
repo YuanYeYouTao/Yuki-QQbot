@@ -223,12 +223,13 @@ async def test_non_superuser_never_receives_generic_onebot_tool(database: Databa
         ToolGatewaySender(),
     )
     assert "call_onebot_api" not in provider.tool_names
+    assert "request_tools" in provider.tool_names
     assert {
         "get_recent_chat_history",
         "search_chat_history",
         "get_person_memories",
         "get_group_memories",
-    } <= provider.tool_names
+    }.isdisjoint(provider.tool_names)
 
 
 @pytest.mark.asyncio
@@ -288,7 +289,7 @@ async def test_core_memory_tool_uses_scoped_query_retriever(database: Database) 
     assert [item["fact_id"] for item in result["data"]["memories"]] == [wanted.id]
     assert result["data"]["memories"][0]["retrieval_reason"] == "lexical_match"
     used = await memories.repository.get_fact(wanted.id)
-    assert used is not None and used.last_used_at is not None
+    assert used is not None and used.last_injected_at is not None
 
 
 class HistoryGateway:

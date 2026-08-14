@@ -22,6 +22,7 @@ from qq_ai_bot.memory.enums import (
     MemoryJobStatus,
     MemoryProcessingSource,
     MemoryRebuildJobOutcome,
+    MemoryReviewState,
     MemoryScopeType,
     MemoryStateAction,
     MemoryStatus,
@@ -41,6 +42,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     MembershipModel,
+    MemoryActivationStateModel,
     MemoryEvidenceModel,
     MemoryFactModel,
     MemoryFactRelationModel,
@@ -55,6 +57,16 @@ from qq_ai_bot.persistence.repository_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _initial_activation(fact: MemoryFactCreate) -> float:
+    if fact.source_type.value == "explicit" or fact.authority is MemoryAuthority.EXPLICIT:
+        return 0.95
+    if fact.kind.value == "preference":
+        return 0.80
+    if fact.kind.value == "episode":
+        return 0.75 if fact.importance >= 4 else 0.65
+    return 0.70
 
 
 class MemoryFactRepository:
@@ -334,6 +346,104 @@ class MemoryFactRepository:
         ).all()
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
+    async def list_mutation_locator_candidates(
+        self,
+        target: MemoryFactQuery,
+        *,
+        memory_key: str | None,
+        normalized_content: str | None,
+        category: str | None,
+        statuses: tuple[MemoryStatus, ...],
+        limit: int = 4,
+        session: AsyncSession | None = None,
+    ) -> tuple[MemoryFact, ...]:
+        """Return exact-first lexical candidates inside one exact mutation target."""
+
+        if not statuses or (memory_key is None and normalized_content is None):
+            return ()
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.list_mutation_locator_candidates(
+                    target,
+                    memory_key=memory_key,
+                    normalized_content=normalized_content,
+                    category=category,
+                    statuses=statuses,
+                    limit=limit,
+                    session=owned,
+                )
+        exact_parts: list[Any] = []
+        lexical_parts: list[Any] = []
+        if memory_key is not None:
+            exact_parts.append(MemoryFactModel.memory_key == memory_key)
+            lexical_parts.append(MemoryFactModel.memory_key.contains(memory_key, autoescape=True))
+            # The Agent may only know the user's visible label, not the
+            # canonical internal key assigned when the fact was created. Use
+            # that label to surface bounded candidates from content as well;
+            # _locate_fact still requires an exact selector before execution.
+            lexical_parts.append(
+                MemoryFactModel.normalized_content.contains(memory_key.casefold(), autoescape=True)
+            )
+        if normalized_content is not None:
+            exact_parts.append(MemoryFactModel.normalized_content == normalized_content)
+            lexical_parts.append(
+                MemoryFactModel.normalized_content.contains(
+                    normalized_content,
+                    autoescape=True,
+                )
+            )
+        if category is not None:
+            exact_parts.append(MemoryFactModel.category == category)
+        exact_match = and_(*exact_parts)
+        conditions: list[Any] = [
+            MemoryFactModel.scope_type == target.scope_type.value,
+            (
+                MemoryFactModel.subject_user_id.is_(None)
+                if target.subject_user_id is None
+                else MemoryFactModel.subject_user_id == target.subject_user_id
+            ),
+            (
+                MemoryFactModel.group_id.is_(None)
+                if target.group_id is None
+                else MemoryFactModel.group_id == target.group_id
+            ),
+            *self._exact_visibility_conditions(target),
+            MemoryFactModel.status.in_(tuple(status.value for status in statuses)),
+            MemoryFactModel.review_state != MemoryReviewState.QUARANTINED.value,
+            or_(
+                MemoryFactModel.valid_until.is_(None),
+                MemoryFactModel.valid_until > datetime.now(UTC),
+            ),
+            or_(*lexical_parts),
+        ]
+        if category is not None:
+            conditions.append(MemoryFactModel.category == category)
+        rows = (
+            await session.execute(
+                select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+                .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
+                .where(*conditions)
+                .group_by(MemoryFactModel.id)
+                .order_by(
+                    exact_match.desc(),
+                    (
+                        MemoryFactModel.memory_key == memory_key
+                        if memory_key is not None
+                        else exact_match
+                    ).desc(),
+                    (
+                        MemoryFactModel.normalized_content == normalized_content
+                        if normalized_content is not None
+                        else exact_match
+                    ).desc(),
+                    MemoryFactModel.updated_at.desc(),
+                    MemoryFactModel.id.asc(),
+                )
+                .limit(max(1, min(limit, 4)))
+            )
+        ).all()
+        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+
     async def list_overview(
         self,
         target: MemoryEntityTarget,
@@ -408,7 +518,7 @@ class MemoryFactRepository:
             ).all()
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
-    async def mark_used(self, fact_ids: tuple[int, ...]) -> int:
+    async def mark_injected(self, fact_ids: tuple[int, ...]) -> int:
         unique_ids = tuple(dict.fromkeys(fact_ids))
         if not unique_ids:
             return 0
@@ -420,7 +530,7 @@ class MemoryFactRepository:
                     MemoryFactModel.status == MemoryStatus.ACTIVE.value,
                     MemoryFactModel.review_state != "quarantined",
                 )
-                .values(last_used_at=datetime.now(UTC))
+                .values(last_injected_at=datetime.now(UTC))
             )
         return int(cast(CursorResult[Any], result).rowcount or 0)
 
@@ -501,12 +611,23 @@ class MemoryFactRepository:
             invalidated_reason=(
                 fact.invalidated_reason.value if fact.invalidated_reason is not None else None
             ),
-            last_used_at=None,
+            last_injected_at=None,
             validation_version=fact.validation_version,
             last_audited_at=fact.last_audited_at,
             review_state=fact.review_state.value,
         )
         session.add(row)
+        await session.flush()
+        session.add(
+            MemoryActivationStateModel(
+                fact_id=row.id,
+                activation=_initial_activation(fact),
+                activation_updated_at=now,
+                last_recalled_at=None,
+                recall_count=0,
+                revision=0,
+            )
+        )
         await session.flush()
         return row
 
@@ -1020,7 +1141,7 @@ class MemoryFactRepository:
             updated_at=row.updated_at,
             last_confirmed_at=row.last_confirmed_at,
             invalidated_reason=row.invalidated_reason,
-            last_used_at=row.last_used_at,
+            last_injected_at=row.last_injected_at,
             evidence_count=evidence_count,
             validation_version=row.validation_version,
             last_audited_at=row.last_audited_at,

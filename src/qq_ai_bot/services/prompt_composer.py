@@ -7,7 +7,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.relationships import RelationshipSnapshot, style_policy
-from qq_ai_bot.memory.context import entity_memory_rule
+from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, entity_memory_rule
 from qq_ai_bot.planner.models import PlannedTurn
 from qq_ai_bot.prompting import (
     CORE_CONTRACT,
@@ -103,6 +103,15 @@ class PromptComposer:
                         "source": "current_direct_event",
                     },
                     required=True,
+                )
+            )
+        if context.injected_memory_ids:
+            contributions.append(
+                static_text(
+                    "memory.grounding_contract",
+                    MEMORY_GROUNDING_RULE,
+                    channel=PromptChannel.INVARIANT,
+                    priority=96,
                 )
             )
         if context.current_relationship is not None:
@@ -281,6 +290,15 @@ class PromptComposer:
                         "plugin_intent": agent_intent[:1_000],
                     },
                     required=True,
+                )
+            )
+        if context.injected_memory_ids:
+            contributions.append(
+                static_text(
+                    "memory.grounding_contract",
+                    MEMORY_GROUNDING_RULE,
+                    channel=PromptChannel.INVARIANT,
+                    priority=96,
                 )
             )
         if planned_turn is not None:

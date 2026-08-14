@@ -49,6 +49,7 @@ class DreamQualityError(ValueError):
         self.code = code
         self.detail = detail
 
+
 _RECOMPOSE_QUALITY_INSTRUCTION = """\
 For Episode recompose, memory_N is a source container, not an indivisible event. The same
 memory_N may support more than one output when its content contains several independent
@@ -791,8 +792,7 @@ class DreamService:
             except (StructuredTaskError, ValueError) as repair_exc:
                 if first_hard_valid is not None:
                     logger.info(
-                        "memory_dream_quality_fallback run_id=%s cluster_id=%d "
-                        "repair_error=%s",
+                        "memory_dream_quality_fallback run_id=%s cluster_id=%d repair_error=%s",
                         run.public_id,
                         cluster.id,
                         self._quality_reason(repair_exc),

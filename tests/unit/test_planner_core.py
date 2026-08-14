@@ -11,6 +11,7 @@ from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic import TypeAdapter, ValidationError
 
 from qq_ai_bot.admin.models import (
     AgentRuntimeConfig,
@@ -34,7 +35,7 @@ from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode, 
 from qq_ai_bot.emoji.request_detector import EmojiRequestDetector
 from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.memory.enums import MemoryContextMode, MemorySubjectRole
 from qq_ai_bot.model_runtime.structured import _compact_json_schema
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner import (
@@ -59,6 +60,7 @@ from qq_ai_bot.planner import (
 )
 from qq_ai_bot.planner.context import PlannerContextBuilder
 from qq_ai_bot.planner.models import (
+    PlannerAutomaticMemoryOutput,
     PlannerEmojiContext,
     PlannerMemoryOutput,
     PlannerModelOutput,
@@ -223,11 +225,18 @@ def _runtime() -> RuntimeConfigSnapshot:
 
 
 def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
-    output = PlannerMemoryOutput(mode=MemoryContextMode.HYBRID)
+    output = PlannerAutomaticMemoryOutput(
+        access="automatic",
+        mode=MemoryContextMode.HYBRID,
+        purpose="background",
+    )
     assert output.materialize().self_recall is False
-    opened = PlannerMemoryOutput.model_validate(
+    memory_output_adapter = TypeAdapter(PlannerMemoryOutput)
+    opened = memory_output_adapter.validate_python(
         {
+            "access": "automatic",
             "mode": MemoryContextMode.HYBRID,
+            "purpose": "recall",
             "reason_code": MemoryContextReasonCode.SELF_MEMORY_RECALL,
             "self_recall": True,
         }
@@ -236,6 +245,128 @@ def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
     assert opened.reason_code is MemoryContextReasonCode.SELF_MEMORY_RECALL
     assert "你喜欢咖啡吗" in PLANNER_SYSTEM_PROMPT
     assert "帮我查天气" in PLANNER_SYSTEM_PROMPT
+    assert "X 还是 Y" in PLANNER_SYSTEM_PROMPT
+    assert "即使句子中出现“记得”也不要误判成 recall" in PLANNER_SYSTEM_PROMPT
+    assert "constraint=strict" in PLANNER_SYSTEM_PROMPT
+
+    strict = memory_output_adapter.validate_python(
+        {
+            "access": "automatic",
+            "mode": "hybrid",
+            "purpose": "recall",
+            "temporal": {
+                "mode": "range",
+                "constraint": "strict",
+                "start_at": "2026-08-01T00:00:00+08:00",
+                "end_at": "2026-08-10T23:59:59+08:00",
+            },
+        }
+    ).materialize()
+    assert strict.temporal.constraint.value == "strict"
+    assert strict.temporal.start_at == datetime(2026, 7, 31, 16, tzinfo=UTC)
+
+    self_context = MemoryContextPlan(
+        access="automatic",
+        mode="hybrid",
+        purpose="recall",
+        subjects=(MemorySubjectRole.CURRENT_SELF,),
+        self_recall=True,
+    )
+    assert self_context.to_query_intent().subjects == (MemorySubjectRole.CURRENT_SELF,)
+    with pytest.raises(ValueError, match="current_self requires self_recall=true"):
+        MemoryContextPlan(
+            access="automatic",
+            mode="hybrid",
+            purpose="recall",
+            subjects=(MemorySubjectRole.CURRENT_SELF,),
+        )
+
+
+def test_planner_memory_access_contract_and_requested_count_are_strict() -> None:
+    memory_output_adapter = TypeAdapter(PlannerMemoryOutput)
+    automatic = memory_output_adapter.validate_python(
+        {
+            "access": "automatic",
+            "mode": "overview",
+            "purpose": "recall",
+            "requested_count": 2,
+        }
+    ).materialize()
+    tool = memory_output_adapter.validate_python(
+        {"access": "tool", "mode": "none", "purpose": "recall"}
+    ).materialize()
+    mutation = memory_output_adapter.validate_python(
+        {"access": "mutation", "mode": "none", "purpose": "correct"}
+    ).materialize()
+
+    assert automatic.requested_count == 2
+    assert automatic.to_query_intent().requested_count == 2
+    assert tool.mode is MemoryContextMode.NONE
+    assert mutation.mode is MemoryContextMode.NONE
+    with pytest.raises(ValidationError):
+        memory_output_adapter.validate_python(
+            {"access": "automatic", "mode": "none", "purpose": "recall"}
+        )
+    with pytest.raises(ValidationError):
+        memory_output_adapter.validate_python(
+            {"access": "tool", "mode": "lexical", "purpose": "recall"}
+        )
+    with pytest.raises(ValidationError):
+        memory_output_adapter.validate_python(
+            {
+                "access": "automatic",
+                "mode": "hybrid",
+                "purpose": "recall",
+                "subjects": ["current_self"],
+                "self_recall": True,
+            }
+        )
+
+
+def test_planner_memory_access_schema_is_discriminated() -> None:
+    schema = TypeAdapter(PlannerMemoryOutput).json_schema()
+
+    assert schema["discriminator"]["propertyName"] == "access"
+    assert len(schema["oneOf"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_invalid_memory_access_mode_combination_uses_whole_plan_fallback() -> None:
+    payload = _valid_plan_payload()
+    payload["memory_context"] = {
+        "access": "tool",
+        "mode": "hybrid",
+        "purpose": "recall",
+    }
+    provider = LLMPlannerProvider(
+        FakeLLMProvider(lambda _request: json.dumps(payload)),
+        model="planner-model",
+    )
+
+    plan = await provider.plan(_planner_input(), runtime=_runtime())
+
+    assert plan.confidence == 0
+    assert plan.memory_context.access.value == "automatic"
+    assert plan.memory_context.mode is MemoryContextMode.LEXICAL
+
+
+@pytest.mark.asyncio
+async def test_intentionally_disabled_planner_uses_non_error_fallback_reason() -> None:
+    provider = FakePlannerProvider()
+    service = PlannerService(
+        provider=provider,
+        observability=PlannerObservability(),
+    )
+    runtime = replace(
+        _runtime(),
+        planner=replace(_runtime().planner, direct_enabled=False),
+    )
+
+    outcome = await service.plan(_planner_input(), runtime=runtime, turn_version=1)
+
+    assert provider.inputs == []
+    assert outcome.planned_turn.fallback_used is True
+    assert outcome.planned_turn.plan.reason_code is PlannerReasonCode.PLANNER_FALLBACK
 
 
 def test_planner_prompt_requires_explicit_scope_and_query_rewrite_for_tool_tasks() -> None:
@@ -313,7 +444,9 @@ def _valid_plan_payload(**updates: object) -> dict[str, object]:
         "confidence": 0.9,
         "reason_code": "direct_request",
         "memory_context": {
+            "access": "automatic",
             "mode": "lexical",
+            "purpose": "background",
             "reason_code": "routine_context",
         },
         "emoji": {"intent": "neutral", "mode": "none"},
@@ -1203,6 +1336,17 @@ def test_dynamic_scopes_are_authoritative_and_legacy_groups_remain_compatible() 
     )
     assert valid.tool_selection.scope_ids == ("mcp.music", "automation")
 
+    memory_scopes_ignored = constrain_turn_plan(
+        _valid_plan_payload(
+            tool_selection={
+                "mode": "inherit",
+                "scopes": ["memory", "memory.read", "memory_change", "mcp.music"],
+            }
+        ),
+        planner_input,
+    )
+    assert memory_scopes_ignored.tool_selection.scope_ids == ("mcp.music",)
+
     with pytest.raises(PlannerResponseError, match="unknown tool scopes"):
         constrain_turn_plan(
             _valid_plan_payload(tool_selection={"mode": "inherit", "scopes": ["mcp.unknown"]}),
@@ -1256,7 +1400,11 @@ async def test_llm_planner_materializes_sparse_output_with_backend_defaults() ->
                 "reason_code": "direct_request",
                 "delivery_mode": "single",
                 "desired_messages": 1,
-                "memory_context": {"mode": "lexical"},
+                "memory_context": {
+                    "access": "automatic",
+                    "mode": "lexical",
+                    "purpose": "background",
+                },
                 "emoji": {"intent": "neutral", "mode": "none"},
                 "voice": {"mode": "text", "intent": "neutral"},
             }
@@ -1278,6 +1426,27 @@ async def test_llm_planner_materializes_sparse_output_with_backend_defaults() ->
     assert plan.memory_context.mode is MemoryContextMode.LEXICAL
     assert plan.emoji.mode is EmojiReplyMode.NONE
     assert plan.voice.mode is VoiceMode.TEXT
+
+
+@pytest.mark.asyncio
+async def test_llm_planner_materializes_mutation_access_without_memory_scope() -> None:
+    payload = _valid_plan_payload(
+        tool_selection={"mode": "none", "scopes": []},
+    )
+    payload["memory_context"] = {
+        "access": "mutation",
+        "mode": "none",
+        "purpose": "correct",
+    }
+    llm = FakeLLMProvider(lambda _request: json.dumps(payload))
+    provider = LLMPlannerProvider(llm, model="planner-model")
+
+    plan = await provider.plan(_planner_input(), runtime=_runtime())
+
+    assert plan.memory_context.access.value == "mutation"
+    assert plan.memory_context.mode is MemoryContextMode.NONE
+    assert plan.tool_mode is ToolMode.NONE
+    assert plan.tool_selection.scope_ids == ()
 
 
 def test_sparse_planner_schema_requires_all_non_inferable_decisions() -> None:
@@ -1317,7 +1486,11 @@ def test_sparse_planner_derives_secondary_effect_defaults() -> None:
             "reason_code": "direct_request",
             "delivery_mode": "single",
             "desired_messages": 1,
-            "memory_context": {"mode": "none"},
+            "memory_context": {
+                "access": "none",
+                "mode": "none",
+                "purpose": "background",
+            },
             "emoji": {"intent": "explicit_request", "mode": "emoji_only"},
             "voice": {"mode": "voice", "intent": "explicit_request"},
         }
@@ -1339,7 +1512,11 @@ def test_sparse_planner_preserves_explicit_empty_tool_selection() -> None:
             "delivery_mode": "single",
             "desired_messages": 1,
             "tool_selection": {"mode": "inherit", "scopes": []},
-            "memory_context": {"mode": "lexical"},
+            "memory_context": {
+                "access": "automatic",
+                "mode": "lexical",
+                "purpose": "background",
+            },
             "emoji": {"intent": "neutral", "mode": "none"},
             "voice": {"mode": "text", "intent": "neutral"},
         }

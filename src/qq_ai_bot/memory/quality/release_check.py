@@ -29,7 +29,7 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
-_ALEMBIC_HEAD = "0034"
+_ALEMBIC_HEAD = "0036"
 
 
 class MemoryReleaseCheck:
@@ -44,7 +44,7 @@ class MemoryReleaseCheck:
         items.append(
             self._item(
                 "version",
-                __version__ == "3.5.0",
+                __version__ == "3.5.1",
                 f"project version is {__version__}",
             )
         )
@@ -200,6 +200,11 @@ class MemoryReleaseCheck:
             "0029_chat_event_sender_identity.py",
             "0030_memory_quality_candidates.py",
             "0031_episode_self_reflection_baseline.py",
+            "0032_memory_dream.py",
+            "0033_memory_dream_recompose.py",
+            "0034_memory_dream_quality_and_evidence_provenance.py",
+            "0035_adaptive_memory_lifecycle.py",
+            "0036_async_memory_attribution.py",
         }
         missing = sorted(required - versions)
         return self._item(

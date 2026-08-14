@@ -1,8 +1,12 @@
 # Yuki-QQbot
 
+> **3.5.1 正式版：**新增自适应记忆生命周期。召回使用结构化意图、Activation 衰减与有界强化；
+> 自动召回、显式工具读取和记忆变更使用互斥路径，归因在发送后异步完成。记忆写入由独立
+> mutation 完成门约束，DeepSeek 请求不携带不受支持的 `tool_choice`。Alembic head 为 `0036`。
+
 > **3.5.0 正式版：**新增 Memory Dream 与 MMR。Dream 在 Self Reflection 之后按语义整理
 > 既有长期记忆，支持长 Episode 切分、压缩、Evidence provenance、持久化 Preview、回滚和
-> 历史 Evidence 后台压缩；普通相关性召回使用 MMR 减少重复。Alembic head 为 `0034`。
+> 历史 Evidence 后台压缩；普通相关性召回使用 MMR 减少重复。
 
 > **3.4.4 Prompt 缓存与输出清理：**历史位于动态上下文之前并使用高低水位分块滚动；首批
 > 工具和 Schema 采用宽松预算且按名称稳定排序；输出清理器兼容省略消息 ID 的身份头。
@@ -104,7 +108,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.5.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 3.5.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。

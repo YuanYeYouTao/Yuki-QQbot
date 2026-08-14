@@ -14,7 +14,7 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode, EmojiReplyPlan
 from qq_ai_bot.llm.base import LLMError, LLMTimeoutError
-from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.memory.enums import MemoryAccessMode, MemoryContextMode
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
@@ -99,6 +99,7 @@ def validate_turn_plan(
 ) -> TurnPlan:
     """Narrow event-bound fields without discarding otherwise valid intent."""
 
+    plan = _strip_memory_tool_scopes(plan)
     known_targets = set(planner_input.known_target_user_ids)
     available_scopes = {
         *(scope.scope_id for scope in planner_input.available_tool_scopes),
@@ -136,6 +137,29 @@ def validate_turn_plan(
     return plan.model_copy(update=updates)
 
 
+def _strip_memory_tool_scopes(plan: TurnPlan) -> TurnPlan:
+    """Let memory access, not Planner tool scopes, own first-round orchestration."""
+
+    selection = plan.tool_selection
+    scopes = tuple(scope for scope in selection.scope_ids if not _is_memory_tool_scope(scope))
+    if scopes == selection.scope_ids:
+        return plan
+    return plan.model_copy(
+        update={
+            "tool_selection": selection.model_copy(update={"scopes": scopes}),
+        }
+    )
+
+
+def _is_memory_tool_scope(scope: str) -> bool:
+    normalized = scope.strip().casefold().replace("-", "_")
+    return (
+        normalized == "memory"
+        or normalized.startswith("memory.")
+        or normalized.startswith("memory_")
+    )
+
+
 def normalize_reply_target(
     requested_event_id: int | None,
     planner_input: PlannerInput,
@@ -171,6 +195,7 @@ def deterministic_effect_plan(planner_input: PlannerInput) -> TurnPlan:
         confidence=1.0,
         reason_code=PlannerReasonCode.DETERMINISTIC_EFFECT_REQUEST,
         memory_context=MemoryContextPlan(
+            access=MemoryAccessMode.NONE,
             mode=MemoryContextMode.NONE,
             reason_code=MemoryContextReasonCode.EFFECT_ONLY,
         ),
@@ -225,9 +250,16 @@ def deterministic_fallback_plan(
         reason_code=reason_code,
         planner_note="deterministic fallback after planner failure",
         memory_context=MemoryContextPlan(
+            access=(
+                MemoryAccessMode.NONE
+                if planner_input.origin.value == "autonomous_group"
+                or not planner_input.memory.retrieval_enabled
+                else MemoryAccessMode.AUTOMATIC
+            ),
             mode=(
                 MemoryContextMode.NONE
                 if planner_input.origin.value == "autonomous_group"
+                or not planner_input.memory.retrieval_enabled
                 else MemoryContextMode.LEXICAL
             ),
             reason_code=MemoryContextReasonCode.CASUAL_REPLY,

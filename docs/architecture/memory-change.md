@@ -19,6 +19,16 @@
   第三方来源始终记录为 `third_party`，高权威冲突可以实际落为 `contest`，不会冒充本人。
 - 读取本轮提及群友时只开放当前群 `person_group`，不再投影对方跨群 `person` 事实。
 - 普通变更是版本化/状态化操作，不做物理删除；`forgetme` 仍沿用独立隐私删除路径。
+- 普通对话中的创建、纠正、撤回和恢复由 Planner 统一路由到 `mutation + mode=none`。该路径跳过
+  自动召回，首轮依据 capability metadata 只开放已授权的 `memory/write_state` 能力；不依赖
+  `memory_change` 工具名或自然语言关键词硬编码。
+- 修改轮次的最终正文由聊天后端根据真实工具回执渲染。未调用、歧义、未找到、noop 或 contest
+  不得声称原请求已完成；`invalidate` 必须表述为撤回/失效且保留审计，不得表述为物理删除。
+- mutation 轮次只向主 Agent 暴露唯一写能力并追加有界执行契约；DeepSeek 的 wire payload
+  始终省略不受支持的 `tool_choice`，因此正确性必须来自能力隔离和后端完成门。
+- 通用工具候选裁剪不得移除 mutation 写能力。Agent 不知道内部 `memory_key` 时应使用
+  `old_content`；若误将用户可见标签填作 key，后端只可将其用于返回正文词法候选，再由 Agent
+  使用真实 `fact_id` 重试，不能直接模糊变更。
 
 ## 1. 摘要
 
@@ -198,6 +208,9 @@ CapabilityRisk.MUTATE
 |---|---|
 | `operation` | 希望执行的领域动作 |
 | `fact_id` | 修改现有事实时使用，只能来自本轮可见检索结果 |
+| `selector` | 没有 `fact_id` 时按 key/旧内容在已解析 target 内有界定位 |
+| `merge_fact_id` | merge 的目标事实 ID |
+| `merge_selector` | 没有 `merge_fact_id` 时定位 merge 目标 |
 | `target.subject_ref` | 后端提供的可信主体引用 |
 | `target.scope_type` | `person`、`person_group` 或 `group` |
 | `new_content` | 创建、纠正或归属修正后的内容 |
@@ -207,6 +220,11 @@ CapabilityRisk.MUTATE
 | `confidence` | Yuki 对当前判断的自评，不直接等于事实最终 confidence |
 | `evidence_refs` | 本轮后端提供的事件引用，不接受任意数据库 ID |
 | `expected_fact_state` | 乐观并发检查 |
+
+`selector` 至少包含 `memory_key` 或 `old_content`，可附加 `category`。没有 `fact_id` 时必须同时
+提供合法 `target`。后端不调用 Embedding，不跨人物、群或 SELF 可见性；所有已提供字段唯一精确
+命中时才执行。否则只返回至多 3 条包含 `fact_id/memory_ref/key/category/kind/content/status` 的
+词法候选，或返回 `memory_candidate_not_found`，数据库保持不变。
 
 后端注入且模型不能提交或覆盖的字段：
 

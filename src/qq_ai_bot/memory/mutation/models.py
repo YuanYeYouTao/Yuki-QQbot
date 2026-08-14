@@ -100,6 +100,20 @@ class MemoryMutationTarget(_MutationModel):
         return self
 
 
+class MemoryMutationSelector(_MutationModel):
+    """A bounded, target-local selector for one existing memory fact."""
+
+    memory_key: str | None = Field(default=None, min_length=1, max_length=128)
+    old_content: str | None = Field(default=None, min_length=1, max_length=4000)
+    category: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_lookup_basis(self) -> MemoryMutationSelector:
+        if self.memory_key is None and self.old_content is None:
+            raise ValueError("selector requires memory_key or old_content")
+        return self
+
+
 class MemoryMutationRequest(_MutationModel):
     """One requested semantic operation from any Memory V2 write entrypoint."""
 
@@ -107,6 +121,8 @@ class MemoryMutationRequest(_MutationModel):
     request_basis: MemoryMutationRequestBasis = MemoryMutationRequestBasis.USER_REQUESTED
     fact_id: int | None = Field(default=None, ge=1)
     merge_fact_id: int | None = Field(default=None, ge=1)
+    selector: MemoryMutationSelector | None = None
+    merge_selector: MemoryMutationSelector | None = None
     target: MemoryMutationTarget | None = None
     visibility: SelfMemoryVisibilityMode | None = None
     new_content: str | None = Field(default=None, max_length=4000)
@@ -126,6 +142,20 @@ class MemoryMutationRequest(_MutationModel):
     valid_from: str | None = Field(default=None, max_length=64)
     valid_until: str | None = Field(default=None, max_length=64)
     review_state: MemoryReviewState | None = None
+
+    @model_validator(mode="after")
+    def validate_selectors(self) -> MemoryMutationRequest:
+        if self.fact_id is not None and self.selector is not None:
+            raise ValueError("fact_id and selector are mutually exclusive")
+        if self.merge_fact_id is not None and self.merge_selector is not None:
+            raise ValueError("merge_fact_id and merge_selector are mutually exclusive")
+        if self.operation is MemoryMutationOperation.CREATE and (
+            self.selector is not None or self.merge_selector is not None
+        ):
+            raise ValueError("create does not accept selectors")
+        if self.operation is not MemoryMutationOperation.MERGE and self.merge_selector is not None:
+            raise ValueError("merge_selector is only valid for merge")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +202,17 @@ class MemoryMutationReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryMutationCandidate:
+    fact_id: int
+    memory_ref: str
+    memory_key: str
+    category: str
+    kind: MemoryKind
+    content: str
+    status: MemoryStatus
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryMutationResult:
     ok: bool
     mutation_id: str | None
@@ -182,6 +223,7 @@ class MemoryMutationResult:
     new_fact_id: int | None = None
     reason_code: str = ""
     deduplicated: bool = False
+    candidates: tuple[MemoryMutationCandidate, ...] = ()
 
     @classmethod
     def from_receipt(

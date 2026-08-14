@@ -146,6 +146,11 @@ class MemoryRetrievalRuntimeConfig:
     always_on_explicit_preference_limit: int
     query_term_limit: int
     short_query_fallback_enabled: bool
+    automatic_recall_per_target_limit: int = 4
+    automatic_recall_background_limit: int = 3
+    automatic_recall_continuation_limit: int = 4
+    automatic_recall_focused_limit: int = 6
+    automatic_recall_overview_limit: int = 8
     self_enabled: bool = False
     semantic_enabled: bool = True
     semantic_candidate_limit: int = 50
@@ -153,6 +158,25 @@ class MemoryRetrievalRuntimeConfig:
     hybrid_lexical_weight: float = 1.0
     hybrid_semantic_weight: float = 1.0
     hybrid_rrf_k: int = 60
+    intent_rerank_enabled: bool = True
+    activation_ranking_enabled: bool = True
+    usage_attribution_enabled: bool = True
+    usage_attribution_timeout_seconds: float = 12.0
+    usage_attribution_job_ttl_seconds: float = 120.0
+    usage_attribution_queue_limit: int = 128
+    reinforcement_enabled: bool = True
+    recall_receipts_enabled: bool = True
+    activation_half_life_episode_days: float = 14.0
+    activation_half_life_fact_days: float = 60.0
+    activation_half_life_preference_days: float = 120.0
+    activation_half_life_explicit_days: float = 365.0
+    reinforcement_alpha_background: float = 0.05
+    reinforcement_alpha_continuation: float = 0.12
+    reinforcement_alpha_recall: float = 0.25
+    reinforcement_alpha_verify: float = 0.08
+    intent_recent_window_days: int = 90
+    recall_receipt_retention_days: int = 30
+    recall_trace_candidate_limit: int = 20
     consolidation_enabled: bool = True
     consolidation_candidate_limit: int = 12
     consolidation_min_relevance: float = 0.25

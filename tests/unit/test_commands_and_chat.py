@@ -10,6 +10,7 @@ from tests.conftest import MemorySender, build_harness, make_settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
+    ChatMessage,
     InboundMessage,
     OutboundMedia,
     OutboundMessage,
@@ -24,7 +25,13 @@ from qq_ai_bot.emoji.models import (
     EmojiReplyPlan,
 )
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
+from qq_ai_bot.memory.enums import (
+    MemoryAccessMode,
+    MemoryContextMode,
+    MemoryRecallPurpose,
+    MemoryScopeType,
+    MemorySourceType,
+)
 from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
@@ -33,6 +40,7 @@ from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.planner import (
     DeliveryMode,
     FakePlannerProvider,
+    MemoryContextPlan,
     PlannerDecision,
     PlannerObservability,
     PlannerReasonCode,
@@ -41,6 +49,11 @@ from qq_ai_bot.planner import (
 )
 from qq_ai_bot.planner.models import ToolSelection
 from qq_ai_bot.planner.service import PlannerService
+from qq_ai_bot.services.chat import (
+    _automatic_memory_mode,
+    _initial_scopes_for_memory_access,
+    _with_memory_mutation_contract,
+)
 from qq_ai_bot.services.processor import MENTION_ONLY_CONTEXT, _vision_failure_message
 
 
@@ -65,6 +78,53 @@ def inbound(
         mentions_bot=mentions_bot,
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image"),) if unsupported else (),
     )
+
+
+def test_memory_access_strictly_controls_first_round_scope_and_automatic_recall() -> None:
+    requested = frozenset({"memory", "memory.read", "web"})
+
+    assert _initial_scopes_for_memory_access(
+        MemoryAccessMode.AUTOMATIC,
+        requested,
+    ) == frozenset({"web"})
+    assert _initial_scopes_for_memory_access(
+        MemoryAccessMode.NONE,
+        requested,
+    ) == frozenset({"web"})
+    assert _initial_scopes_for_memory_access(
+        MemoryAccessMode.TOOL,
+        frozenset({"web"}),
+    ) == frozenset({"memory", "web"})
+    assert _initial_scopes_for_memory_access(
+        MemoryAccessMode.MUTATION,
+        frozenset({"admin", "web"}),
+    ) == frozenset({"admin", "memory", "web"})
+    assert (
+        _automatic_memory_mode(MemoryAccessMode.AUTOMATIC, MemoryContextMode.HYBRID)
+        is MemoryContextMode.HYBRID
+    )
+    assert (
+        _automatic_memory_mode(MemoryAccessMode.TOOL, MemoryContextMode.NONE)
+        is MemoryContextMode.NONE
+    )
+    assert (
+        _automatic_memory_mode(MemoryAccessMode.MUTATION, MemoryContextMode.NONE)
+        is MemoryContextMode.NONE
+    )
+
+
+def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
+    messages = (ChatMessage(role="user", content="更新测试配置"),)
+
+    mutation_messages = _with_memory_mutation_contract(messages, MemoryAccessMode.MUTATION)
+
+    assert len(mutation_messages) == 2
+    assert mutation_messages[-1].role == "system"
+    assert "真实工具回执" in (mutation_messages[-1].content or "")
+    assert "管理员能力" in (mutation_messages[-1].content or "")
+    assert _with_memory_mutation_contract(messages, MemoryAccessMode.AUTOMATIC) is messages
+    assert _with_memory_mutation_contract(messages, MemoryAccessMode.TOOL) is messages
+    assert _with_memory_mutation_contract(messages, MemoryAccessMode.NONE) is messages
 
 
 @pytest.mark.parametrize(
@@ -141,7 +201,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：203 项" in admin_text
+    assert "可修改运行时配置参数：227 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "planner.max_pending_messages" in admin_text
     assert "relationship.set_affection" in admin_text
@@ -417,6 +477,108 @@ async def test_planner_none_keeps_generic_tool_request_gateway(
     tool_names = {tool.name for tool in provider.requests[-1].tools}
     assert "request_tools" in tool_names
     assert "memory_change" not in tool_names
+
+
+@pytest.mark.asyncio
+async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract(
+    database: Database,
+) -> None:
+    provider = FakeLLMProvider(lambda _request: "已经撤回")
+    harness = build_harness(database, make_settings(database.url), provider)
+    harness.processor._chat._tools._memory_mutations = object()  # type: ignore[assignment]
+    plan = TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="撤回长期记忆",
+        delivery_mode=DeliveryMode.SINGLE,
+        desired_messages=1,
+        tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
+        memory_context=MemoryContextPlan(
+            access=MemoryAccessMode.MUTATION,
+            mode=MemoryContextMode.NONE,
+            purpose=MemoryRecallPurpose.CORRECT,
+        ),
+        confidence=1.0,
+        reason_code=PlannerReasonCode.DIRECT_REQUEST,
+    )
+    harness.processor._planner = PlannerService(
+        provider=FakePlannerProvider(plan),
+        observability=PlannerObservability(),
+    )
+    sender = MemorySender()
+
+    await harness.processor.handle(
+        inbound("撤回一条测试配置", message_id="mutation-auto-write-only"),
+        sender,
+    )
+
+    assert len(provider.requests) == 1
+    request = provider.requests[0]
+    assert request.tool_choice == "auto"
+    assert {tool.name for tool in request.tools} == {"memory_change"}
+    assert any(
+        message.role == "system" and "真实工具回执" in (message.content or "")
+        for message in request.messages
+    )
+    assert sender.messages[0].text == "记忆变更未执行，本轮没有取得任何有效的记忆写入回执。"
+
+
+@pytest.mark.asyncio
+async def test_planner_fallback_fails_closed_before_agent_or_tools(
+    database: Database,
+) -> None:
+    provider = FakeLLMProvider(lambda _request: "不应运行主 Agent")
+    harness = build_harness(database, make_settings(database.url), provider)
+    plan = TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="fallback",
+        delivery_mode=DeliveryMode.SINGLE,
+        tool_selection=ToolSelection(mode=ToolMode.INHERIT, scopes=()),
+        confidence=0,
+        reason_code=PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
+    )
+    harness.processor._planner = PlannerService(
+        provider=FakePlannerProvider(plan),
+        observability=PlannerObservability(),
+    )
+    sender = MemorySender()
+
+    await harness.processor.handle(
+        inbound("请记住一个测试配置", message_id="planner-fail-closed"),
+        sender,
+    )
+
+    assert provider.requests == []
+    assert len(sender.messages) == 1
+    assert "未执行任何工具或持久化操作" in sender.messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_intentionally_disabled_planner_keeps_legacy_safe_fallback(
+    database: Database,
+) -> None:
+    provider = FakeLLMProvider(lambda _request: "普通安全降级回复")
+    harness = build_harness(database, make_settings(database.url), provider)
+    plan = TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="fallback",
+        delivery_mode=DeliveryMode.SINGLE,
+        tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
+        confidence=0,
+        reason_code=PlannerReasonCode.PLANNER_FALLBACK,
+    )
+    harness.processor._planner = PlannerService(
+        provider=FakePlannerProvider(plan),
+        observability=PlannerObservability(),
+    )
+    sender = MemorySender()
+
+    await harness.processor.handle(
+        inbound("普通问题", message_id="planner-disabled-fallback"),
+        sender,
+    )
+
+    assert len(provider.requests) == 1
+    assert sender.messages[0].text == "普通安全降级回复"
 
 
 @pytest.mark.asyncio

@@ -445,7 +445,9 @@ class MemoryFactModel(Base):
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
     invalidated_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_injected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     validation_version: Mapped[str] = mapped_column(
         String(32), nullable=False, default="memory-v2-quality-v1", server_default="legacy"
     )
@@ -456,6 +458,95 @@ class MemoryFactModel(Base):
         default="verified",
         server_default="legacy_unreviewed",
     )
+
+
+class MemoryActivationStateModel(Base):
+    """Recall accessibility kept separate from epistemic fact state."""
+
+    __tablename__ = "memory_activation_states"
+    __table_args__ = (
+        CheckConstraint("activation BETWEEN 0 AND 1", name="ck_memory_activation_value"),
+        CheckConstraint("recall_count >= 0", name="ck_memory_activation_recall_count"),
+        CheckConstraint("revision >= 0", name="ck_memory_activation_revision"),
+        Index("ix_memory_activation_last_recalled", "last_recalled_at"),
+    )
+
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), primary_key=True
+    )
+    activation: Mapped[float] = mapped_column(Float, nullable=False)
+    activation_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_recalled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    recall_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class MemoryRecallReceiptModel(Base):
+    """Content-free, bounded trace for one conversational recall turn."""
+
+    __tablename__ = "memory_recall_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('none','lexical','hybrid','overview')",
+            name="ck_memory_recall_receipt_mode",
+        ),
+        CheckConstraint(
+            "purpose IN ('background','recall','continuation','verify','correct')",
+            name="ck_memory_recall_receipt_purpose",
+        ),
+        Index("ix_memory_recall_receipts_expires", "expires_at", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    turn_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    conversation_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    trigger_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    origin: Mapped[str] = mapped_column(String(32), nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    selected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    injected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    used_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reinforced_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryRecallItemModel(Base):
+    __tablename__ = "memory_recall_items"
+    __table_args__ = (
+        UniqueConstraint("receipt_id", "fact_id", name="uq_memory_recall_item_fact"),
+        Index("ix_memory_recall_items_fact", "fact_id", "receipt_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    receipt_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_recall_receipts.id", ondelete="CASCADE"), nullable=False
+    )
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    target_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    candidate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    injected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reinforced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    base_rank_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    subject_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    entity_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    temporal_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    kind_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    activation_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    rerank_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    selection_reason: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    injected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reinforced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MemoryEvidenceModel(Base):

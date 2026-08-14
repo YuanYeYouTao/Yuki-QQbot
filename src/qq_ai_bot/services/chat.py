@@ -7,7 +7,8 @@ import json
 import logging
 import random
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Protocol, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -18,6 +19,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities import (
     AuthorityContext,
     CapabilityDescriptor,
+    CapabilityEffect,
     CapabilityExposure,
     CapabilityPolicyContext,
     CapabilityPolicyEngine,
@@ -69,9 +71,16 @@ from qq_ai_bot.emoji.models import (
     PendingReplyEffect,
 )
 from qq_ai_bot.llm.base import LLMEmptyResponseError
+from qq_ai_bot.memory.attribution import (
+    MemoryAttributionJob,
+    MemoryAttributionWorker,
+    MemoryExposure,
+    MemoryExposureRegistry,
+)
 from qq_ai_bot.memory.context import MemoryContextService
-from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.memory.enums import MemoryAccessMode, MemoryContextMode
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
+from qq_ai_bot.memory.models import MemoryQueryIntent
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
@@ -87,6 +96,7 @@ from qq_ai_bot.persistence.repositories import (
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner.models import (
     PlannedTurn,
+    PlannerReasonCode,
     ToolGroup,
     ToolMode,
     ToolScopeSummary,
@@ -140,6 +150,19 @@ _INHERITED_CANDIDATE_POOL_LIMIT = 24
 _ARTIFACT_PROVIDER_ID = "artifacts"
 _ARTIFACT_READER_NAME = "read_tool_artifact"
 _SET_REPLY_TARGET_NAME = "set_reply_target"
+_PLANNER_FAIL_CLOSED_MESSAGE = "本轮规划服务暂时不可用，未执行任何工具或持久化操作，请稍后重试。"
+_MEMORY_MUTATION_EXECUTION_CONTRACT = (
+    "本轮是后端授权的长期记忆变更终端轮次。必须先调用当前唯一暴露的长期记忆写能力，"
+    "并严格以真实工具回执为准；不得直接用正文确认、模拟或承诺变更。定位失败时也必须"
+    "保留真实失败回执，不得改用管理员能力。本轮不继续处理其他问答。"
+)
+_PLANNER_FAIL_CLOSED_REASONS = frozenset(
+    {
+        PlannerReasonCode.PLANNER_TIMEOUT_FALLBACK,
+        PlannerReasonCode.PLANNER_INVALID_RESPONSE_FALLBACK,
+        PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
+    }
+)
 _SET_REPLY_TARGET_TOOL = ChatTool(
     name=_SET_REPLY_TARGET_NAME,
     description=(
@@ -154,6 +177,38 @@ _SET_REPLY_TARGET_TOOL = ChatTool(
         "additionalProperties": False,
     },
 )
+
+
+def _initial_scopes_for_memory_access(
+    access: MemoryAccessMode,
+    scopes: frozenset[str],
+) -> frozenset[str]:
+    """Make Planner memory access the sole first-round Memory Scope decision."""
+
+    if access in {MemoryAccessMode.TOOL, MemoryAccessMode.MUTATION}:
+        return frozenset((*scopes, ToolGroup.MEMORY.value))
+    return frozenset(
+        scope
+        for scope in scopes
+        if scope != ToolGroup.MEMORY.value and not scope.startswith(f"{ToolGroup.MEMORY.value}.")
+    )
+
+
+def _automatic_memory_mode(
+    access: MemoryAccessMode,
+    mode: MemoryContextMode,
+) -> MemoryContextMode:
+    return mode if access is MemoryAccessMode.AUTOMATIC else MemoryContextMode.NONE
+
+
+def _with_memory_mutation_contract(
+    messages: tuple[ChatMessage, ...],
+    access: MemoryAccessMode,
+) -> tuple[ChatMessage, ...]:
+    if access is not MemoryAccessMode.MUTATION:
+        return messages
+    return (*messages, ChatMessage(role="system", content=_MEMORY_MUTATION_EXECUTION_CONTRACT))
+
 
 _BUILTIN_SCOPE_DESCRIPTIONS = {
     "memory": (
@@ -337,6 +392,12 @@ class ToolInvocationRecorder(Protocol):
     ) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class _CompletedAgentRun:
+    result: AgentRunResult
+    memory_exposures: tuple[MemoryExposure, ...]
+
+
 class _ChatAgentBackend(AgentToolBackend):
     """Preserve event-bound chat policies behind the shared model tool loop."""
 
@@ -362,6 +423,9 @@ class _ChatAgentBackend(AgentToolBackend):
         self._tool_turn_recorded = False
         self._request_tools_called = False
         self._first_real_tool_recorded = False
+        self._memory_locator_failed = False
+        self._memory_mutation_attempted = False
+        self._last_memory_mutation_result: dict[str, object] | None = None
         self._native_web_fallback = runtime.native_web_fallback
 
     def enable_native_web_fallback(self) -> None:
@@ -376,7 +440,11 @@ class _ChatAgentBackend(AgentToolBackend):
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         self._web_was_used = self._web_was_used or web_was_used
-        response_controls = self._response_control_definitions()
+        response_controls = (
+            ()
+            if self._runtime.memory_access is MemoryAccessMode.MUTATION
+            else self._response_control_definitions()
+        )
         if self._tools_closed:
             self._callable_tool_names = {tool.name for tool in response_controls}
             self._log_tool_exposure(
@@ -455,6 +523,31 @@ class _ChatAgentBackend(AgentToolBackend):
                 if entry.descriptor.model_name in visible_names
             ),
         )
+        if self._runtime.memory_access in {
+            MemoryAccessMode.TOOL,
+            MemoryAccessMode.MUTATION,
+        }:
+            allowed_memory_effects = (
+                {CapabilityEffect.WRITE_STATE}
+                if self._runtime.memory_access is MemoryAccessMode.MUTATION
+                else {CapabilityEffect.READ_STATE, CapabilityEffect.EXTERNAL_READ}
+            )
+            filtered_catalog = replace(
+                filtered_catalog,
+                entries=tuple(
+                    entry
+                    for entry in filtered_catalog.entries
+                    if (
+                        ToolGroup.MEMORY.value in entry.descriptor.scope_ids
+                        and entry.descriptor.effect in allowed_memory_effects
+                    )
+                    or entry.descriptor.model_name in self._requested_tool_names
+                    or (
+                        self._runtime.memory_access is MemoryAccessMode.TOOL
+                        and entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+                    )
+                ),
+            )
         if self._runtime.scheduled_automation_intent:
             # A deterministic automation hint grants visibility, not an
             # obligation to create a task.  Keep automation_create present
@@ -485,7 +578,10 @@ class _ChatAgentBackend(AgentToolBackend):
                     or entry.descriptor.model_name in self._requested_tool_names
                 ),
             )
-        if self._runtime.selected_tool_names is not None:
+        if (
+            self._runtime.selected_tool_names is not None
+            and self._runtime.memory_access is not MemoryAccessMode.MUTATION
+        ):
             filtered_catalog = replace(
                 filtered_catalog,
                 entries=tuple(
@@ -591,6 +687,10 @@ class _ChatAgentBackend(AgentToolBackend):
         may_request_more = bool(
             self._runtime.origin is TurnOrigin.USER_MESSAGE
             and self._requestable_catalog is not None
+            and (
+                self._runtime.memory_access is not MemoryAccessMode.MUTATION
+                or self._memory_locator_failed
+            )
             and any(
                 entry.descriptor.model_name not in exposed_names
                 for entry in self._requestable_catalog.entries
@@ -720,6 +820,18 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
         if name == REQUEST_TOOLS_NAME:
+            if (
+                self._runtime.memory_access is MemoryAccessMode.MUTATION
+                and not self._memory_locator_failed
+            ):
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": "capability_not_loaded",
+                        "detail": "记忆写入定位尚未失败，本轮不能提前加载其他能力。",
+                    },
+                    ensure_ascii=False,
+                )
             return self._request_tools(arguments_json)
         if name not in self._callable_tool_names:
             requestable = (
@@ -761,6 +873,19 @@ class _ChatAgentBackend(AgentToolBackend):
             self._first_real_tool_recorded = True
         effective_descriptor = self._effective_descriptor(call, descriptor)
         is_web_tool = ToolGroup.WEB.value in effective_descriptor.scope_ids
+        is_memory_read_tool = (
+            ToolGroup.MEMORY.value in effective_descriptor.scope_ids
+            and effective_descriptor.effect is CapabilityEffect.READ_STATE
+        )
+        is_memory_write_tool = (
+            ToolGroup.MEMORY.value in effective_descriptor.scope_ids
+            and effective_descriptor.effect is CapabilityEffect.WRITE_STATE
+        )
+        if is_memory_read_tool and self._runtime.memory_access is MemoryAccessMode.AUTOMATIC:
+            self._service._tool_metrics.record_automatic_memory_read_tool_call(
+                locator_fallback=self._memory_locator_failed
+            )
+            self._memory_locator_failed = False
         config = self._runtime.runtime_config
         assert config is not None
         mutation_identity = self._mutation_identity(call)
@@ -852,7 +977,11 @@ class _ChatAgentBackend(AgentToolBackend):
                 should_finalize_after_commit = bool(
                     mutation_committed
                     and (
-                        outcome.finalize_after_commit is True
+                        (
+                            is_memory_write_tool
+                            and self._runtime.memory_access is MemoryAccessMode.MUTATION
+                        )
+                        or outcome.finalize_after_commit is True
                         or effective_descriptor.finalize_after_commit
                     )
                 )
@@ -923,6 +1052,14 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._web_calls_used += 1
                 self._web_was_used = True
         decoded = self._service._decode_tool_result(result)
+        if is_memory_write_tool and self._runtime.memory_access is MemoryAccessMode.MUTATION:
+            if not self._memory_mutation_attempted:
+                self._service._record_memory_mutation_turn_outcome("attempted")
+            self._memory_mutation_attempted = True
+            self._last_memory_mutation_result = decoded
+            self._service._record_memory_mutation_turn_outcome(
+                self._memory_mutation_outcome(decoded)
+            )
         if (
             descriptor.provider_id == "automation"
             and descriptor.provider_tool_name == "automation_create"
@@ -942,11 +1079,20 @@ class _ChatAgentBackend(AgentToolBackend):
                     self._completed_admin_mutations.add(mutation_identity)
                     self._remember_committed_mutation(decoded)
                     self._mutation_committed = True
+                    if self._runtime.memory_access is MemoryAccessMode.MUTATION:
+                        self._tools_closed = True
             elif (decoded.get("error") or decoded.get("error_code")) == "duplicate_mutation":
                 # A prior identical call already committed in this turn. Keep
                 # the successful result available so the model can summarize it.
                 self._admin_retry_constraint = None
                 self._admin_terminal_failure = None
+            elif (decoded.get("error") or decoded.get("error_code")) in {
+                "memory_candidate_ambiguous",
+                "memory_candidate_not_found",
+            }:
+                self._admin_terminal_failure = None
+                self._admin_retry_constraint = None
+                self._memory_locator_failed = True
             elif bool(decoded.get("retryable")):
                 self._admin_terminal_failure = None
                 self._admin_retry_constraint = self._retry_identity(call)
@@ -963,6 +1109,8 @@ class _ChatAgentBackend(AgentToolBackend):
         return result
 
     def finalize(self, content: str, runtime: AgentRuntime) -> str:
+        if self._runtime.memory_access is MemoryAccessMode.MUTATION:
+            return self._memory_mutation_final_text()
         if self._admin_terminal_failure is not None:
             return self._service._admin_failure_text(self._admin_terminal_failure)
         if self._capability_was_used and contains_internal_capability_payload(content):
@@ -994,6 +1142,11 @@ class _ChatAgentBackend(AgentToolBackend):
     def post_commit_recovery_text(self) -> str | None:
         """Return a deterministic reply when model finalization fails after a commit."""
 
+        if (
+            self._runtime.memory_access is MemoryAccessMode.MUTATION
+            and self._memory_mutation_attempted
+        ):
+            return self._memory_mutation_final_text()
         if not self._committed_mutation_messages:
             return None
         return "\n".join(self._committed_mutation_messages)
@@ -1012,9 +1165,93 @@ class _ChatAgentBackend(AgentToolBackend):
             self._committed_mutation_messages.append(message)
 
     def exhausted(self, runtime: AgentRuntime) -> str:
+        if self._runtime.memory_access is MemoryAccessMode.MUTATION:
+            return self._memory_mutation_final_text()
         if self._admin_terminal_failure is not None:
             return self._service._admin_failure_text(self._admin_terminal_failure)
         return "这次操作的工具调用次数过多，已停止继续执行。请把请求拆小后再试。"
+
+    @staticmethod
+    def _memory_mutation_outcome(result: dict[str, object]) -> str:
+        data = result.get("data")
+        payload = data if isinstance(data, dict) else {}
+        applied = str(payload.get("applied_operation") or "")
+        outcome = str(payload.get("outcome") or "")
+        error = str(result.get("error") or result.get("error_code") or "")
+        if applied == "noop" or outcome in {"no_change", "deduplicated"}:
+            return "noop"
+        if error == "memory_candidate_ambiguous":
+            return "ambiguous"
+        if error == "memory_candidate_not_found":
+            return "not_found"
+        if result.get("mutation_committed") is True:
+            return "committed"
+        return "rejected"
+
+    def _memory_mutation_final_text(self) -> str:
+        result = self._last_memory_mutation_result
+        if not self._memory_mutation_attempted or result is None:
+            self._service._record_memory_mutation_turn_outcome("not_attempted")
+            return "记忆变更未执行，本轮没有取得任何有效的记忆写入回执。"
+        data = result.get("data")
+        payload = data if isinstance(data, dict) else {}
+        applied = str(payload.get("applied_operation") or "")
+        outcome = str(payload.get("outcome") or "")
+        reason = str(payload.get("reason_code") or "")
+        error = str(result.get("error") or result.get("error_code") or "")
+        candidates = payload.get("candidates")
+        if error == "memory_candidate_ambiguous":
+            lines = ["记忆变更尚未执行：当前条件不能唯一定位目标。"]
+            if isinstance(candidates, list):
+                for candidate in candidates[:3]:
+                    if not isinstance(candidate, dict):
+                        continue
+                    fact_id = candidate.get("fact_id")
+                    memory_ref = candidate.get("memory_ref") or (
+                        f"M{fact_id}" if isinstance(fact_id, int) else "未知引用"
+                    )
+                    summary = "｜".join(
+                        str(value)
+                        for value in (
+                            memory_ref,
+                            candidate.get("key"),
+                            candidate.get("category"),
+                            candidate.get("content"),
+                            candidate.get("status"),
+                        )
+                        if value not in (None, "")
+                    )
+                    if summary:
+                        lines.append(f"- {summary}")
+            lines.append("请明确选择其中一条后再试。")
+            return "\n".join(lines)
+        if error == "memory_candidate_not_found":
+            return "记忆变更未执行：在当前合法作用域内没有找到可唯一定位的目标。"
+        if not bool(result.get("ok")):
+            public = str(result.get("public_message") or "").strip()
+            detail = public or "记忆变更未执行"
+            return f"{detail}（reason_code={error or reason or 'unknown'}）"
+        if applied == "noop" or outcome == "no_change":
+            return "记忆状态没有发生变化，本轮没有完成新的覆盖、撤回或恢复。"
+        if outcome == "committed_as_contested" or applied == "contest":
+            return "该记忆存在冲突，已标记为有争议；没有按原请求直接覆盖或删除。"
+        if applied == "merge_evidence" or outcome == "deduplicated":
+            return "这条信息已经存在，本轮只合并了证据，没有创建重复记忆。"
+        if applied == "create":
+            return "已将这条信息写入长期记忆。"
+        if applied == "correct":
+            return "记忆已按你的要求纠正，旧版本不再作为当前有效答案。"
+        if applied == "invalidate":
+            return "这条记忆已撤回并失效；审计记录仍保留，但不会再作为有效记忆使用。"
+        if applied == "restore":
+            return "这条记忆已恢复为有效状态。"
+        if applied == "merge":
+            return "相关记忆已经合并，重复版本不再分别作为有效记忆使用。"
+        if applied == "reassign":
+            return "记忆归属已经按真实回执更新。"
+        if applied == "update_metadata":
+            return "记忆元数据已经按真实回执更新。"
+        return f"记忆变更已完成（outcome={outcome or 'committed'}）。"
 
     def _is_mutating_call(self, call: ToolCall) -> bool:
         entry = (
@@ -1083,7 +1320,10 @@ class _ChatAgentBackend(AgentToolBackend):
         """Keep local response controls and Artifact reads outside the business budget."""
 
         del runtime
-        return name not in {_SET_REPLY_TARGET_NAME, _ARTIFACT_READER_NAME}
+        return name not in {
+            _SET_REPLY_TARGET_NAME,
+            _ARTIFACT_READER_NAME,
+        }
 
     def _mutation_identity(self, call: ToolCall) -> tuple[str, str] | None:
         if not self._is_mutating_call(call):
@@ -1102,12 +1342,14 @@ class _ChatAgentBackend(AgentToolBackend):
         return call.function.name, normalized
 
     def _response_control_definitions(self) -> tuple[ChatTool, ...]:
-        if self._runtime.reply_target_control is None or self._runtime.origin not in {
+        if self._runtime.origin not in {
             TurnOrigin.USER_MESSAGE,
             TurnOrigin.AUTONOMOUS_GROUP,
         }:
             return ()
-        return (_SET_REPLY_TARGET_TOOL,)
+        if self._runtime.reply_target_control is not None:
+            return (_SET_REPLY_TARGET_TOOL,)
+        return ()
 
     def _set_reply_target(self, arguments_json: str) -> str:
         control = self._runtime.reply_target_control
@@ -1150,6 +1392,8 @@ class _ChatAgentBackend(AgentToolBackend):
     def _request_tools(self, arguments_json: str) -> str:
         self._request_tools_called = True
         self._service._tool_metrics.record_request_tools()
+        if self._runtime.memory_access is MemoryAccessMode.AUTOMATIC:
+            self._service._tool_metrics.record_automatic_memory_request_tools()
         try:
             arguments = json.loads(arguments_json)
         except json.JSONDecodeError:
@@ -1203,6 +1447,12 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
         loaded_names = {match.entry.descriptor.model_name for match in matches}
+        if self._runtime.memory_access is MemoryAccessMode.AUTOMATIC and any(
+            ToolGroup.MEMORY.value in match.entry.descriptor.scope_ids
+            and match.entry.descriptor.effect is CapabilityEffect.READ_STATE
+            for match in matches
+        ):
+            self._service._tool_metrics.record_automatic_memory_read_tools_loaded()
         logger.info(
             "agent_request_tools_result conversation_hash=%s loaded_count=%d",
             identifier_hash(self._runtime.conversation_key) or "missing",
@@ -1296,6 +1546,7 @@ class ChatService:
         source_policy: SourceDisplayPolicy | None = None,
         source_renderer: SourceRenderer | None = None,
         memory_context: MemoryContextService | None = None,
+        memory_attribution: MemoryAttributionWorker | None = None,
         context_assembler: ContextAssembler | None = None,
         prompt_composer: PromptComposer | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
@@ -1350,6 +1601,8 @@ class ChatService:
                 ),
                 facts=self._memories,
             )
+        self._memory_context = memory_context
+        self._memory_attribution = memory_attribution
         self._context_assembler = context_assembler or ContextAssembler(
             settings=settings,
             ledger=self._ledger,
@@ -1688,6 +1941,10 @@ class ChatService:
 
         self._prompt_composer.configure_plugin_limits(runtime)
 
+    def _record_memory_mutation_turn_outcome(self, outcome: str) -> None:
+        if self._memory_context is not None:
+            self._memory_context.metrics.record_mutation_turn_outcome(outcome)
+
     def set_event_publisher(self, publisher: LifecycleEventPublisher) -> None:
         """Attach the host notification bus without changing reply control flow."""
 
@@ -1733,11 +1990,35 @@ class ChatService:
                 and planned_turn.plan.emoji.is_exclusive
                 and planned_turn.plan.tool_mode is ToolMode.NONE
             )
+            fallback_plan = planned_turn is not None and planned_turn.fallback_used
+            if (
+                planned_turn is not None
+                and planned_turn.plan.reason_code in _PLANNER_FAIL_CLOSED_REASONS
+                and not planner_emoji_only
+            ):
+                self._record_memory_mutation_turn_outcome("planner_fail_closed")
+                logger.warning(
+                    "planner_fallback_fail_closed conversation_hash=%s reason=%s",
+                    identifier_hash(identity.key) or "missing",
+                    planned_turn.plan.reason_code.value,
+                )
+                result = await sender.send(OutboundMessage(text=_PLANNER_FAIL_CLOSED_MESSAGE))
+                await self._record_outbound(inbound, _PLANNER_FAIL_CLOSED_MESSAGE, result)
+                return 1
             if planner_emoji_only:
                 messages: tuple[ChatMessage, ...] = ()
                 visible_event_ids: frozenset[int] = frozenset()
+                memory_turn_id = ""
+                automatic_memory_exposures: tuple[MemoryExposure, ...] = ()
+                memory_intent: MemoryQueryIntent | None = None
             else:
-                messages, visible_event_ids = await self._build_messages(
+                (
+                    messages,
+                    visible_event_ids,
+                    memory_turn_id,
+                    automatic_memory_exposures,
+                    memory_intent,
+                ) = await self._build_messages(
                     inbound,
                     identity,
                     profile,
@@ -1746,7 +2027,15 @@ class ChatService:
                     visual_observation=visual_observation,
                     visual_failure=visual_failure,
                     planned_turn=planned_turn,
+                    turn_origin=(
+                        TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
+                    ),
                 )
+            memory_access = (
+                planned_turn.plan.memory_context.access
+                if planned_turn is not None
+                else MemoryAccessMode.AUTOMATIC
+            )
             scheduled_automation_intent = bool(
                 not autonomous
                 and not visual_input_present
@@ -1757,8 +2046,11 @@ class ChatService:
                 )
                 and is_scheduled_automation_request(content)
             )
-            fallback_plan = planned_turn is not None and planned_turn.fallback_used
-            scheduled_automation_allowed = scheduled_automation_intent and not fallback_plan
+            scheduled_automation_allowed = bool(
+                scheduled_automation_intent
+                and not fallback_plan
+                and memory_access is not MemoryAccessMode.MUTATION
+            )
             if scheduled_automation_allowed:
                 messages = (
                     *messages,
@@ -1773,6 +2065,8 @@ class ChatService:
                         ),
                     ),
                 )
+            if not planner_emoji_only:
+                messages = _with_memory_mutation_contract(messages, memory_access)
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
@@ -1800,10 +2094,16 @@ class ChatService:
             planner_scopes_explicit = bool(
                 planned_turn is not None and planned_turn.plan.tool_selection_explicit
             )
+            if self._memory_context is not None:
+                self._memory_context.metrics.record_access(memory_access)
             planner_tool_groups = (
                 frozenset(planned_turn.plan.tool_selection.scope_ids)
                 if planned_turn is not None
                 else frozenset(group.value for group in ToolGroup)
+            )
+            planner_tool_groups = _initial_scopes_for_memory_access(
+                memory_access,
+                planner_tool_groups,
             )
             tool_groups = planner_tool_groups
             if scheduled_automation_allowed and (planned_turn is None or planner_scopes_explicit):
@@ -1854,6 +2154,11 @@ class ChatService:
                 tool_mode=(
                     ToolMode.INHERIT
                     if scheduled_automation_allowed
+                    or (
+                        memory_access in {MemoryAccessMode.TOOL, MemoryAccessMode.MUTATION}
+                        and planned_turn is not None
+                        and planned_turn.plan.tool_mode is ToolMode.NONE
+                    )
                     else (
                         planned_turn.plan.tool_mode
                         if planned_turn is not None
@@ -1878,15 +2183,22 @@ class ChatService:
                     web_route is not None and web_route.provider is WebProvider.TAVILY
                 ),
                 web_route=web_route,
+                memory_turn_id=memory_turn_id,
+                memory_exposures=automatic_memory_exposures,
+                memory_intent=memory_intent,
+                memory_access=memory_access,
+                planner_fallback=fallback_plan,
             )
             if planner_emoji_only:
                 response_text = ""
             elif turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
-                    agent_result = await self._run_agent(identity.key, messages, runtime)
+                    completed_agent = await self._run_agent(identity.key, messages, runtime)
             else:
-                agent_result = await self._run_agent(identity.key, messages, runtime)
+                completed_agent = await self._run_agent(identity.key, messages, runtime)
             if not planner_emoji_only:
+                agent_result = completed_agent.result
+                attributed_exposures = completed_agent.memory_exposures
                 response_text = agent_result.text
                 if agent_result.native_tool_events:
                     native_response = recover_native_web_response(
@@ -1933,11 +2245,13 @@ class ChatService:
                                 ),
                                 max_model_requests_override=fallback_limit,
                             )
-                            agent_result = await self._run_agent(
+                            completed_agent = await self._run_agent(
                                 identity.key,
                                 messages,
                                 fallback_runtime,
                             )
+                            agent_result = completed_agent.result
+                            attributed_exposures = completed_agent.memory_exposures
                             response_text = agent_result.text
             sources = await self._web_sources.for_trigger(
                 conversation_key=identity.key,
@@ -1965,6 +2279,7 @@ class ChatService:
                 if not emoji_effects:
                     raise
                 rendered = ""
+            attribution_response_text = rendered
             prepared_effects: list[tuple[PendingReplyEffect, OutboundMessage]] = []
             preparation_fallbacks: list[OutboundMessage] = []
             if self._emoji_effects is not None:
@@ -2047,10 +2362,20 @@ class ChatService:
                             max_characters=self._settings.max_output_characters,
                         )
 
+                agent_body_delivered = False
+                voice_message_id = id(prepared_voice.message) if prepared_voice is not None else 0
+
                 async def record_chunk(
                     message: OutboundMessage,
                     receipt: OutboundSendReceipt,
                 ) -> None:
+                    nonlocal agent_body_delivered
+                    if id(message) == voice_message_id or (
+                        bool(message.text.strip())
+                        and not message.media
+                        and id(message) not in fallback_message_ids
+                    ):
+                        agent_body_delivered = True
                     if message.media and self._emoji_effects is not None:
                         await self._emoji_effects.record_send_accepted(
                             message,
@@ -2177,6 +2502,13 @@ class ChatService:
                     suppress_text=suppress_text,
                     reply_to_message_id=reply_to_message_id,
                 )
+                if not planner_emoji_only and agent_body_delivered and not sequence.cancelled:
+                    self._enqueue_memory_attribution(
+                        runtime=runtime,
+                        user_question=content,
+                        final_response=attribution_response_text,
+                        exposures=attributed_exposures,
+                    )
                 return sequence.sent_messages
             chunks = self._render_chunks(rendered, runtime_config) if rendered else ()
             legacy_messages = [
@@ -2208,6 +2540,8 @@ class ChatService:
                 if media.emoji_id
             }
             legacy_failure_notice_sent = False
+            legacy_fallback_ids = {id(message) for message in preparation_fallbacks}
+            agent_body_delivered = False
             sent_count = 0
             for index, outbound in enumerate(legacy_messages):
                 if len(legacy_messages) > 1 and index > 0:
@@ -2288,6 +2622,12 @@ class ChatService:
                         )
                         continue
                 sent_count += 1
+                if (
+                    outbound.text.strip()
+                    and not outbound.media
+                    and id(outbound) not in legacy_fallback_ids
+                ):
+                    agent_body_delivered = True
                 if outbound.media and self._emoji_effects is not None:
                     await self._emoji_effects.record_send_accepted(
                         outbound,
@@ -2310,7 +2650,49 @@ class ChatService:
                     receipt = await sender.send(OutboundMessage(text=source_text))
                     await self._record_outbound(inbound, source_text, receipt)
                     sent_count += 1
+            if not planner_emoji_only and agent_body_delivered:
+                self._enqueue_memory_attribution(
+                    runtime=runtime,
+                    user_question=content,
+                    final_response=attribution_response_text,
+                    exposures=attributed_exposures,
+                )
             return sent_count
+
+    def _enqueue_memory_attribution(
+        self,
+        *,
+        runtime: ToolRuntime,
+        user_question: str,
+        final_response: str,
+        exposures: tuple[MemoryExposure, ...],
+    ) -> bool:
+        config = runtime.runtime_config
+        if (
+            self._memory_attribution is None
+            or config is None
+            or not config.memory.usage_attribution_enabled
+            or not runtime.memory_turn_id
+            or runtime.memory_intent is None
+            or runtime.planner_fallback
+            or runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+            or not final_response.strip()
+            or not exposures
+        ):
+            return False
+        return self._memory_attribution.enqueue(
+            MemoryAttributionJob(
+                turn_id=runtime.memory_turn_id,
+                user_id=runtime.inbound.sender.user_id,
+                group_id=runtime.inbound.group_id,
+                user_question=user_question,
+                final_response=final_response,
+                intent=runtime.memory_intent,
+                exposures=exposures,
+                runtime=config,
+                enqueued_at=datetime.now(UTC),
+            )
+        )
 
     async def _build_messages(
         self,
@@ -2323,22 +2705,38 @@ class ChatService:
         visual_observation: VisualObservation | None = None,
         visual_failure: bool = False,
         planned_turn: PlannedTurn | None = None,
-    ) -> tuple[tuple[ChatMessage, ...], frozenset[int]]:
+        turn_origin: TurnOrigin = TurnOrigin.USER_MESSAGE,
+    ) -> tuple[
+        tuple[ChatMessage, ...],
+        frozenset[int],
+        str,
+        tuple[MemoryExposure, ...],
+        MemoryQueryIntent | None,
+    ]:
         context = await self._context_assembler.assemble(
             inbound=inbound,
             identity=identity,
             profile=profile,
             content=content,
             runtime=runtime,
-            planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
+            planner_intent="",
             memory_mode=(
-                planned_turn.plan.memory_context.mode
+                _automatic_memory_mode(
+                    planned_turn.plan.memory_context.access,
+                    planned_turn.plan.memory_context.mode,
+                )
                 if planned_turn is not None
                 else MemoryContextMode.LEXICAL
             ),
             self_recall=(
                 planned_turn.plan.memory_context.self_recall if planned_turn is not None else False
             ),
+            memory_intent=(
+                planned_turn.plan.memory_context.to_query_intent()
+                if planned_turn is not None
+                else None
+            ),
+            turn_origin=turn_origin.value,
         )
         return (
             self._prompt_composer.compose(
@@ -2350,6 +2748,9 @@ class ChatService:
                 planned_turn=planned_turn,
             ),
             context.visible_event_ids,
+            context.memory_turn_id,
+            context.memory_exposures,
+            context.memory_intent,
         )
 
     async def _resolve_reply_target(
@@ -2391,7 +2792,7 @@ class ChatService:
         conversation_key: str,
         initial_messages: tuple[ChatMessage, ...],
         runtime: ToolRuntime,
-    ) -> AgentRunResult:
+    ) -> _CompletedAgentRun:
         config = runtime.runtime_config
         if config is None:
             config = await self._runtime_config.snapshot(
@@ -2399,8 +2800,11 @@ class ChatService:
                 group_id=runtime.inbound.group_id,
             )
             runtime = replace(runtime, runtime_config=config)
+        exposure_registry = MemoryExposureRegistry(runtime.memory_exposures)
+        runtime = replace(runtime, memory_exposure_registry=exposure_registry)
         runtime = await self._prepare_tool_candidates(runtime)
         current_time = await self._time.current(runtime.inbound.sender.user_id)
+        backend = _ChatAgentBackend(self, runtime)
         result = await self._agent_runner.run(
             initial_messages,
             AgentRuntime(
@@ -2427,9 +2831,12 @@ class ChatService:
                 force_tavily_fallback=runtime.native_web_fallback,
                 web_route=runtime.web_route,
             ),
-            _ChatAgentBackend(self, runtime),
+            backend,
         )
-        return result
+        return _CompletedAgentRun(
+            result=result,
+            memory_exposures=exposure_registry.snapshot(),
+        )
 
     async def generate_external_reply(
         self,
@@ -2497,7 +2904,8 @@ class ChatService:
             selected_tool_names=frozenset(),
             max_model_requests_override=min(2, runtime.agent.max_model_requests),
         )
-        result = await self._run_agent(conversation_key, messages, tool_runtime)
+        completed = await self._run_agent(conversation_key, messages, tool_runtime)
+        result = completed.result
         try:
             rendered = clean_model_output(
                 result.text,

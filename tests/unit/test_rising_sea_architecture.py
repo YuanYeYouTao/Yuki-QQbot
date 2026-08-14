@@ -137,6 +137,19 @@ def test_model_profiles_require_every_explicit_route(tmp_path: Path) -> None:
         _load_catalog(incomplete)
 
 
+def test_legacy_profiles_route_attribution_to_utility_structured(tmp_path: Path) -> None:
+    profile_path = tmp_path / "legacy.toml"
+    routes = {task.value: "pro" for task in ModelTask if task is not ModelTask.MEMORY_ATTRIBUTION}
+    profile_path.write_text(_profile_document(routes), encoding="utf-8")
+
+    catalog = _load_catalog(profile_path)
+
+    assert (
+        catalog.routes[ModelTask.MEMORY_ATTRIBUTION].profile_id
+        == catalog.routes[ModelTask.UTILITY_STRUCTURED].profile_id
+    )
+
+
 def test_prompt_benchmark_meets_declared_reduction_targets() -> None:
     settings = Settings(_env_file=None, llm_provider="fake", llm_model="fake")
     comparison = _prompt_comparison(settings)

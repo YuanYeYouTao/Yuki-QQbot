@@ -16,6 +16,7 @@ from qq_ai_bot.memory.embedding.provider import EmbeddingProvider
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
+    ModelExecutionPriority,
     ModelProtocol,
     ModelTask,
     StructuredOutputMode,
@@ -67,9 +68,15 @@ class CountingModelExecutor:
         self._delegate = delegate
         self._counts: Counter[ModelTask] = Counter()
 
-    async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
+    async def execute(
+        self,
+        task: ModelTask,
+        request: ChatRequest,
+        *,
+        priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
+    ) -> ChatResponse:
         self._counts[task] += 1
-        return await self._delegate.execute(task, request)
+        return await self._delegate.execute(task, request, priority=priority)
 
     def model_name(self, task: ModelTask) -> str:
         return self._delegate.model_name(task)

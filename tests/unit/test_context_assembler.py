@@ -548,7 +548,9 @@ async def test_sqlite_connections_enable_wal_and_bounded_busy_wait(database: Dat
 
 
 @pytest.mark.asyncio
-async def test_only_facts_surviving_context_budget_are_marked_used(database: Database) -> None:
+async def test_only_facts_surviving_context_budget_are_marked_injected(
+    database: Database,
+) -> None:
     repository = MemoryFactRepository(database)
     memories = MemoryFactService(repository)
     selected = await memories.remember(
@@ -596,13 +598,46 @@ async def test_only_facts_surviving_context_budget_are_marked_used(database: Dat
         context,
         required_cost + selected_cost,
     )
-    await memories.mark_used(fact_ids)
+    await memories.mark_injected(fact_ids)
 
     selected_row = await repository.get_fact(selected.id)
     omitted_row = await repository.get_fact(omitted.id)
     assert fact_ids == (selected.id,)
-    assert selected_row is not None and selected_row.last_used_at is not None
-    assert omitted_row is not None and omitted_row.last_used_at is None
+    assert selected_row is not None and selected_row.last_injected_at is not None
+    assert omitted_row is not None and omitted_row.last_injected_at is None
+
+
+def test_memory_budget_uses_rerank_score_without_exposing_internal_fields() -> None:
+    context = {
+        "current_person": {
+            "user_id": "1001",
+            "facts": [
+                {
+                    "fact_id": 1,
+                    "content": "低分且很短",
+                    "importance": 5,
+                    "_retrieval_score": 0.1,
+                },
+                {
+                    "fact_id": 2,
+                    "content": "高分事实内容",
+                    "importance": 1,
+                    "_retrieval_score": 0.9,
+                },
+            ],
+        },
+        "scene": {"type": "private", "group_id": None},
+    }
+    contributions = ContextAssembler._context_contributions(context)
+    required_cost = sum(item.cost for item in contributions if item.required)
+    high_score = next(item for item in contributions if item.id == "person_memory.1")
+    rendered, fact_ids = ContextAssembler._fit_metadata(
+        context,
+        required_cost + high_score.cost,
+    )
+
+    assert fact_ids == (2,)
+    assert "_retrieval_score" not in str(rendered)
 
 
 def test_recent_delivery_projects_only_confirmed_transport_metadata() -> None:

@@ -8,6 +8,7 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.repository import EmojiRepository
+from qq_ai_bot.memory.activation import MemoryActivationRepository, MemoryIntentRanker
 from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.evidence import MemoryEvidencePolicy, MemoryEvidenceWeights
@@ -15,6 +16,7 @@ from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
+from qq_ai_bot.memory.receipt import MemoryRecallRepository
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
@@ -53,6 +55,7 @@ class PersistenceBundle:
     memory_context: MemoryContextService
     memory_index: SQLiteMemoryFTSIndex
     memory_jobs: MemoryJobRepository
+    memory_receipts: MemoryRecallRepository
     memory_audit: MemoryAuditService
     memory_metrics: MemoryLifecycleMetrics
     memory_rebuilds: MemoryRebuildRepository
@@ -117,16 +120,23 @@ class PersistenceModule:
             metrics=memory_metrics,
         )
         memory_index = SQLiteMemoryFTSIndex(database)
+        memory_activation = MemoryActivationRepository(database)
+        memory_receipts = MemoryRecallRepository(database)
         memory_context = MemoryContextService(
             query_builder=MemoryQueryBuilder(MemoryTargetResolver(people)),
             retriever=MemoryRetriever(
                 repository=memory_repository,
                 lexical_index=memory_index,
+                activation_repository=memory_activation,
+                intent_ranker=MemoryIntentRanker(memory_metrics),
                 mmr_enabled=settings.memory_mmr_enabled,
                 mmr_lambda=settings.memory_mmr_lambda,
                 mmr_candidate_pool_size=settings.memory_mmr_candidate_pool_size,
             ),
             facts=memories,
+            activation=memory_activation,
+            receipts=memory_receipts,
+            metrics=memory_metrics,
         )
         return PersistenceBundle(
             database=database,
@@ -141,11 +151,14 @@ class PersistenceModule:
             memory_context=memory_context,
             memory_index=memory_index,
             memory_jobs=MemoryJobRepository(database),
+            memory_receipts=memory_receipts,
             memory_audit=MemoryAuditService(
                 memory_repository,
                 metrics=memory_metrics,
                 settings=settings,
                 runtime_config=runtime_config,
+                activation=memory_activation,
+                receipts=memory_receipts,
             ),
             memory_metrics=memory_metrics,
             memory_rebuilds=MemoryRebuildRepository(database),

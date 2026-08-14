@@ -6,6 +6,11 @@ import hashlib
 import logging
 import time
 
+from qq_ai_bot.memory.activation import (
+    MemoryActivationRepository,
+    MemoryIntentRanker,
+    apply_strict_temporal_constraint,
+)
 from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
 from qq_ai_bot.memory.embedding.metrics import MemoryEmbeddingMetrics
 from qq_ai_bot.memory.embedding.models import (
@@ -26,6 +31,7 @@ from qq_ai_bot.memory.enums import (
 from qq_ai_bot.memory.fts import MemoryLexicalIndex, build_safe_lexical_query
 from qq_ai_bot.memory.metrics import MemoryRetrievalMetric, MemoryRetrievalMetrics
 from qq_ai_bot.memory.models import (
+    MemoryActivationState,
     MemoryQuery,
     MemoryRetrievalBlock,
     MemoryRetrievalHit,
@@ -46,6 +52,8 @@ class MemoryRetriever:
         repository: MemoryFactRepository,
         lexical_index: MemoryLexicalIndex,
         ranker: MemoryRanker | None = None,
+        activation_repository: MemoryActivationRepository | None = None,
+        intent_ranker: MemoryIntentRanker | None = None,
         metrics: MemoryRetrievalMetrics | None = None,
         semantic_index: MemorySemanticIndex | None = None,
         embedding_provider: EmbeddingProvider | None = None,
@@ -60,6 +68,8 @@ class MemoryRetriever:
         self._repository = repository
         self._index = lexical_index
         self._ranker = ranker or MemoryRanker()
+        self._activation_repository = activation_repository
+        self._intent_ranker = intent_ranker or MemoryIntentRanker()
         self._metrics = metrics or MemoryRetrievalMetrics()
         self._semantic_index = semantic_index
         self._embedding_provider = embedding_provider
@@ -104,10 +114,12 @@ class MemoryRetriever:
         fts_latency = 0.0
         semantic_latency = 0.0
         hybrid_latency = 0.0
+        rerank_latency = 0.0
         candidate_count = 0
         semantic_candidate_count = 0
         blocks: list[MemoryRetrievalBlock] = []
         all_hits: list[MemoryRetrievalHit] = []
+        trace_hits: list[MemoryRetrievalHit] = []
         short_fallback_used = False
         query_vector = None
         semantic_degraded = False
@@ -186,17 +198,30 @@ class MemoryRetriever:
         for target in query.targets:
             hits: tuple[MemoryRetrievalHit, ...]
             if query.mode is MemoryRetrievalMode.OVERVIEW or not lexical_enabled:
+                overview_pool_limit = (
+                    max(query.limit_per_target, query.recall_trace_candidate_limit)
+                    if query.intent is not None and query.intent_rerank_enabled
+                    else query.limit_per_target
+                )
                 facts = await self._repository.list_overview(
                     target,
-                    limit=query.limit_per_target,
+                    limit=overview_pool_limit,
                 )
                 candidate_count += len(facts)
                 hits = self._ranker.rank_overview(
                     facts,
                     target=target,
-                    limit=query.limit_per_target,
+                    limit=overview_pool_limit,
                     reason=("overview" if lexical_enabled else "retrieval_disabled_fallback"),
                 )
+                if query.intent is not None and query.intent_rerank_enabled:
+                    rerank_started = time.perf_counter()
+                    states = await self._load_activation_states(hits)
+                    hits = self._intent_ranker.rerank(hits, query=query, states=states)
+                    rerank_latency += time.perf_counter() - rerank_started
+                hits = apply_strict_temporal_constraint(hits, query.intent)
+                trace_hits.extend(hits[: query.recall_trace_candidate_limit])
+                hits = hits[: query.limit_per_target]
             else:
                 preferences = (
                     await self._repository.list_explicit_preferences(
@@ -264,6 +289,10 @@ class MemoryRetriever:
                     limit=query.always_on_explicit_preference_limit,
                     reason="always_on_explicit_preference",
                 )
+                preference_hits = apply_strict_temporal_constraint(
+                    preference_hits,
+                    query.intent,
+                )
                 remaining = max(0, query.limit_per_target - len(preference_hits))
                 hybrid_started = time.perf_counter()
                 lexical_hits = self._ranker.rank_hybrid(
@@ -276,8 +305,15 @@ class MemoryRetriever:
                     semantic_weight=query.hybrid_semantic_weight,
                     rrf_k=query.hybrid_rrf_k,
                     limit=(
-                        max(remaining, self._mmr_candidate_pool_size)
-                        if self._mmr_enabled and diversify and query_vector is not None
+                        max(
+                            remaining,
+                            self._mmr_candidate_pool_size,
+                            query.recall_trace_candidate_limit,
+                        )
+                        if (
+                            query.intent_rerank_enabled
+                            or (self._mmr_enabled and diversify and query_vector is not None)
+                        )
                         else remaining
                     ),
                 )
@@ -285,6 +321,22 @@ class MemoryRetriever:
                 preference_ids = {hit.fact.id for hit in preference_hits}
                 deduplicated = tuple(
                     hit for hit in lexical_hits if hit.fact.id not in preference_ids
+                )
+                if query.intent is not None and query.intent_rerank_enabled:
+                    rerank_started = time.perf_counter()
+                    states = await self._load_activation_states(deduplicated)
+                    deduplicated = self._intent_ranker.rerank(
+                        deduplicated,
+                        query=query,
+                        states=states,
+                    )
+                    rerank_latency += time.perf_counter() - rerank_started
+                deduplicated = apply_strict_temporal_constraint(
+                    deduplicated,
+                    query.intent,
+                )
+                trace_hits.extend(
+                    (*preference_hits, *deduplicated)[: query.recall_trace_candidate_limit]
                 )
                 if (
                     self._mmr_enabled
@@ -323,6 +375,7 @@ class MemoryRetriever:
                 if query_vector is not None and self._embedding_profile is not None
                 else None
             ),
+            trace_hits=tuple(trace_hits),
         )
         referenced = {
             target.subject_user_id
@@ -354,9 +407,18 @@ class MemoryRetriever:
                 semantic_degraded=semantic_degraded,
                 semantic_search_latency=semantic_latency,
                 hybrid_rank_latency=hybrid_latency,
+                intent_rerank_latency=rerank_latency,
             )
         )
         return result
+
+    async def _load_activation_states(
+        self,
+        hits: tuple[MemoryRetrievalHit, ...],
+    ) -> dict[int, MemoryActivationState]:
+        if self._activation_repository is None:
+            return {}
+        return await self._activation_repository.load(tuple(hit.fact.id for hit in hits))
 
     async def _diversify_mmr(
         self,
@@ -431,7 +493,11 @@ class MemoryRetriever:
         vectors: dict[int, EmbeddingVector],
     ) -> float:
         vector = vectors[hit.fact.id]
-        relevance = self._vector_codec.dot(query_vector, vector)
+        relevance = (
+            hit.rerank_score
+            if hit.rerank_score > 0
+            else (self._vector_codec.dot(query_vector, vector) + 1.0) / 2.0
+        )
         redundancy = max(
             (
                 self._vector_codec.dot(vector, vectors[item.fact.id])

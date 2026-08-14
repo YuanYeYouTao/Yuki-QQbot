@@ -26,6 +26,7 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.memory.enums import MemoryAccessMode
 from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.chat import ChatService, _ChatAgentBackend
@@ -75,6 +76,7 @@ class _Service:
         self._tool_metrics = ToolKernelMetrics()
         self._tool_invocations = None
         self._tool_artifacts = None
+        self.mutation_turn_outcomes: list[str] = []
 
     def _build_tool_registry(
         self,
@@ -90,6 +92,9 @@ class _Service:
         decoded = json.loads(value)
         assert isinstance(decoded, dict)
         return decoded
+
+    def _record_memory_mutation_turn_outcome(self, outcome: str) -> None:
+        self.mutation_turn_outcomes.append(outcome)
 
 
 class _CandidateChatService(ChatService):
@@ -314,6 +319,296 @@ def test_reply_target_control_is_not_exposed_to_scheduled_automation() -> None:
     definitions = backend.definitions(SimpleNamespace(), web_was_used=False)
 
     assert definitions == ()
+
+
+def test_mutation_access_exposes_only_memory_write_capability_initially() -> None:
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        return {"ok": True, "data": {"called": name}}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: (
+                _tool("get_my_capabilities", "list capabilities"),
+                _tool("get_person_memories", "read memories"),
+                _tool("memory_change", "change durable memory"),
+                _tool("web_search", "search the web"),
+            ),
+            execute=execute,
+        )
+    )
+    registry.register(
+        InProcessToolProvider(
+            provider_id="admin",
+            source=CapabilityTrustSource.ADMIN,
+            definitions=lambda _runtime: (_tool("admin_execute_action", "run an admin action"),),
+            execute=execute,
+        )
+    )
+    runtime = replace(
+        _runtime(),
+        actor_is_superuser=True,
+        allow_admin_actions=True,
+        memory_access=MemoryAccessMode.MUTATION,
+        tool_groups=frozenset({"memory", "admin", "web"}),
+        selected_tool_names=frozenset({"web_search"}),
+    )
+    backend = _ChatAgentBackend(_Service(registry), runtime)  # type: ignore[arg-type]
+
+    names = {tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)}
+
+    assert "memory_change" in names
+    assert "request_tools" not in names
+    assert "get_my_capabilities" not in names
+    assert "get_person_memories" not in names
+    assert "admin_execute_action" not in names
+    assert "web_search" not in names
+
+    backend._memory_locator_failed = True
+    fallback_names = {
+        tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)
+    }
+    assert "request_tools" in fallback_names
+    assert "get_person_memories" not in fallback_names
+
+    read_backend = _ChatAgentBackend(  # type: ignore[arg-type]
+        _Service(registry),
+        replace(
+            runtime,
+            memory_access=MemoryAccessMode.TOOL,
+            selected_tool_names=None,
+        ),
+    )
+    read_names = {
+        tool.name for tool in read_backend.definitions(SimpleNamespace(), web_was_used=False)
+    }
+    assert "get_person_memories" in read_names
+    assert "memory_change" not in read_names
+    assert "admin_execute_action" not in read_names
+    assert "web_search" not in read_names
+
+
+@pytest.mark.asyncio
+async def test_mutation_access_rejects_early_request_tools_call() -> None:
+    backend = _ChatAgentBackend(  # type: ignore[arg-type]
+        _Service(_registry([])),
+        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
+    )
+    agent_runtime = SimpleNamespace()
+    call = ToolCall(
+        id="early-request-tools",
+        function=ToolFunction(
+            name=REQUEST_TOOLS_NAME,
+            arguments=json.dumps({"query": "read memory", "max_results": 1}),
+        ),
+    )
+    backend.begin_batch((call,), agent_runtime)
+
+    result = json.loads(
+        await backend.execute(
+            REQUEST_TOOLS_NAME,
+            call.function.arguments,
+            agent_runtime,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "capability_not_loaded"
+
+
+@pytest.mark.asyncio
+async def test_mutation_locator_failure_can_load_memory_read_without_widening_initial_path() -> (
+    None
+):
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        return {"ok": True, "data": {"called": name}}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: (
+                _tool("get_person_memories", "read durable person memories"),
+                _tool("memory_change", "change durable memory"),
+            ),
+            execute=execute,
+        )
+    )
+    backend = _ChatAgentBackend(  # type: ignore[arg-type]
+        _Service(registry),
+        replace(
+            _runtime(),
+            memory_access=MemoryAccessMode.MUTATION,
+            tool_groups=frozenset({"memory"}),
+            selected_tool_names=None,
+        ),
+    )
+    agent_runtime = SimpleNamespace()
+    assert {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)} == {
+        "memory_change"
+    }
+
+    backend._memory_locator_failed = True
+    assert "request_tools" in {
+        tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)
+    }
+    arguments = json.dumps({"query": "read person memories", "max_results": 1})
+    call = ToolCall(
+        id="locator-read-fallback",
+        function=ToolFunction(name=REQUEST_TOOLS_NAME, arguments=arguments),
+    )
+    backend.begin_batch((call,), agent_runtime)
+    loaded = json.loads(await backend.execute(REQUEST_TOOLS_NAME, arguments, agent_runtime))
+
+    assert loaded["ok"] is True
+    assert loaded["data"]["loaded_tools"][0]["name"] == "get_person_memories"
+    assert "get_person_memories" in {
+        tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)
+    }
+
+
+def test_mutation_completion_gate_uses_last_real_receipt() -> None:
+    service = _Service(_registry([]))
+    backend = _ChatAgentBackend(  # type: ignore[arg-type]
+        service,
+        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
+    )
+
+    assert "未执行" in backend.finalize("已经改好了", SimpleNamespace())
+    backend._memory_mutation_attempted = True
+    backend._last_memory_mutation_result = {
+        "ok": True,
+        "mutation_committed": True,
+        "data": {
+            "applied_operation": "invalidate",
+            "outcome": "committed",
+        },
+    }
+
+    rendered = backend.finalize("已经永久删除", SimpleNamespace())
+
+    assert "撤回并失效" in rendered
+    assert "审计记录仍保留" in rendered
+    assert "永久删除" not in rendered
+    assert (
+        backend._memory_mutation_outcome(
+            {
+                "ok": True,
+                "mutation_committed": True,
+                "data": {"applied_operation": "noop", "outcome": "no_change"},
+            }
+        )
+        == "noop"
+    )
+    assert (
+        backend._memory_mutation_outcome(
+            {
+                "ok": False,
+                "error_code": "memory_candidate_ambiguous",
+                "data": {"candidates": []},
+            }
+        )
+        == "ambiguous"
+    )
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (
+            {
+                "ok": True,
+                "mutation_committed": True,
+                "data": {"applied_operation": "create", "outcome": "committed"},
+            },
+            "写入长期记忆",
+        ),
+        (
+            {
+                "ok": True,
+                "mutation_committed": True,
+                "data": {"applied_operation": "correct", "outcome": "committed"},
+            },
+            "旧版本不再作为当前有效答案",
+        ),
+        (
+            {
+                "ok": True,
+                "mutation_committed": True,
+                "data": {"applied_operation": "restore", "outcome": "committed"},
+            },
+            "恢复为有效状态",
+        ),
+        (
+            {
+                "ok": True,
+                "mutation_committed": True,
+                "data": {"applied_operation": "noop", "outcome": "no_change"},
+            },
+            "没有发生变化",
+        ),
+        (
+            {
+                "ok": True,
+                "mutation_committed": True,
+                "data": {"applied_operation": "contest", "outcome": "committed_as_contested"},
+            },
+            "没有按原请求直接覆盖或删除",
+        ),
+        (
+            {
+                "ok": False,
+                "error_code": "memory_candidate_not_found",
+                "data": {"candidates": []},
+            },
+            "没有找到可唯一定位的目标",
+        ),
+    ],
+)
+def test_mutation_completion_gate_renders_domain_outcomes(
+    result: dict[str, object],
+    expected: str,
+) -> None:
+    backend = _ChatAgentBackend(  # type: ignore[arg-type]
+        _Service(_registry([])),
+        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
+    )
+    backend._memory_mutation_attempted = True
+    backend._last_memory_mutation_result = result
+
+    assert expected in backend.finalize("模型声称全部成功", SimpleNamespace())
+
+
+def test_mutation_completion_gate_bounds_ambiguous_candidates() -> None:
+    backend = _ChatAgentBackend(  # type: ignore[arg-type]
+        _Service(_registry([])),
+        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
+    )
+    backend._memory_mutation_attempted = True
+    backend._last_memory_mutation_result = {
+        "ok": False,
+        "error_code": "memory_candidate_ambiguous",
+        "data": {
+            "candidates": [
+                {
+                    "fact_id": fact_id,
+                    "memory_ref": f"M{fact_id}",
+                    "key": f"test:{fact_id}",
+                    "content": f"candidate {fact_id}",
+                }
+                for fact_id in range(1, 5)
+            ]
+        },
+    }
+
+    rendered = backend.finalize("任选一个就当成功", SimpleNamespace())
+
+    assert "尚未执行" in rendered
+    assert "M1" in rendered and "M3" in rendered
+    assert "M4" not in rendered
 
 
 def test_core_search_tags_recall_tools_from_natural_chinese_phrases() -> None:
@@ -549,6 +844,7 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
     assert requested["data"]["loaded_tools"][0]["name"] == "song_share"
     assert service._tool_metrics.request_tools_calls == 1
     assert service._tool_metrics.request_tools_zero_results == 0
+    assert service._tool_metrics.automatic_memory_request_tools_calls == 1
 
     second = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
     assert second == {"album_share", "song_share", REQUEST_TOOLS_NAME}

@@ -9,7 +9,7 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode
-from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.memory.enums import MemoryAccessMode, MemoryContextMode
 from qq_ai_bot.planner.models import (
     DeliveryMode,
     MemoryContextReasonCode,
@@ -140,7 +140,10 @@ class PlannerService:
         elif not planner_input.necessity.should_enter_planner:
             plan = self._silent_gate_plan()
         elif not enabled_for_turn:
-            plan = deterministic_fallback_plan(planner_input)
+            plan = deterministic_fallback_plan(
+                planner_input,
+                reason_code=PlannerReasonCode.PLANNER_FALLBACK,
+            )
             fallback_used = True
         else:
             plan = await self._provider.plan(planner_input, runtime=runtime)
@@ -248,7 +251,16 @@ class PlannerService:
             )
         memory_context = plan.memory_context
         if not planner_input.memory.self_enabled:
-            memory_context = memory_context.model_copy(update={"self_recall": False})
+            memory_context = memory_context.model_copy(
+                update={
+                    "self_recall": False,
+                    "subjects": tuple(
+                        subject
+                        for subject in memory_context.subjects
+                        if subject.value != "current_self"
+                    ),
+                }
+            )
         if memory_context.mode is MemoryContextMode.HYBRID and not runtime.memory.semantic_enabled:
             memory_context = memory_context.model_copy(update={"mode": MemoryContextMode.LEXICAL})
         updates["memory_context"] = memory_context
@@ -293,9 +305,11 @@ class PlannerService:
             updates["tool_selection"] = ToolSelection(mode=ToolMode.NONE)
             updates["memory_context"] = plan.memory_context.model_copy(
                 update={
+                    "access": MemoryAccessMode.NONE,
                     "mode": MemoryContextMode.NONE,
                     "reason_code": MemoryContextReasonCode.EFFECT_ONLY,
                     "self_recall": False,
+                    "subjects": (),
                 }
             )
         updates["emoji"] = emoji_plan

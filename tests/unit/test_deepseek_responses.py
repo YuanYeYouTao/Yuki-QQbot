@@ -67,7 +67,7 @@ async def test_request_mapping_is_responses_native_and_flat() -> None:
             },
             {"type": "web_search"},
         ]
-        assert payload["tool_choice"] == "required"
+        assert "tool_choice" not in payload
         assert payload["reasoning"] == {"effort": "max"}
         assert payload["stream"] is False
         return httpx.Response(200, request=request, json=_fixture("text_completed.json"))
@@ -105,6 +105,39 @@ async def test_request_mapping_is_responses_native_and_flat() -> None:
     assert response.cached_prompt_tokens == 3
     assert response.reasoning_tokens == 2
     assert response.continuation is not None
+
+
+@pytest.mark.asyncio
+async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert "tool_choice" not in payload
+        assert "reasoning" not in payload
+        return httpx.Response(200, request=request, json=_fixture("text_completed.json"))
+
+    async with httpx.AsyncClient(
+        base_url="https://api.deepseek.com", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = DeepSeekResponsesProvider(
+            base_url="https://api.deepseek.com",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        await provider.complete(
+            _request(
+                thinking_enabled=False,
+                tools=(
+                    ChatTool(
+                        name="required_test_tool",
+                        description="submit response",
+                        parameters={"type": "object"},
+                    ),
+                ),
+                tool_choice="required",
+            )
+        )
 
 
 @pytest.mark.asyncio

@@ -180,6 +180,11 @@ class Settings(BaseSettings):
     memory_lexical_candidate_limit: int = 50
     memory_context_limit_per_entity: int = 8
     memory_overview_limit_per_entity: int = 20
+    memory_automatic_recall_per_target_limit: int = Field(default=4, gt=0, le=20)
+    memory_automatic_recall_background_limit: int = Field(default=3, gt=0, le=20)
+    memory_automatic_recall_continuation_limit: int = Field(default=4, gt=0, le=20)
+    memory_automatic_recall_focused_limit: int = Field(default=6, gt=0, le=20)
+    memory_automatic_recall_overview_limit: int = Field(default=8, gt=0, le=20)
     memory_always_on_explicit_preference_limit: int = 3
     memory_query_term_limit: int = 12
     memory_short_query_fallback_enabled: bool = True
@@ -189,6 +194,25 @@ class Settings(BaseSettings):
     memory_hybrid_lexical_weight: float = 1.0
     memory_hybrid_semantic_weight: float = 1.0
     memory_hybrid_rrf_k: int = 60
+    memory_intent_rerank_enabled: bool = True
+    memory_activation_ranking_enabled: bool = True
+    memory_usage_attribution_enabled: bool = True
+    memory_usage_attribution_timeout_seconds: float = Field(default=12.0, gt=0, le=120)
+    memory_usage_attribution_job_ttl_seconds: float = Field(default=120.0, gt=0, le=3600)
+    memory_usage_attribution_queue_limit: int = Field(default=128, gt=0, le=4096)
+    memory_reinforcement_enabled: bool = True
+    memory_recall_receipts_enabled: bool = True
+    memory_activation_half_life_episode_days: float = Field(default=14.0, gt=0)
+    memory_activation_half_life_fact_days: float = Field(default=60.0, gt=0)
+    memory_activation_half_life_preference_days: float = Field(default=120.0, gt=0)
+    memory_activation_half_life_explicit_days: float = Field(default=365.0, gt=0)
+    memory_reinforcement_alpha_background: float = Field(default=0.05, ge=0, le=1)
+    memory_reinforcement_alpha_continuation: float = Field(default=0.12, ge=0, le=1)
+    memory_reinforcement_alpha_recall: float = Field(default=0.25, ge=0, le=1)
+    memory_reinforcement_alpha_verify: float = Field(default=0.08, ge=0, le=1)
+    memory_intent_recent_window_days: int = Field(default=90, gt=0)
+    memory_recall_receipt_retention_days: int = Field(default=30, gt=0)
+    memory_recall_trace_candidate_limit: int = Field(default=20, gt=0, le=100)
     memory_consolidation_enabled: bool = True
     memory_consolidation_candidate_limit: int = 12
     memory_consolidation_min_relevance: float = 0.25

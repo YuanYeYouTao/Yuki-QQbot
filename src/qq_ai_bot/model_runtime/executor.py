@@ -11,6 +11,7 @@ from typing import Protocol
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
+    ModelExecutionPriority,
     ModelProtocol,
     ModelTask,
     StructuredOutputMode,
@@ -22,6 +23,10 @@ from qq_ai_bot.model_runtime.routes import ModelRouter
 logger = logging.getLogger(__name__)
 
 
+class BackgroundModelPreempted(RuntimeError):
+    """A best-effort provider call yielded to newly arrived foreground work."""
+
+
 class ModelCompleter(Protocol):
     """Small compatibility boundary for injected test providers."""
 
@@ -31,7 +36,13 @@ class ModelCompleter(Protocol):
 class ModelExecutor(Protocol):
     """Business-facing task executor contract."""
 
-    async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse: ...
+    async def execute(
+        self,
+        task: ModelTask,
+        request: ChatRequest,
+        *,
+        priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
+    ) -> ChatResponse: ...
 
     def model_name(self, task: ModelTask) -> str: ...
 
@@ -49,8 +60,14 @@ class LegacyTaskModelExecutor:
         self._provider = provider
         self._model = model
 
-    async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
-        del task
+    async def execute(
+        self,
+        task: ModelTask,
+        request: ChatRequest,
+        *,
+        priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
+    ) -> ChatResponse:
+        del task, priority
         return await self._provider.complete(request)
 
     def model_name(self, task: ModelTask) -> str:
@@ -104,12 +121,23 @@ class TaskModelExecutor:
         self._semaphore = (
             asyncio.Semaphore(max_concurrency) if max_concurrency is not None else None
         )
+        self._priority_condition = asyncio.Condition()
+        self._foreground_active = 0
+        self._foreground_waiting = 0
+        self._background_slot = asyncio.Lock()
+        self._background_provider_task: asyncio.Task[ChatResponse] | None = None
 
     @property
     def router(self) -> ModelRouter:
         return self._router
 
-    async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
+    async def execute(
+        self,
+        task: ModelTask,
+        request: ChatRequest,
+        *,
+        priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
+    ) -> ChatResponse:
         required: set[ModelCapability] = set()
         if request.tools and not request.structured_output:
             required.add(ModelCapability.TOOLS)
@@ -172,11 +200,11 @@ class TaskModelExecutor:
             )
         started = time.perf_counter()
         try:
-            if self._semaphore is None:
-                response = await provider.complete(normalized)
-            else:
-                async with self._semaphore:
-                    response = await provider.complete(normalized)
+            response = await self._execute_provider(
+                provider,
+                normalized,
+                priority=priority,
+            )
         except Exception as exc:
             if self._invocations is not None:
                 await self._invocations.record(
@@ -231,6 +259,82 @@ class TaskModelExecutor:
             )
         return response
 
+    async def _execute_provider(
+        self,
+        provider: ModelCompleter,
+        request: ChatRequest,
+        *,
+        priority: ModelExecutionPriority,
+    ) -> ChatResponse:
+        if priority is ModelExecutionPriority.BEST_EFFORT_BACKGROUND:
+            return await self._execute_background_provider(provider, request)
+        return await self._execute_foreground_provider(provider, request)
+
+    async def _execute_foreground_provider(
+        self,
+        provider: ModelCompleter,
+        request: ChatRequest,
+    ) -> ChatResponse:
+        active = False
+        async with self._priority_condition:
+            self._foreground_waiting += 1
+            background = self._background_provider_task
+            if background is not None and not background.done():
+                background.cancel()
+            self._priority_condition.notify_all()
+        try:
+            async with self._priority_condition:
+                self._foreground_waiting -= 1
+                self._foreground_active += 1
+                active = True
+                self._priority_condition.notify_all()
+            return await self._complete_provider(provider, request)
+        finally:
+            async with self._priority_condition:
+                if active:
+                    self._foreground_active -= 1
+                else:
+                    self._foreground_waiting -= 1
+                self._priority_condition.notify_all()
+
+    async def _execute_background_provider(
+        self,
+        provider: ModelCompleter,
+        request: ChatRequest,
+    ) -> ChatResponse:
+        async with self._background_slot:
+            async with self._priority_condition:
+                await self._priority_condition.wait_for(
+                    lambda: self._foreground_active == 0 and self._foreground_waiting == 0
+                )
+                provider_task = asyncio.create_task(
+                    self._complete_provider(provider, request),
+                    name="best-effort-model-provider",
+                )
+                self._background_provider_task = provider_task
+            try:
+                return await provider_task
+            except asyncio.CancelledError as exc:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                raise BackgroundModelPreempted("background model request preempted") from exc
+            finally:
+                async with self._priority_condition:
+                    if self._background_provider_task is provider_task:
+                        self._background_provider_task = None
+                    self._priority_condition.notify_all()
+
+    async def _complete_provider(
+        self,
+        provider: ModelCompleter,
+        request: ChatRequest,
+    ) -> ChatResponse:
+        if self._semaphore is None:
+            return await provider.complete(request)
+        async with self._semaphore:
+            return await provider.complete(request)
+
     def profile_id(self, task: ModelTask) -> str:
         route, _profile = self._router.route(task)
         return route.profile_id
@@ -252,4 +356,10 @@ class TaskModelExecutor:
         return profile.capabilities
 
     async def close(self) -> None:
+        async with self._priority_condition:
+            background = self._background_provider_task
+            if background is not None and not background.done():
+                background.cancel()
+        if background is not None:
+            await asyncio.gather(background, return_exceptions=True)
         await self._pool.close()

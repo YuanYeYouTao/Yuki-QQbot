@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
@@ -18,7 +18,14 @@ from qq_ai_bot.emoji.models import (
     EmojiReplyMode,
     EmojiReplyPlan,
 )
-from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.memory.enums import (
+    MemoryAccessMode,
+    MemoryContextMode,
+    MemoryKind,
+    MemoryRecallPurpose,
+    MemorySubjectRole,
+)
+from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryTemporalIntent
 from qq_ai_bot.speech.models import (
     SpeechLanguageHint,
     VoiceAgentToolPolicy,
@@ -161,9 +168,46 @@ class MemoryContextReasonCode(StrEnum):
 class MemoryContextPlan(_StrictPlannerModel):
     """Semantic intent only; identity targets remain backend-owned."""
 
+    access: MemoryAccessMode = MemoryAccessMode.AUTOMATIC
     mode: MemoryContextMode = MemoryContextMode.LEXICAL
+    purpose: MemoryRecallPurpose = MemoryRecallPurpose.BACKGROUND
+    subjects: tuple[MemorySubjectRole, ...] = Field(default=(), max_length=4)
+    entities: tuple[str, ...] = Field(default=(), max_length=5)
+    temporal: MemoryTemporalIntent = Field(
+        default_factory=MemoryTemporalIntent,
+        description=(
+            "可信时间意图；明确要求范围外不要使用时输出绝对 range 并设置 constraint=strict。"
+        ),
+    )
+    preferred_kinds: tuple[MemoryKind, ...] = Field(default=(), max_length=3)
+    requested_count: int | None = Field(default=None, ge=1, le=20)
     reason_code: MemoryContextReasonCode = MemoryContextReasonCode.DEFAULT
     self_recall: bool = False
+
+    @model_validator(mode="after")
+    def _validate_access_mode(self) -> MemoryContextPlan:
+        if self.access is MemoryAccessMode.AUTOMATIC:
+            if self.mode is MemoryContextMode.NONE:
+                raise ValueError("automatic memory access requires a retrieval mode")
+        elif self.mode is not MemoryContextMode.NONE:
+            raise ValueError("none/tool/mutation memory access requires mode=none")
+        if MemorySubjectRole.CURRENT_SELF in self.subjects and not self.self_recall:
+            raise ValueError("current_self requires self_recall=true")
+        return self
+
+    def to_query_intent(self) -> MemoryQueryIntent:
+        subjects = self.subjects
+        if self.self_recall and MemorySubjectRole.CURRENT_SELF not in subjects:
+            subjects = (*subjects, MemorySubjectRole.CURRENT_SELF)
+        return MemoryQueryIntent(
+            mode=self.mode,
+            purpose=self.purpose,
+            subjects=subjects,
+            entities=self.entities,
+            temporal=self.temporal,
+            preferred_kinds=self.preferred_kinds,
+            requested_count=self.requested_count,
+        )
 
 
 class PlannerMemoryContext(_StrictPlannerModel):
@@ -386,14 +430,39 @@ class PlannerToolOutput(_StrictPlannerModel):
         return ToolSelection(mode=self.mode, scopes=self.scopes)
 
 
-class PlannerMemoryOutput(_StrictPlannerModel):
-    """Required retrieval depth plus optional low-cardinality explanation."""
+type PlannerSubjectRole = Literal[
+    MemorySubjectRole.CURRENT_PERSON,
+    MemorySubjectRole.CURRENT_GROUP,
+    MemorySubjectRole.REFERENCED_PERSON,
+]
 
-    mode: MemoryContextMode = Field(
+
+class _PlannerMemoryOutputBase(_StrictPlannerModel):
+    """Fields shared by every schema-valid long-term memory access route."""
+
+    access: MemoryAccessMode
+    mode: MemoryContextMode
+    purpose: MemoryRecallPurpose = Field(
         description=(
-            "日常短对话使用 lexical；追问人物、偏好、旧事或模糊指代使用 hybrid；"
-            "询问完整记忆概览使用 overview；纯效果回复使用 none。"
+            "本轮记忆用途：开放式询问记忆内容或概括用 recall，顺接用 continuation；闭合式"
+            "核验必须用 verify，例如‘你记得我更偏好深烘还是浅烘？’、‘是不是 X？’或"
+            "‘有无依据？’；纠正/撤回/恢复用 correct；否则用 background。"
         )
+    )
+    subjects: tuple[PlannerSubjectRole, ...] = Field(default=(), max_length=3)
+    entities: tuple[str, ...] = Field(default=(), max_length=5)
+    temporal: MemoryTemporalIntent = Field(
+        default_factory=MemoryTemporalIntent,
+        description=(
+            "相对时间须按 current_time 转换为绝对范围；只有用户明确排除范围外内容时使用 strict。"
+        ),
+    )
+    preferred_kinds: tuple[MemoryKind, ...] = Field(default=(), max_length=3)
+    requested_count: int | None = Field(
+        default=None,
+        ge=1,
+        le=20,
+        description="用户明确限制要返回多少条记忆时填写。",
     )
     self_recall: bool = Field(
         default=False,
@@ -424,10 +493,58 @@ class PlannerMemoryOutput(_StrictPlannerModel):
                 MemoryContextMode.OVERVIEW: MemoryContextReasonCode.EXPLICIT_OVERVIEW,
             }[self.mode]
         return MemoryContextPlan(
+            access=self.access,
             mode=self.mode,
+            purpose=self.purpose,
+            subjects=tuple(MemorySubjectRole(subject) for subject in self.subjects),
+            entities=self.entities,
+            temporal=self.temporal,
+            preferred_kinds=self.preferred_kinds,
+            requested_count=self.requested_count,
             reason_code=reason_code,
             self_recall=self.self_recall,
         )
+
+
+class PlannerAutomaticMemoryOutput(_PlannerMemoryOutputBase):
+    """Automatic retrieval without first-round Memory Scope tools."""
+
+    access: Literal[MemoryAccessMode.AUTOMATIC]
+    mode: Literal[
+        MemoryContextMode.LEXICAL,
+        MemoryContextMode.HYBRID,
+        MemoryContextMode.OVERVIEW,
+    ]
+
+
+class PlannerToolMemoryOutput(_PlannerMemoryOutputBase):
+    """Explicit model-facing memory read tools without automatic retrieval."""
+
+    access: Literal[MemoryAccessMode.TOOL]
+    mode: Literal[MemoryContextMode.NONE]
+
+
+class PlannerMutationMemoryOutput(_PlannerMemoryOutputBase):
+    """One terminal long-term memory mutation path without automatic retrieval."""
+
+    access: Literal[MemoryAccessMode.MUTATION]
+    mode: Literal[MemoryContextMode.NONE]
+
+
+class PlannerNoMemoryOutput(_PlannerMemoryOutputBase):
+    """No long-term memory access for this turn."""
+
+    access: Literal[MemoryAccessMode.NONE]
+    mode: Literal[MemoryContextMode.NONE]
+
+
+type PlannerMemoryOutput = Annotated[
+    PlannerAutomaticMemoryOutput
+    | PlannerToolMemoryOutput
+    | PlannerMutationMemoryOutput
+    | PlannerNoMemoryOutput,
+    Field(discriminator="access"),
+]
 
 
 class PlannerEmojiOutput(_StrictPlannerModel):

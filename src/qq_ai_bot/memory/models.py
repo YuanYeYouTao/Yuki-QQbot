@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
+    MemoryContextMode,
     MemoryEvidenceRelation,
     MemoryFactRelationType,
     MemoryInvalidationReason,
@@ -16,6 +17,7 @@ from qq_ai_bot.memory.enums import (
     MemoryKind,
     MemoryProcessingSource,
     MemoryRebuildJobOutcome,
+    MemoryRecallPurpose,
     MemoryResolutionAction,
     MemoryRetrievalMode,
     MemoryReviewState,
@@ -24,7 +26,10 @@ from qq_ai_bot.memory.enums import (
     MemorySourceType,
     MemoryStateAction,
     MemoryStatus,
+    MemorySubjectRole,
     MemoryTargetRole,
+    MemoryTemporalConstraint,
+    MemoryTemporalIntentMode,
     SelfMemoryVisibility,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -60,7 +65,7 @@ class MemoryFact(_MemoryModel):
     updated_at: datetime
     last_confirmed_at: datetime = Field(default_factory=lambda: datetime.min.replace(tzinfo=UTC))
     invalidated_reason: MemoryInvalidationReason | None = None
-    last_used_at: datetime | None = None
+    last_injected_at: datetime | None = None
     evidence_count: int = Field(default=0, ge=0)
     validation_version: str = "memory-v2-quality-v1"
     last_audited_at: datetime | None = None
@@ -72,7 +77,7 @@ class MemoryFact(_MemoryModel):
         "created_at",
         "updated_at",
         "last_confirmed_at",
-        "last_used_at",
+        "last_injected_at",
         "last_audited_at",
         mode="after",
     )
@@ -384,6 +389,67 @@ class MemoryEntityTarget(_MemoryModel):
         return self
 
 
+class MemoryTemporalIntent(_MemoryModel):
+    mode: MemoryTemporalIntentMode = MemoryTemporalIntentMode.UNSPECIFIED
+    constraint: MemoryTemporalConstraint = MemoryTemporalConstraint.SOFT
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+
+    @field_validator("start_at", "end_at", mode="after")
+    @classmethod
+    def _normalize_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def _validate_range(self) -> MemoryTemporalIntent:
+        if self.mode is MemoryTemporalIntentMode.RANGE:
+            if self.start_at is None and self.end_at is None:
+                raise ValueError("memory temporal range requires at least one boundary")
+        elif self.start_at is not None or self.end_at is not None:
+            raise ValueError("memory temporal boundaries require range mode")
+        if self.start_at is not None and self.end_at is not None and self.start_at > self.end_at:
+            raise ValueError("memory temporal start_at must not be after end_at")
+        if (
+            self.constraint is MemoryTemporalConstraint.STRICT
+            and self.mode is not MemoryTemporalIntentMode.RANGE
+        ):
+            raise ValueError("strict memory temporal constraint requires range mode")
+        return self
+
+
+class MemoryQueryIntent(_MemoryModel):
+    """Provider-neutral semantic recall intent; identity targets are separate."""
+
+    mode: MemoryContextMode = MemoryContextMode.LEXICAL
+    purpose: MemoryRecallPurpose = MemoryRecallPurpose.BACKGROUND
+    subjects: tuple[MemorySubjectRole, ...] = Field(default=(), max_length=4)
+    entities: tuple[str, ...] = Field(default=(), max_length=5)
+    temporal: MemoryTemporalIntent = MemoryTemporalIntent()
+    preferred_kinds: tuple[MemoryKind, ...] = Field(default=(), max_length=3)
+    requested_count: int | None = Field(default=None, ge=1, le=20)
+
+    @field_validator("subjects", "preferred_kinds", mode="after")
+    @classmethod
+    def _deduplicate_enums(cls, value: tuple[object, ...]) -> tuple[object, ...]:
+        return tuple(dict.fromkeys(value))
+
+    @field_validator("entities", mode="after")
+    @classmethod
+    def _normalize_entities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for item in value:
+            clean = " ".join(item.split()).strip()[:64]
+            if clean and clean not in normalized:
+                normalized.append(clean)
+        return tuple(normalized)
+
+    @property
+    def self_recall(self) -> bool:
+        return MemorySubjectRole.CURRENT_SELF in self.subjects
+
+
 class MemoryQuery(_MemoryModel):
     text: str
     normalized_text: str
@@ -401,6 +467,15 @@ class MemoryQuery(_MemoryModel):
     hybrid_lexical_weight: float = Field(default=1.0, ge=0)
     hybrid_semantic_weight: float = Field(default=1.0, ge=0)
     hybrid_rrf_k: int = Field(default=60, gt=0)
+    intent: MemoryQueryIntent | None = None
+    intent_rerank_enabled: bool = True
+    activation_ranking_enabled: bool = True
+    activation_half_life_episode_days: float = Field(default=14.0, gt=0)
+    activation_half_life_fact_days: float = Field(default=60.0, gt=0)
+    activation_half_life_preference_days: float = Field(default=120.0, gt=0)
+    activation_half_life_explicit_days: float = Field(default=365.0, gt=0)
+    intent_recent_window_days: int = Field(default=90, gt=0)
+    recall_trace_candidate_limit: int = Field(default=20, gt=0, le=100)
 
 
 class MemoryLexicalCandidate(_MemoryModel):
@@ -424,6 +499,13 @@ class MemoryRetrievalHit(_MemoryModel):
     exact_match: bool = False
     matched_terms: tuple[str, ...] = ()
     selection_reason: str
+    base_rank_score: float = Field(default=0, ge=0, le=1)
+    subject_score: float = Field(default=0.5, ge=0, le=1)
+    entity_score: float = Field(default=0.5, ge=0, le=1)
+    temporal_score: float = Field(default=0.5, ge=0, le=1)
+    kind_score: float = Field(default=0.5, ge=0, le=1)
+    activation_score: float = Field(default=0.5, ge=0, le=1)
+    rerank_score: float = Field(default=0, ge=0, le=1)
 
 
 class MemoryRetrievalBlock(_MemoryModel):
@@ -441,6 +523,54 @@ class MemoryRetrievalResult(_MemoryModel):
     semantic_status: str = "disabled"
     semantic_degraded: bool = False
     embedding_profile: str | None = None
+    trace_hits: tuple[MemoryRetrievalHit, ...] = ()
+
+
+class MemoryActivationState(_MemoryModel):
+    fact_id: int = Field(gt=0)
+    activation: float = Field(ge=0, le=1)
+    activation_updated_at: datetime
+    last_recalled_at: datetime | None = None
+    recall_count: int = Field(default=0, ge=0)
+    revision: int = Field(default=0, ge=0)
+
+    @field_validator("activation_updated_at", "last_recalled_at", mode="after")
+    @classmethod
+    def _activation_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+class MemoryRecallItem(_MemoryModel):
+    fact_id: int = Field(gt=0)
+    target_role: MemoryTargetRole
+    candidate: bool = True
+    selected: bool = False
+    injected: bool = False
+    used: bool = False
+    reinforced: bool = False
+    base_rank_score: float = Field(default=0, ge=0, le=1)
+    subject_score: float = Field(default=0.5, ge=0, le=1)
+    entity_score: float = Field(default=0.5, ge=0, le=1)
+    temporal_score: float = Field(default=0.5, ge=0, le=1)
+    kind_score: float = Field(default=0.5, ge=0, le=1)
+    activation_score: float = Field(default=0.5, ge=0, le=1)
+    rerank_score: float = Field(default=0, ge=0, le=1)
+    selection_reason: str = Field(default="", max_length=64)
+
+
+class MemoryRecallReceipt(_MemoryModel):
+    turn_id: str = Field(min_length=1, max_length=64)
+    mode: MemoryContextMode
+    purpose: MemoryRecallPurpose
+    origin: str = Field(max_length=32)
+    candidate_count: int = Field(default=0, ge=0)
+    selected_count: int = Field(default=0, ge=0)
+    injected_count: int = Field(default=0, ge=0)
+    used_count: int = Field(default=0, ge=0)
+    reinforced_count: int = Field(default=0, ge=0)
+    items: tuple[MemoryRecallItem, ...] = ()
 
 
 class MemoryIndexHealth(_MemoryModel):
