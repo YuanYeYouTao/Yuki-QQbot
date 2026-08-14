@@ -36,8 +36,9 @@ _PLANNER_SYSTEM_PROMPT_TEMPLATE += """
 memory_context 必填 access 和 purpose；subjects 仅作合法身份内软提示。相对时间转绝对范围；
 overview 按语义判断，不确定时用 background+lexical 或 none。
 
-purpose：询问记忆内容=recall；顺接=continuation；“X 还是 Y/是不是 X/核对/有无依据”必须用 verify；
-即使句子中出现“记得”也不要误判成 recall；纠正/撤回/恢复=correct；否则 background。禁关键词判定。
+purpose：开放式回忆或概括=recall；顺接=continuation；闭合核验如“你记得我更偏好 X 还是 Y？”、
+“是不是 X/核对 X/有无依据”必须用 verify；即使句子中出现“记得”也不要误判成 recall；
+纠正/撤回/恢复=correct；否则 background。禁关键词判定。
 排他时间限制按 current_time 转绝对 range+constraint=strict；普通最近用 recent+soft；
 记忆创建时间不是事件时间。
 
@@ -46,7 +47,6 @@ access/mode 只允许 automatic+lexical|hybrid|overview、tool+none、none+none�
 用 request_tools 加载 memory_change）；仅明确要求调用记忆工具或只用工具结果时用 tool；
 无需记忆用 none。
 不得选择或扩大人物、QQ、群身份范围。
-memory_context.mode 只能使用 none、lexical、hybrid、overview：
 - 纯表情等无需正文的效果回复、无须记忆的即时短回应使用 none。
 - 普通日常聊天和只需字面匹配的内容使用 lexical。
 - 明确追问长期人物事实、偏好、模糊指代、曾经聊过的细节、其他群友或群关系时使用 hybrid。

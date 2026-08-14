@@ -445,9 +445,9 @@ class PlannerMemoryOutput(_StrictPlannerModel):
     )
     purpose: MemoryRecallPurpose = Field(
         description=(
-            "本轮记忆用途：询问记忆内容用 recall，顺接用 continuation；询问 X 还是 Y、是不是"
-            " X、核对或有无依据必须用 verify，即使句中有‘记得’；纠正/撤回/恢复用 correct；"
-            "否则用 background。"
+            "本轮记忆用途：开放式询问记忆内容或概括用 recall，顺接用 continuation；闭合式"
+            "核验必须用 verify，例如‘你记得我更偏好深烘还是浅烘？’、‘是不是 X？’或"
+            "‘有无依据？’；纠正/撤回/恢复用 correct；否则用 background。"
         )
     )
     subjects: tuple[MemorySubjectRole, ...] = Field(default=(), max_length=4)
