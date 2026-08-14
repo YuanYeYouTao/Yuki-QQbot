@@ -1276,6 +1276,17 @@ def test_dynamic_scopes_are_authoritative_and_legacy_groups_remain_compatible() 
     )
     assert valid.tool_selection.scope_ids == ("mcp.music", "automation")
 
+    memory_scopes_ignored = constrain_turn_plan(
+        _valid_plan_payload(
+            tool_selection={
+                "mode": "inherit",
+                "scopes": ["memory", "memory.read", "memory_change", "mcp.music"],
+            }
+        ),
+        planner_input,
+    )
+    assert memory_scopes_ignored.tool_selection.scope_ids == ("mcp.music",)
+
     with pytest.raises(PlannerResponseError, match="unknown tool scopes"):
         constrain_turn_plan(
             _valid_plan_payload(tool_selection={"mode": "inherit", "scopes": ["mcp.unknown"]}),

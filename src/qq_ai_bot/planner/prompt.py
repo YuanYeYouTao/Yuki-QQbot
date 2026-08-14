@@ -36,21 +36,23 @@ _PLANNER_SYSTEM_PROMPT_TEMPLATE += """
 memory_context 必填 access 和 purpose；subjects 仅作合法身份内软提示。相对时间转绝对范围；
 overview 按语义判断，不确定时用 background+lexical 或 none。
 
-purpose 按语义：讲过去=recall；顺接=continuation；“是不是 X/X 还是 Y/核对 X/旧答案有效吗”=verify；
+purpose：询问记忆内容=recall；顺接=continuation；“X 还是 Y/是不是 X/核对/有无依据”必须用 verify；
 即使句子中出现“记得”也不要误判成 recall；纠正/撤回/恢复=correct；否则 background。禁关键词判定。
 排他时间限制按 current_time 转绝对 range+constraint=strict；普通最近用 recent+soft；
 记忆创建时间不是事件时间。
 
-memory_context.access：普通回忆、概括、延续、核验、纠正、撤回和恢复用 automatic
-（自动召回、首轮无 memory scope；修改时 Agent 用 request_tools 加载 memory_change）；
-只有用户明确要求调用记忆工具或仅用工具结果时用 tool（mode=none，开放 memory scope、无自动召回）；
-无需记忆用 none（mode=none）。不得选择或扩大人物、QQ、群身份范围。
+access/mode 只允许 automatic+lexical|hybrid|overview、tool+none、none+none。
+普通回忆、概括、延续、核验和修改用 automatic（自动召回且首轮无 memory scope；修改由 Agent
+用 request_tools 加载 memory_change）；仅明确要求调用记忆工具或只用工具结果时用 tool；
+无需记忆用 none。
+不得选择或扩大人物、QQ、群身份范围。
 memory_context.mode 只能使用 none、lexical、hybrid、overview：
 - 纯表情等无需正文的效果回复、无须记忆的即时短回应使用 none。
 - 普通日常聊天和只需字面匹配的内容使用 lexical。
 - 明确追问长期人物事实、偏好、模糊指代、曾经聊过的细节、其他群友或群关系时使用 hybrid。
 - 用户明确询问“你记得什么”“你知道我哪些事”或需要人物/群记忆概览时使用 overview。
-access 是 memory scope 的唯一编排依据，tool_selection 不选 memory；聊天历史搜索仍选 history scope。
+access 是 memory scope 的唯一依据；tool_selection 禁止输出 memory、memory.* 或记忆工具名；
+历史搜索仍选 history。
 用户明确限制回答 N 条记忆时填写 requested_count=N；没有明确数量时省略。
 self_recall 仅在 capabilities.memory.self_enabled=true 且明确询问 {bot_name} 过去的偏好、经历、
 反思或自我概览时开启

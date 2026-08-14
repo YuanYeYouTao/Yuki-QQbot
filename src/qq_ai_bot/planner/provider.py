@@ -99,6 +99,7 @@ def validate_turn_plan(
 ) -> TurnPlan:
     """Narrow event-bound fields without discarding otherwise valid intent."""
 
+    plan = _strip_memory_tool_scopes(plan)
     known_targets = set(planner_input.known_target_user_ids)
     available_scopes = {
         *(scope.scope_id for scope in planner_input.available_tool_scopes),
@@ -134,6 +135,29 @@ def validate_turn_plan(
             update={"scopes": plan.tool_selection.scope_ids}
         )
     return plan.model_copy(update=updates)
+
+
+def _strip_memory_tool_scopes(plan: TurnPlan) -> TurnPlan:
+    """Let memory access, not Planner tool scopes, own first-round orchestration."""
+
+    selection = plan.tool_selection
+    scopes = tuple(scope for scope in selection.scope_ids if not _is_memory_tool_scope(scope))
+    if scopes == selection.scope_ids:
+        return plan
+    return plan.model_copy(
+        update={
+            "tool_selection": selection.model_copy(update={"scopes": scopes}),
+        }
+    )
+
+
+def _is_memory_tool_scope(scope: str) -> bool:
+    normalized = scope.strip().casefold().replace("-", "_")
+    return (
+        normalized == "memory"
+        or normalized.startswith("memory.")
+        or normalized.startswith("memory_")
+    )
 
 
 def normalize_reply_target(

@@ -433,18 +433,22 @@ class PlannerMemoryOutput(_StrictPlannerModel):
 
     access: MemoryAccessMode = Field(
         description=(
-            "首轮长期记忆访问路径：普通回忆使用 automatic；明确要求调用记忆工具时使用 "
-            "tool；完全不需要记忆时使用 none。"
+            "首轮长期记忆访问路径：普通回忆用 automatic 且 mode 不能为 none；明确要求调用"
+            "记忆工具时用 tool 且 mode 必须为 none；无需记忆时用 none 且 mode 必须为 none。"
         )
     )
     mode: MemoryContextMode = Field(
         description=(
-            "日常短对话使用 lexical；追问人物、偏好、旧事或模糊指代使用 hybrid；"
-            "询问完整记忆概览使用 overview；纯效果回复使用 none。"
+            "必须和 access 联动：automatic 只能用 lexical、hybrid 或 overview；tool/none 只能"
+            "用 none。automatic 中日常用 lexical，人物偏好旧事用 hybrid，完整概览用 overview。"
         )
     )
     purpose: MemoryRecallPurpose = Field(
-        description="本轮记忆的用途：background、recall、continuation、verify 或 correct。"
+        description=(
+            "本轮记忆用途：询问记忆内容用 recall，顺接用 continuation；询问 X 还是 Y、是不是"
+            " X、核对或有无依据必须用 verify，即使句中有‘记得’；纠正/撤回/恢复用 correct；"
+            "否则用 background。"
+        )
     )
     subjects: tuple[MemorySubjectRole, ...] = Field(default=(), max_length=4)
     entities: tuple[str, ...] = Field(default=(), max_length=5)
