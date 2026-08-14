@@ -231,33 +231,32 @@ async def test_preferred_kind_is_soft_and_overview_trace_is_bounded(database: Da
     assert unchanged is not None and unchanged.last_injected_at is None
 
 
-def test_usage_control_accepts_terminal_content_and_rejects_invalid_batches() -> None:
+def test_usage_control_accepts_refs_and_rejects_invalid_batches() -> None:
     metrics = MemoryLifecycleMetrics()
     valid = MemoryUsageControl(
         turn_id="turn", injected_fact_ids=(1, 2), enabled=True, metrics=metrics
     )
-    valid.begin_batch(("finalize_memory_response",))
-    result = valid.apply('{"content":"正文依赖 M2","memory_refs":["M2"]}')
+    valid.begin_batch(("report_memory_usage",))
+    result = valid.apply('{"memory_refs":["M2"]}')
     assert '"ok":true' in result
-    assert '"terminal_response":"正文依赖 M2"' in result
     valid.finalize("正文依赖 M2")
     assert valid.used_fact_ids == (2,)
 
     unavailable = MemoryUsageControl(turn_id="turn", injected_fact_ids=(1,), enabled=True)
-    unavailable.begin_batch(("finalize_memory_response",))
-    assert '"ok":false' in unavailable.apply('{"content":"正文","memory_refs":["M9"]}')
+    unavailable.begin_batch(("report_memory_usage",))
+    assert '"ok":false' in unavailable.apply('{"memory_refs":["M9"]}')
     unavailable.finalize("正文")
     assert unavailable.used_fact_ids == ()
 
     parallel = MemoryUsageControl(turn_id="turn", injected_fact_ids=(1,), enabled=True)
-    parallel.begin_batch(("finalize_memory_response", "get_memory_fact"))
-    parallel.apply('{"content":"正文","memory_refs":["M1"]}')
+    parallel.begin_batch(("report_memory_usage", "get_memory_fact"))
+    parallel.apply('{"memory_refs":["M1"]}')
     parallel.finalize("正文")
     assert parallel.used_fact_ids == ()
 
     nonfinal = MemoryUsageControl(turn_id="turn", injected_fact_ids=(1,), enabled=True)
-    nonfinal.begin_batch(("finalize_memory_response",))
-    nonfinal.apply('{"content":"正文","memory_refs":["M1"]}')
+    nonfinal.begin_batch(("report_memory_usage",))
+    nonfinal.apply('{"memory_refs":["M1"]}')
     nonfinal.note_call("web_search")
     nonfinal.finalize("正文")
     assert nonfinal.used_fact_ids == ()
@@ -270,7 +269,7 @@ def test_usage_control_accepts_terminal_content_and_rejects_invalid_batches() ->
     snapshot = metrics.adaptive_snapshot()
     assert snapshot["memory_usage_report_valid_count"] == 1
     assert snapshot["memory_usage_report_missing_count"] == 1
-    assert snapshot["memory_usage_report_extra_model_request_count"] == 0
+    assert snapshot["memory_usage_report_extra_model_request_count"] == 1
 
 
 @pytest.mark.asyncio

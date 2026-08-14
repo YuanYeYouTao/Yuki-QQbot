@@ -74,7 +74,7 @@ from qq_ai_bot.memory.enums import MemoryContextMode
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.models import MemoryQueryIntent
 from qq_ai_bot.memory.query import MemoryQueryBuilder
-from qq_ai_bot.memory.receipt import FINALIZE_MEMORY_RESPONSE_TOOL, MemoryUsageControl
+from qq_ai_bot.memory.receipt import REPORT_MEMORY_USAGE_TOOL, MemoryUsageControl
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
@@ -142,30 +142,24 @@ _INHERITED_CANDIDATE_POOL_LIMIT = 24
 _ARTIFACT_PROVIDER_ID = "artifacts"
 _ARTIFACT_READER_NAME = "read_tool_artifact"
 _SET_REPLY_TARGET_NAME = "set_reply_target"
-_FINALIZE_MEMORY_RESPONSE_TOOL = ChatTool(
-    name=FINALIZE_MEMORY_RESPONSE_TOOL,
+_REPORT_MEMORY_USAGE_TOOL = ChatTool(
+    name=REPORT_MEMORY_USAGE_TOOL,
     description=(
-        "提交本轮最终正文并结束 Agent。只要本轮提供过长期记忆，本工具就是唯一合法的最终回复"
-        "方式，必须单独调用且不得与其他工具并行。content 是实际发送给用户的完整正文；"
-        "memory_refs 只列出在事实、偏好、判断或共同经历上实质支撑 content 的记忆。refs 只能从"
-        "本轮上下文或记忆工具结果中的 memory_ref=M<fact_id> 选择；仅看过、只影响语气或未写入"
-        "正文的记忆不要列出，没有实质使用时提交空数组。"
+        "仅当本轮最终正文在事实、偏好、判断或共同经历上实质依赖已提供的长期记忆时调用。"
+        "memory_refs 只能从本轮上下文或记忆工具结果中的 memory_ref=M<fact_id> 选择；仅看过、"
+        "只影响语气或未写入最终正文的记忆不要报告。必须单独调用，至多一次，并且作为最终正文前"
+        "最后一次工具调用；调用后直接生成正文，不再调用其他工具。"
     ),
     parameters={
         "type": "object",
         "properties": {
-            "content": {
-                "type": "string",
-                "minLength": 1,
-                "description": "实际发送给用户的完整最终正文",
-            },
             "memory_refs": {
                 "type": "array",
                 "items": {"type": "string", "pattern": "^M[1-9][0-9]*$"},
                 "maxItems": 100,
-            },
+            }
         },
-        "required": ["content", "memory_refs"],
+        "required": ["memory_refs"],
         "additionalProperties": False,
     },
 )
@@ -738,7 +732,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
             )
         call = self._batch.pop(call_index)
-        if name == FINALIZE_MEMORY_RESPONSE_TOOL:
+        if name == REPORT_MEMORY_USAGE_TOOL:
             return (
                 usage_control.apply(arguments_json)
                 if usage_control is not None
@@ -1104,7 +1098,7 @@ class _ChatAgentBackend(AgentToolBackend):
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
         del runtime
-        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME, FINALIZE_MEMORY_RESPONSE_TOOL}:
+        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME, REPORT_MEMORY_USAGE_TOOL}:
             return False
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         return bool(entry is not None and entry.descriptor.parallel_safe)
@@ -1118,7 +1112,7 @@ class _ChatAgentBackend(AgentToolBackend):
         """Classify cache invalidation through the same descriptor used for execution."""
 
         del runtime
-        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME, FINALIZE_MEMORY_RESPONSE_TOOL}:
+        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME, REPORT_MEMORY_USAGE_TOOL}:
             return False
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         descriptor = entry.descriptor if entry is not None else None
@@ -1137,7 +1131,7 @@ class _ChatAgentBackend(AgentToolBackend):
         return name not in {
             _SET_REPLY_TARGET_NAME,
             _ARTIFACT_READER_NAME,
-            FINALIZE_MEMORY_RESPONSE_TOOL,
+            REPORT_MEMORY_USAGE_TOOL,
         }
 
     def _mutation_identity(self, call: ToolCall) -> tuple[str, str] | None:
@@ -1167,17 +1161,8 @@ class _ChatAgentBackend(AgentToolBackend):
             controls.append(_SET_REPLY_TARGET_TOOL)
         usage = self._runtime.memory_usage_control
         if usage is not None and usage.report_available:
-            controls.append(_FINALIZE_MEMORY_RESPONSE_TOOL)
+            controls.append(_REPORT_MEMORY_USAGE_TOOL)
         return tuple(controls)
-
-    def terminal_tool_names(self, runtime: AgentRuntime) -> frozenset[str]:
-        del runtime
-        return frozenset({FINALIZE_MEMORY_RESPONSE_TOOL})
-
-    def requires_terminal_response(self, runtime: AgentRuntime) -> bool:
-        del runtime
-        usage = self._runtime.memory_usage_control
-        return bool(usage is not None and usage.report_available)
 
     def _set_reply_target(self, arguments_json: str) -> str:
         control = self._runtime.reply_target_control

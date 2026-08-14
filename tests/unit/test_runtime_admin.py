@@ -37,7 +37,6 @@ from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
 from qq_ai_bot.memory.models import MemoryFactCreate
-from qq_ai_bot.memory.receipt import FINALIZE_MEMORY_RESPONSE_TOOL
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
@@ -1081,23 +1080,7 @@ async def test_single_chat_agent_can_list_then_delete_memory_in_one_turn(
             )
         )
         assert deleted["ok"] is True
-        assert FINALIZE_MEMORY_RESPONSE_TOOL in tool_names
-        return ChatResponse(
-            content="",
-            latency_seconds=0,
-            tool_calls=(
-                ToolCall(
-                    id="finalize-after-delete",
-                    function=ToolFunction(
-                        name=FINALIZE_MEMORY_RESPONSE_TOOL,
-                        arguments=json.dumps(
-                            {"content": "已经删掉那条旧记忆啦。", "memory_refs": []},
-                            ensure_ascii=False,
-                        ),
-                    ),
-                ),
-            ),
-        )
+        return ChatResponse(content="已经删掉那条旧记忆啦。", latency_seconds=0)
 
     settings = make_settings(database.url)
     provider = FakeLLMProvider(responder)

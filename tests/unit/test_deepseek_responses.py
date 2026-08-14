@@ -130,7 +130,7 @@ async def test_non_thinking_request_keeps_explicit_tool_choice() -> None:
                 thinking_enabled=False,
                 tools=(
                     ChatTool(
-                        name="finalize_memory_response",
+                        name="required_test_tool",
                         description="submit response",
                         parameters={"type": "object"},
                     ),

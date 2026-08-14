@@ -15,7 +15,7 @@ from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryRetrievalHit, Memor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import MemoryRecallItemModel, MemoryRecallReceiptModel
 
-FINALIZE_MEMORY_RESPONSE_TOOL = "finalize_memory_response"
+REPORT_MEMORY_USAGE_TOOL = "report_memory_usage"
 
 
 def hashed_identifier(value: str) -> str:
@@ -50,7 +50,6 @@ class MemoryUsageControl:
         self._report_batch_valid = True
         self._metrics = metrics
         self._invalid_recorded = False
-        self._submitted_content = ""
 
     @property
     def available_refs(self) -> tuple[str, ...]:
@@ -77,10 +76,10 @@ class MemoryUsageControl:
         self._available.update(fact_ids)
 
     def begin_batch(self, names: tuple[str, ...]) -> None:
-        self._report_batch_valid = not (FINALIZE_MEMORY_RESPONSE_TOOL in names and len(names) != 1)
+        self._report_batch_valid = not (REPORT_MEMORY_USAGE_TOOL in names and len(names) != 1)
 
     def note_call(self, name: str) -> None:
-        if self._reported and name != FINALIZE_MEMORY_RESPONSE_TOOL:
+        if self._reported and name != REPORT_MEMORY_USAGE_TOOL:
             self._valid = False
             self._record_invalid()
 
@@ -99,12 +98,9 @@ class MemoryUsageControl:
         except json.JSONDecodeError:
             arguments = None
         refs = arguments.get("memory_refs") if isinstance(arguments, dict) else None
-        content = arguments.get("content") if isinstance(arguments, dict) else None
         if (
             not isinstance(arguments, dict)
-            or set(arguments) != {"content", "memory_refs"}
-            or not isinstance(content, str)
-            or not content.strip()
+            or set(arguments) != {"memory_refs"}
             or not isinstance(refs, list)
             or len(refs) > 100
             or any(not isinstance(ref, str) for ref in refs)
@@ -124,25 +120,17 @@ class MemoryUsageControl:
             return _result(False, "memory_usage_ref_not_presented")
         self._reported = True
         self._used = fact_ids
-        self._submitted_content = content.strip()
         if self._metrics is not None:
             self._metrics.record_usage_report("valid" if fact_ids else "empty")
+            self._metrics.increment("memory_usage_report_extra_model_request_count")
         return json.dumps(
-            {
-                "ok": True,
-                "accepted": len(fact_ids),
-                "terminal_response": content,
-            },
+            {"ok": True, "accepted": len(fact_ids)},
             ensure_ascii=False,
             separators=(",", ":"),
         )
 
     def finalize(self, content: str) -> None:
-        normalized = content.strip()
-        self._finalized = bool(normalized)
-        if self._reported and normalized != self._submitted_content:
-            self._valid = False
-            self._record_invalid()
+        self._finalized = bool(content.strip())
         if self.enabled and self._available and not self._attempted and self._metrics is not None:
             self._metrics.record_usage_report("missing")
 

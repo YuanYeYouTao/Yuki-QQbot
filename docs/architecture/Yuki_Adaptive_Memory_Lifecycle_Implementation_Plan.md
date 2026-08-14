@@ -55,10 +55,11 @@ Planner 的 Admin/Plugin 搜索保持中性、只读排序。
 - `ContextAssembler` 只在最终预算完成后更新 `last_injected_at`；Agent 记忆工具只在事实
   实际出现在工具结果后标记 injected。Admin/Plugin Facade 搜索保持纯读取。
 - Prompt 和记忆工具结果提供 `memory_ref=M<fact_id>`；本地响应控制工具
-  `finalize_memory_response` 只接受本轮实际呈现过的白名单 refs，并在同一个结构化工具调用中
-  携带最终正文。
-- 终止工具必须单独、至多成功调用一次；后端将其正文直接作为 Agent 结果，不占业务工具次数，
-  也不增加模型请求。Planner 降级、Plugin Background 或没有 refs 时不暴露。
+  `report_memory_usage` 只接受本轮实际呈现过的白名单 refs，不携带最终正文。
+- 工具必须单独、至多成功调用一次，并作为最终正文前的最后一次工具调用；它不占业务工具次数，
+  实际报告使用时增加一次正文生成请求。Planner 降级、Plugin Background 或没有 refs 时不暴露。
+- Agent 可直接返回正文且后端不强制归因、不重试；没有合法报告的轮次不强化，以避免错误强化和
+  普通记忆轮次的额外延迟。
 - 仅最终 Agent 运行的合法报告可进入 used；Native Web fallback 会重建本地控制状态。
 - 至少一段 Agent 正文或由正文生成的语音取得发送回执后才强化。失败、取消、中断、纯表情、
   空正文和非法报告均不强化。
