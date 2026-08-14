@@ -198,6 +198,9 @@ CapabilityRisk.MUTATE
 |---|---|
 | `operation` | 希望执行的领域动作 |
 | `fact_id` | 修改现有事实时使用，只能来自本轮可见检索结果 |
+| `selector` | 没有 `fact_id` 时按 key/旧内容在已解析 target 内有界定位 |
+| `merge_fact_id` | merge 的目标事实 ID |
+| `merge_selector` | 没有 `merge_fact_id` 时定位 merge 目标 |
 | `target.subject_ref` | 后端提供的可信主体引用 |
 | `target.scope_type` | `person`、`person_group` 或 `group` |
 | `new_content` | 创建、纠正或归属修正后的内容 |
@@ -207,6 +210,11 @@ CapabilityRisk.MUTATE
 | `confidence` | Yuki 对当前判断的自评，不直接等于事实最终 confidence |
 | `evidence_refs` | 本轮后端提供的事件引用，不接受任意数据库 ID |
 | `expected_fact_state` | 乐观并发检查 |
+
+`selector` 至少包含 `memory_key` 或 `old_content`，可附加 `category`。没有 `fact_id` 时必须同时
+提供合法 `target`。后端不调用 Embedding，不跨人物、群或 SELF 可见性；所有已提供字段唯一精确
+命中时才执行。否则只返回至多 3 条包含 `fact_id/memory_ref/key/category/kind/content/status` 的
+词法候选，或返回 `memory_candidate_not_found`，数据库保持不变。
 
 后端注入且模型不能提交或覆盖的字段：
 

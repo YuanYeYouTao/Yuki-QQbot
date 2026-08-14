@@ -59,18 +59,21 @@ from qq_ai_bot.memory.models import (
     MemoryEvidenceCreate,
     MemoryFact,
     MemoryFactCreate,
+    MemoryFactQuery,
     MemoryResolutionPlan,
 )
 from qq_ai_bot.memory.mutation.models import (
     SELF_MEMORY_CATEGORIES,
     MemoryDecisionActorType,
     MemoryMutationAppliedOperation,
+    MemoryMutationCandidate,
     MemoryMutationContext,
     MemoryMutationOperation,
     MemoryMutationOutcome,
     MemoryMutationRequest,
     MemoryMutationRequestBasis,
     MemoryMutationResult,
+    MemoryMutationSelector,
     MemoryMutationTarget,
     SelfMemoryVisibilityMode,
 )
@@ -103,9 +106,15 @@ class DreamRecomposePlan:
 class MemoryMutationRejected(ValueError):
     """A stable policy or request rejection safe to return to the main Agent."""
 
-    def __init__(self, reason_code: str) -> None:
+    def __init__(
+        self,
+        reason_code: str,
+        *,
+        candidates: tuple[MemoryMutationCandidate, ...] = (),
+    ) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
+        self.candidates = candidates
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +174,11 @@ class MemoryMutationService:
         try:
             prepared = await self._prepare(request, context)
         except MemoryMutationRejected as exc:
-            return self._rejected(request.operation, exc.reason_code)
+            return self._rejected(
+                request.operation,
+                exc.reason_code,
+                candidates=exc.candidates,
+            )
         return await self._commit_prepared(prepared)
 
     @staticmethod
@@ -969,7 +982,11 @@ class MemoryMutationService:
         try:
             prepared = await self._prepare(request, context, target_override=target)
         except MemoryMutationRejected as exc:
-            return self._rejected(request.operation, exc.reason_code)
+            return self._rejected(
+                request.operation,
+                exc.reason_code,
+                candidates=exc.candidates,
+            )
         if self_reflection_result is not None and not self._trusted_self_reflection(context):
             return self._rejected(request.operation, "result_mapping_requires_self_reflection")
         return await self._commit_prepared(
@@ -1350,8 +1367,30 @@ class MemoryMutationService:
             if request.target.scope_type is not target.scope_type:
                 raise MemoryMutationRejected("target_scope_mismatch")
         target = self._resolve_visibility(request, target, event, fact=fact)
-        self._validate_self_request(request, target, event, fact=fact, merge_fact=merge_fact)
         self._authorize(request.operation, target, context)
+        if request.operation is MemoryMutationOperation.REASSIGN and request.selector is not None:
+            raise MemoryMutationRejected("selector_not_supported_for_reassign")
+        if request.operation is not MemoryMutationOperation.CREATE and fact is None:
+            if request.selector is None:
+                raise MemoryMutationRejected("memory_selector_required")
+            fact = await self._locate_fact(
+                target,
+                request.selector,
+                statuses=self._locator_statuses(request.operation, merge_target=False),
+            )
+            request = request.model_copy(update={"fact_id": fact.id, "selector": None})
+        if request.operation is MemoryMutationOperation.MERGE and merge_fact is None:
+            if request.merge_selector is None:
+                raise MemoryMutationRejected("merge_selector_required")
+            merge_fact = await self._locate_fact(
+                target,
+                request.merge_selector,
+                statuses=self._locator_statuses(request.operation, merge_target=True),
+            )
+            request = request.model_copy(
+                update={"merge_fact_id": merge_fact.id, "merge_selector": None}
+            )
+        self._validate_self_request(request, target, event, fact=fact, merge_fact=merge_fact)
         self._validate_fact_requirements(request, target, fact, merge_fact, context)
         quote = (
             normalize_memory_text(request.evidence_quote or "", maximum=500)
@@ -1782,6 +1821,92 @@ class MemoryMutationService:
         if fact is None:
             raise MemoryMutationRejected("memory_fact_not_found")
         return fact
+
+    async def _locate_fact(
+        self,
+        target: ResolvedSubject,
+        selector: MemoryMutationSelector,
+        *,
+        statuses: tuple[MemoryStatus, ...],
+    ) -> MemoryFact:
+        memory_key = (
+            normalize_memory_text(selector.memory_key, maximum=128)
+            if selector.memory_key is not None
+            else None
+        )
+        normalized_content = (
+            normalize_memory_text(selector.old_content, maximum=4000)
+            if selector.old_content is not None
+            else None
+        )
+        category = (
+            normalize_memory_text(selector.category, maximum=64)
+            if selector.category is not None
+            else None
+        )
+        if memory_key == "":
+            memory_key = None
+        if normalized_content == "":
+            normalized_content = None
+        if memory_key is None and normalized_content is None:
+            raise MemoryMutationRejected("invalid_memory_selector")
+        rows = await self._facts.repository.list_mutation_locator_candidates(
+            MemoryFactQuery(
+                scope_type=target.scope_type,
+                subject_user_id=target.subject_user_id,
+                group_id=target.group_id,
+                visibility_type=target.visibility_type,
+                visibility_user_id=target.visibility_user_id,
+                visibility_group_id=target.visibility_group_id,
+            ),
+            memory_key=memory_key,
+            normalized_content=normalized_content,
+            category=category,
+            statuses=statuses,
+            limit=4,
+        )
+        exact = tuple(
+            fact
+            for fact in rows
+            if (memory_key is None or fact.memory_key == memory_key)
+            and (normalized_content is None or fact.normalized_content == normalized_content)
+            and (category is None or fact.category == category)
+        )
+        if len(exact) == 1:
+            self._facts.metrics.increment("memory_mutation_locator_unique_count")
+            return exact[0]
+        candidates = tuple(
+            MemoryMutationCandidate(
+                fact_id=fact.id,
+                memory_ref=f"M{fact.id}",
+                memory_key=fact.memory_key,
+                category=fact.category,
+                kind=fact.kind,
+                content=fact.content,
+                status=fact.status,
+            )
+            for fact in rows[:3]
+        )
+        if candidates:
+            self._facts.metrics.increment("memory_mutation_locator_ambiguous_count")
+            raise MemoryMutationRejected(
+                "memory_candidate_ambiguous",
+                candidates=candidates,
+            )
+        self._facts.metrics.increment("memory_mutation_locator_not_found_count")
+        raise MemoryMutationRejected("memory_candidate_not_found")
+
+    @staticmethod
+    def _locator_statuses(
+        operation: MemoryMutationOperation,
+        *,
+        merge_target: bool,
+    ) -> tuple[MemoryStatus, ...]:
+        if operation is MemoryMutationOperation.RESTORE:
+            return (MemoryStatus.INVALIDATED,)
+        if operation is MemoryMutationOperation.MERGE and merge_target:
+            return (MemoryStatus.ACTIVE,)
+        return (MemoryStatus.ACTIVE, MemoryStatus.CONTESTED)
 
     def _resolve_visibility(
         self,
@@ -2305,6 +2430,8 @@ class MemoryMutationService:
     def _rejected(
         operation: MemoryMutationOperation,
         reason_code: str,
+        *,
+        candidates: tuple[MemoryMutationCandidate, ...] = (),
     ) -> MemoryMutationResult:
         return MemoryMutationResult(
             ok=False,
@@ -2313,6 +2440,7 @@ class MemoryMutationService:
             applied_operation=MemoryMutationAppliedOperation.NOOP,
             outcome=MemoryMutationOutcome.REJECTED,
             reason_code=reason_code,
+            candidates=candidates,
         )
 
 

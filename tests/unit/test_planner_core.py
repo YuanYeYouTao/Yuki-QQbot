@@ -224,12 +224,14 @@ def _runtime() -> RuntimeConfigSnapshot:
 
 def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
     output = PlannerMemoryOutput(
+        access="automatic",
         mode=MemoryContextMode.HYBRID,
         purpose="background",
     )
     assert output.materialize().self_recall is False
     opened = PlannerMemoryOutput.model_validate(
         {
+            "access": "automatic",
             "mode": MemoryContextMode.HYBRID,
             "purpose": "recall",
             "reason_code": MemoryContextReasonCode.SELF_MEMORY_RECALL,
@@ -246,6 +248,7 @@ def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
 
     strict = PlannerMemoryOutput.model_validate(
         {
+            "access": "automatic",
             "mode": "hybrid",
             "purpose": "recall",
             "temporal": {
@@ -258,6 +261,52 @@ def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
     ).materialize()
     assert strict.temporal.constraint.value == "strict"
     assert strict.temporal.start_at == datetime(2026, 7, 31, 16, tzinfo=UTC)
+
+
+def test_planner_memory_access_contract_and_requested_count_are_strict() -> None:
+    automatic = PlannerMemoryOutput.model_validate(
+        {
+            "access": "automatic",
+            "mode": "overview",
+            "purpose": "recall",
+            "requested_count": 2,
+        }
+    ).materialize()
+    tool = PlannerMemoryOutput.model_validate(
+        {"access": "tool", "mode": "none", "purpose": "recall"}
+    ).materialize()
+
+    assert automatic.requested_count == 2
+    assert automatic.to_query_intent().requested_count == 2
+    assert tool.mode is MemoryContextMode.NONE
+    with pytest.raises(ValueError, match="automatic memory access requires a retrieval mode"):
+        PlannerMemoryOutput.model_validate(
+            {"access": "automatic", "mode": "none", "purpose": "recall"}
+        ).materialize()
+    with pytest.raises(ValueError, match="none/tool memory access requires mode=none"):
+        PlannerMemoryOutput.model_validate(
+            {"access": "tool", "mode": "lexical", "purpose": "recall"}
+        ).materialize()
+
+
+@pytest.mark.asyncio
+async def test_invalid_memory_access_mode_combination_uses_whole_plan_fallback() -> None:
+    payload = _valid_plan_payload()
+    payload["memory_context"] = {
+        "access": "tool",
+        "mode": "hybrid",
+        "purpose": "recall",
+    }
+    provider = LLMPlannerProvider(
+        FakeLLMProvider(lambda _request: json.dumps(payload)),
+        model="planner-model",
+    )
+
+    plan = await provider.plan(_planner_input(), runtime=_runtime())
+
+    assert plan.confidence == 0
+    assert plan.memory_context.access.value == "automatic"
+    assert plan.memory_context.mode is MemoryContextMode.LEXICAL
 
 
 def test_planner_prompt_requires_explicit_scope_and_query_rewrite_for_tool_tasks() -> None:
@@ -335,6 +384,7 @@ def _valid_plan_payload(**updates: object) -> dict[str, object]:
         "confidence": 0.9,
         "reason_code": "direct_request",
         "memory_context": {
+            "access": "automatic",
             "mode": "lexical",
             "purpose": "background",
             "reason_code": "routine_context",
@@ -1279,7 +1329,11 @@ async def test_llm_planner_materializes_sparse_output_with_backend_defaults() ->
                 "reason_code": "direct_request",
                 "delivery_mode": "single",
                 "desired_messages": 1,
-                "memory_context": {"mode": "lexical", "purpose": "background"},
+                "memory_context": {
+                    "access": "automatic",
+                    "mode": "lexical",
+                    "purpose": "background",
+                },
                 "emoji": {"intent": "neutral", "mode": "none"},
                 "voice": {"mode": "text", "intent": "neutral"},
             }
@@ -1340,7 +1394,11 @@ def test_sparse_planner_derives_secondary_effect_defaults() -> None:
             "reason_code": "direct_request",
             "delivery_mode": "single",
             "desired_messages": 1,
-            "memory_context": {"mode": "none", "purpose": "background"},
+            "memory_context": {
+                "access": "none",
+                "mode": "none",
+                "purpose": "background",
+            },
             "emoji": {"intent": "explicit_request", "mode": "emoji_only"},
             "voice": {"mode": "voice", "intent": "explicit_request"},
         }
@@ -1362,7 +1420,11 @@ def test_sparse_planner_preserves_explicit_empty_tool_selection() -> None:
             "delivery_mode": "single",
             "desired_messages": 1,
             "tool_selection": {"mode": "inherit", "scopes": []},
-            "memory_context": {"mode": "lexical", "purpose": "background"},
+            "memory_context": {
+                "access": "automatic",
+                "mode": "lexical",
+                "purpose": "background",
+            },
             "emoji": {"intent": "neutral", "mode": "none"},
             "voice": {"mode": "text", "intent": "neutral"},
         }

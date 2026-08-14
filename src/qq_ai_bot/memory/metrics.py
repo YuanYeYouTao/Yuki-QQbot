@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from qq_ai_bot.memory.enums import (
+    MemoryAccessMode,
     MemoryContextMode,
     MemoryRecallPurpose,
     MemoryRetrievalMode,
@@ -194,6 +195,7 @@ class MemoryLifecycleMetrics:
         """Return a fixed-cardinality, content-free lifecycle metric projection."""
 
         names = [
+            *(f"memory_access_{access.value}" for access in MemoryAccessMode),
             *(f"memory_intent_mode_{mode.value}" for mode in MemoryContextMode),
             *(f"memory_intent_purpose_{purpose.value}" for purpose in MemoryRecallPurpose),
             *(f"memory_recall_{stage}_count" for stage in ADAPTIVE_MEMORY_STAGES),
@@ -211,6 +213,9 @@ class MemoryLifecycleMetrics:
             "memory_recall_receipts_cleaned_count",
             "memory_attribution_used_count",
             "memory_attribution_reinforced_count",
+            "memory_mutation_locator_unique_count",
+            "memory_mutation_locator_ambiguous_count",
+            "memory_mutation_locator_not_found_count",
         ]
         snapshot = {name: int(self._counts[name]) for name in names}
         snapshot["memory_attribution_queue_depth"] = self._attribution_queue_depth
@@ -219,6 +224,9 @@ class MemoryLifecycleMetrics:
     def record_intent(self, *, mode: MemoryContextMode, purpose: MemoryRecallPurpose) -> None:
         self.increment(f"memory_intent_mode_{mode.value}")
         self.increment(f"memory_intent_purpose_{purpose.value}")
+
+    def record_access(self, access: MemoryAccessMode) -> None:
+        self.increment(f"memory_access_{access.value}")
 
     def record_recall_stage(self, stage: str, count: int) -> None:
         if stage not in ADAPTIVE_MEMORY_STAGES:

@@ -51,3 +51,17 @@
 - 无 Exposure 的轮次不调用归因模型；符合条件的轮次最多一次后台逻辑调用。
 - 主响应路径不等待 Flash、Receipt 或 Activation。
 - 通过 ruff、mypy、全量 pytest、Memory Quality release check 和旧自报符号清零检查。
+
+## 自动召回与 Memory Scope 互斥（2026-08-15）
+
+- `MemoryContextPlan.access` 是首轮记忆访问的唯一编排依据：`none` 不读取也不开放工具，
+  `automatic` 自动召回且移除首轮 Memory Scope，`tool` 跳过自动召回并开放 Memory Scope。
+- `request_tools` 仍可从当前真实权限目录加载记忆工具，作为修改请求和窄定位失败后的显式降级；
+  它不改变首轮互斥语义。
+- 自动召回每目标最多 4 条；整轮 `background/continuation/focused/overview` 默认分别最多
+  3/4/6/8 条。overview 有 `requested_count` 时采用 `min(requested_count + 2, 8)`。
+- 全局限额在目标内 Intent/Activation rerank 与 MMR 后执行；精确命中和显式偏好保留位优先，
+  Context Budget 使用内部重排分数，但最终 Agent 上下文不暴露内部评分。
+- `memory_change` 没有 fact ID 时可使用 `selector`；后端只在已解析的精确 target、允许状态且
+  非 quarantined 的事实中执行无 Embedding 定位。只有唯一精确命中才写入，否则返回至多 3 条
+  词法候选或 `memory_candidate_not_found`。`merge` 同样支持 `merge_selector`。

@@ -1069,6 +1069,21 @@ class RuntimeConfigService:
                 lexical_candidate_limit=int(cast(int, value("memory.lexical_candidate_limit"))),
                 context_limit_per_entity=int(cast(int, value("memory.context_limit_per_entity"))),
                 overview_limit_per_entity=int(cast(int, value("memory.overview_limit_per_entity"))),
+                automatic_recall_per_target_limit=int(
+                    cast(int, value("memory.automatic_recall_per_target_limit"))
+                ),
+                automatic_recall_background_limit=int(
+                    cast(int, value("memory.automatic_recall_background_limit"))
+                ),
+                automatic_recall_continuation_limit=int(
+                    cast(int, value("memory.automatic_recall_continuation_limit"))
+                ),
+                automatic_recall_focused_limit=int(
+                    cast(int, value("memory.automatic_recall_focused_limit"))
+                ),
+                automatic_recall_overview_limit=int(
+                    cast(int, value("memory.automatic_recall_overview_limit"))
+                ),
                 always_on_explicit_preference_limit=int(
                     cast(int, value("memory.always_on_explicit_preference_limit"))
                 ),

@@ -180,7 +180,11 @@ class ContextAssembler:
                 "display_name": profile.display_name,
                 "aliases": list(aliases),
                 "facts": [
-                    retrieval_fact_context(hit, self._settings.default_timezone)
+                    retrieval_fact_context(
+                        hit,
+                        self._settings.default_timezone,
+                        include_budget_metadata=True,
+                    )
                     for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON, ())
                 ],
                 **(
@@ -201,7 +205,11 @@ class ContextAssembler:
         if self_hits:
             context["current_self"] = {
                 "facts": [
-                    self_retrieval_fact_context(hit, self._settings.default_timezone)
+                    self_retrieval_fact_context(
+                        hit,
+                        self._settings.default_timezone,
+                        include_budget_metadata=True,
+                    )
                     for hit in self_hits
                 ]
             }
@@ -215,14 +223,22 @@ class ContextAssembler:
                 "user_id": inbound.sender.user_id,
                 "group_id": inbound.group_id,
                 "facts": [
-                    retrieval_fact_context(hit, self._settings.default_timezone)
+                    retrieval_fact_context(
+                        hit,
+                        self._settings.default_timezone,
+                        include_budget_metadata=True,
+                    )
                     for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON_GROUP, ())
                 ],
             }
             context["current_group"] = {
                 "group_id": inbound.group_id,
                 "facts": [
-                    retrieval_fact_context(hit, self._settings.default_timezone)
+                    retrieval_fact_context(
+                        hit,
+                        self._settings.default_timezone,
+                        include_budget_metadata=True,
+                    )
                     for hit in hits_by_role.get(MemoryTargetRole.CURRENT_GROUP, ())
                 ],
             }
@@ -253,7 +269,11 @@ class ContextAssembler:
                     else "group_facts"
                 )
                 entry[key] = [
-                    retrieval_fact_context(hit, self._settings.default_timezone)
+                    retrieval_fact_context(
+                        hit,
+                        self._settings.default_timezone,
+                        include_budget_metadata=True,
+                    )
                     for hit in block.hits
                 ]
             if referenced:
@@ -391,7 +411,11 @@ class ContextAssembler:
             context["current_group"] = {
                 "group_id": event.group_id,
                 "facts": [
-                    retrieval_fact_context(hit, self._settings.default_timezone)
+                    retrieval_fact_context(
+                        hit,
+                        self._settings.default_timezone,
+                        include_budget_metadata=True,
+                    )
                     for hit in group_hits
                 ],
             }
@@ -399,7 +423,11 @@ class ContextAssembler:
         if self_hits:
             context["current_self"] = {
                 "facts": [
-                    self_retrieval_fact_context(hit, self._settings.default_timezone)
+                    self_retrieval_fact_context(
+                        hit,
+                        self._settings.default_timezone,
+                        include_budget_metadata=True,
+                    )
                     for hit in self_hits
                 ]
             }
@@ -643,7 +671,9 @@ class ContextAssembler:
     def _render_metadata_selection(
         selection: tuple[ContextContribution, ...],
     ) -> tuple[dict[str, object], tuple[int, ...]]:
-        selected = {item.id: item.payload for item in selection}
+        selected = {
+            item.id: ContextAssembler._public_context_payload(item.payload) for item in selection
+        }
         items: list[dict[str, object]] = []
         selected_fact_ids: list[int] = []
         for item in selection:
@@ -722,6 +752,20 @@ class ContextAssembler:
         return {"items": items}, tuple(dict.fromkeys(selected_fact_ids))
 
     @staticmethod
+    def _public_context_payload(payload: Any) -> Any:
+        if isinstance(payload, dict):
+            return {
+                key: ContextAssembler._public_context_payload(value)
+                for key, value in payload.items()
+                if not str(key).startswith("_")
+            }
+        if isinstance(payload, list):
+            return [ContextAssembler._public_context_payload(item) for item in payload]
+        if isinstance(payload, tuple):
+            return tuple(ContextAssembler._public_context_payload(item) for item in payload)
+        return payload
+
+    @staticmethod
     def _context_contributions(
         context: dict[str, Any],
     ) -> tuple[ContextContribution, ...]:
@@ -754,6 +798,30 @@ class ContextAssembler:
                 )
             )
 
+        def add_memory(item_id: str, payload: Any, *, fallback_priority: int) -> None:
+            if not isinstance(payload, dict):
+                add(item_id, payload, priority=fallback_priority, relevance=0.5)
+                return
+            public_payload = ContextAssembler._public_context_payload(payload)
+            score = payload.get("_retrieval_score")
+            pinned = payload.get("_retrieval_pinned") is True
+            preference = payload.get("_preference_reserve") is True
+            if isinstance(score, (int, float)) and (score > 0 or pinned or preference):
+                add(
+                    item_id,
+                    public_payload,
+                    priority=90 if pinned else 85 if preference else 80,
+                    relevance=max(0.0, min(1.0, float(score))),
+                )
+                return
+            importance = payload.get("importance", 1)
+            add(
+                item_id,
+                public_payload,
+                priority=fallback_priority + int(importance),
+                relevance=0.8,
+            )
+
         current = context.get("current_person")
         if isinstance(current, dict):
             base = {key: value for key, value in current.items() if key not in {"aliases", "facts"}}
@@ -761,24 +829,12 @@ class ContextAssembler:
             for index, alias in enumerate(current.get("aliases", ())):
                 add(f"current_alias.{index}", alias, priority=45, relevance=0.7)
             for index, memory in enumerate(current.get("facts", ())):
-                importance = memory.get("importance", 1) if isinstance(memory, dict) else 1
-                add(
-                    f"person_memory.{index}",
-                    memory,
-                    priority=60 + int(importance),
-                    relevance=0.9,
-                )
+                add_memory(f"person_memory.{index}", memory, fallback_priority=60)
         add("scene", context.get("scene", {}), priority=100, relevance=1, required=True)
         current_self = context.get("current_self")
         if isinstance(current_self, dict):
             for index, memory in enumerate(current_self.get("facts", ())):
-                importance = memory.get("importance", 1) if isinstance(memory, dict) else 1
-                add(
-                    f"current_self.fact.{index}",
-                    memory,
-                    priority=70 + int(importance),
-                    relevance=0.95,
-                )
+                add_memory(f"current_self.fact.{index}", memory, fallback_priority=70)
         memory_subjects = context.get("available_memory_subjects")
         if isinstance(memory_subjects, list) and memory_subjects:
             add(
@@ -794,7 +850,7 @@ class ContextAssembler:
             identity = {name: value for name, value in block.items() if name != "facts"}
             add(key, identity, priority=95, relevance=1, required=True)
             for index, value in enumerate(block.get("facts", ())):
-                add(f"{key}.fact.{index}", value, priority=priority, relevance=0.8)
+                add_memory(f"{key}.fact.{index}", value, fallback_priority=priority)
         for index, person in enumerate(context.get("referenced_people", ())):
             if not isinstance(person, dict):
                 continue
@@ -811,18 +867,16 @@ class ContextAssembler:
                 required=True,
             )
             for fact_index, fact in enumerate(person.get("person_facts", ())):
-                add(
+                add_memory(
                     f"referenced_person_fact.{index}.{fact_index}",
                     fact,
-                    priority=58,
-                    relevance=0.85,
+                    fallback_priority=58,
                 )
             for fact_index, fact in enumerate(person.get("group_facts", ())):
-                add(
+                add_memory(
                     f"referenced_group_fact.{index}.{fact_index}",
                     fact,
-                    priority=57,
-                    relevance=0.85,
+                    fallback_priority=57,
                 )
         for index, event in enumerate(context.get("recent_external_events", ())):
             add(

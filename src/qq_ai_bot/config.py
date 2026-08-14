@@ -180,6 +180,11 @@ class Settings(BaseSettings):
     memory_lexical_candidate_limit: int = 50
     memory_context_limit_per_entity: int = 8
     memory_overview_limit_per_entity: int = 20
+    memory_automatic_recall_per_target_limit: int = Field(default=4, gt=0, le=20)
+    memory_automatic_recall_background_limit: int = Field(default=3, gt=0, le=20)
+    memory_automatic_recall_continuation_limit: int = Field(default=4, gt=0, le=20)
+    memory_automatic_recall_focused_limit: int = Field(default=6, gt=0, le=20)
+    memory_automatic_recall_overview_limit: int = Field(default=8, gt=0, le=20)
     memory_always_on_explicit_preference_limit: int = 3
     memory_query_term_limit: int = 12
     memory_short_query_fallback_enabled: bool = True

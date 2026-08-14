@@ -549,6 +549,7 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
     assert requested["data"]["loaded_tools"][0]["name"] == "song_share"
     assert service._tool_metrics.request_tools_calls == 1
     assert service._tool_metrics.request_tools_zero_results == 0
+    assert service._tool_metrics.automatic_memory_request_tools_calls == 1
 
     second = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
     assert second == {"album_share", "song_share", REQUEST_TOOLS_NAME}

@@ -89,6 +89,108 @@ async def _remember(
 
 
 @pytest.mark.asyncio
+async def test_automatic_recall_global_and_per_target_limits_are_stable(
+    database: Database,
+) -> None:
+    facts = MemoryFactService(MemoryFactRepository(database))
+    targets = (
+        MemoryEntityTarget(
+            role=MemoryTargetRole.CURRENT_PERSON,
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            block_id="person:1001",
+        ),
+        MemoryEntityTarget(
+            role=MemoryTargetRole.REFERENCED_PERSON,
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1002",
+            block_id="person:1002",
+        ),
+    )
+    hits: list[MemoryRetrievalHit] = []
+    blocks: list[MemoryRetrievalBlock] = []
+    rank = 1
+    for target in targets:
+        target_hits: list[MemoryRetrievalHit] = []
+        for index in range(6):
+            fact = await facts.remember(
+                MemoryFactCreate(
+                    scope_type=MemoryScopeType.PERSON,
+                    subject_user_id=target.subject_user_id,
+                    kind=MemoryKind.FACT,
+                    memory_key=f"fact:{target.subject_user_id}:{index}",
+                    category="profile",
+                    content=f"{target.subject_user_id} 的测试事实 {index}",
+                    source_type=MemorySourceType.AUTOMATIC,
+                )
+            )
+            hit = MemoryRetrievalHit(
+                fact=fact,
+                target=target,
+                rank=rank,
+                selection_reason="lexical_match",
+                base_rank_score=max(0.1, 1 - rank / 20),
+                rerank_score=max(0.1, 1 - rank / 20),
+            )
+            rank += 1
+            hits.append(hit)
+            target_hits.append(hit)
+        blocks.append(MemoryRetrievalBlock(target=target, hits=tuple(target_hits)))
+    pinned = hits[-1].model_copy(
+        update={
+            "exact_match": True,
+            "selection_reason": "lexical_exact",
+            "rerank_score": 0.01,
+        }
+    )
+    hits[-1] = pinned
+    second_block_hits = list(blocks[-1].hits)
+    second_block_hits[-1] = pinned
+    blocks[-1] = blocks[-1].model_copy(update={"hits": tuple(second_block_hits)})
+    base = MemoryRetrievalResult(
+        blocks=tuple(blocks),
+        hits=tuple(hits),
+        trace_hits=tuple(hits),
+        candidate_count=40,
+        selected_count=len(hits),
+        query_hash="2" * 64,
+        mode=MemoryRetrievalMode.RELEVANT,
+    )
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot(user_id="1001")
+
+    background = MemoryContextService._limit_automatic_result(
+        base,
+        MemoryQueryIntent(purpose=MemoryRecallPurpose.BACKGROUND),
+        runtime,
+    )
+    focused = MemoryContextService._limit_automatic_result(
+        base,
+        MemoryQueryIntent(purpose=MemoryRecallPurpose.RECALL),
+        runtime,
+    )
+    overview = MemoryContextService._limit_automatic_result(
+        base.model_copy(update={"mode": MemoryRetrievalMode.OVERVIEW}),
+        MemoryQueryIntent(
+            mode=MemoryContextMode.OVERVIEW,
+            purpose=MemoryRecallPurpose.RECALL,
+            requested_count=2,
+        ),
+        runtime,
+    )
+
+    assert len(background.hits) == 3
+    assert len(focused.hits) == 6
+    assert len(overview.hits) == 4
+    assert pinned.fact.id in {hit.fact.id for hit in background.hits}
+    assert all(len(block.hits) <= 4 for block in focused.blocks)
+    assert background.candidate_count == 40
+    assert background.trace_hits == tuple(hits)
+
+
+@pytest.mark.asyncio
 async def test_new_fact_creates_activation_in_same_write(database: Database) -> None:
     fact = await _remember(database, key="activation-created", kind=MemoryKind.PREFERENCE)
     state = (await MemoryActivationRepository(database).load((fact.id,))).get(fact.id)

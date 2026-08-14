@@ -607,6 +607,39 @@ async def test_only_facts_surviving_context_budget_are_marked_injected(
     assert omitted_row is not None and omitted_row.last_injected_at is None
 
 
+def test_memory_budget_uses_rerank_score_without_exposing_internal_fields() -> None:
+    context = {
+        "current_person": {
+            "user_id": "1001",
+            "facts": [
+                {
+                    "fact_id": 1,
+                    "content": "低分且很短",
+                    "importance": 5,
+                    "_retrieval_score": 0.1,
+                },
+                {
+                    "fact_id": 2,
+                    "content": "高分事实内容",
+                    "importance": 1,
+                    "_retrieval_score": 0.9,
+                },
+            ],
+        },
+        "scene": {"type": "private", "group_id": None},
+    }
+    contributions = ContextAssembler._context_contributions(context)
+    required_cost = sum(item.cost for item in contributions if item.required)
+    high_score = next(item for item in contributions if item.id == "person_memory.1")
+    rendered, fact_ids = ContextAssembler._fit_metadata(
+        context,
+        required_cost + high_score.cost,
+    )
+
+    assert fact_ids == (2,)
+    assert "_retrieval_score" not in str(rendered)
+
+
 def test_recent_delivery_projects_only_confirmed_transport_metadata() -> None:
     now = datetime.now(UTC)
 

@@ -223,12 +223,13 @@ async def test_non_superuser_never_receives_generic_onebot_tool(database: Databa
         ToolGatewaySender(),
     )
     assert "call_onebot_api" not in provider.tool_names
+    assert "request_tools" in provider.tool_names
     assert {
         "get_recent_chat_history",
         "search_chat_history",
         "get_person_memories",
         "get_group_memories",
-    } <= provider.tool_names
+    }.isdisjoint(provider.tool_names)
 
 
 @pytest.mark.asyncio

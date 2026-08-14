@@ -25,6 +25,7 @@ from qq_ai_bot.domain.messages import ChatTool, InboundMessage
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureRegistry
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
+    MemoryAccessMode,
     MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
@@ -125,6 +126,7 @@ class ToolRuntime:
     memory_exposures: tuple[MemoryExposure, ...] = ()
     memory_exposure_registry: MemoryExposureRegistry | None = None
     memory_intent: MemoryQueryIntent | None = None
+    memory_access: MemoryAccessMode = MemoryAccessMode.AUTOMATIC
     planner_fallback: bool = False
 
 
@@ -429,8 +431,10 @@ class AgentToolService:
                         "时不得声称已经覆盖、删除或纠正成功。create 必须提供 target、"
                         "new_content、memory_key 和 category；correct 可通过 fact_id 继承目标、"
                         "memory_key 和 category；invalidate、restore、contest、merge 和"
-                        "update_metadata 可通过 fact_id 直接定位，不必重复 target；但 SELF 不支持"
-                        " reassign 或 update_metadata。reassign 仍必须提供新 target。"
+                        "update_metadata 可通过 fact_id 直接定位，不必重复 target。"
+                        "fact_id 缺失时，除 reassign 外可提供 target 和 selector，由后端在当前合法"
+                        "作用域内定位；只有唯一精确命中才执行，否则按候选或未找到结果处理。"
+                        "但 SELF 不支持 reassign 或 update_metadata。reassign 仍必须提供新 target。"
                         "reason 可省略。invalidate 成功表示事实保留审计记录但不再作为有效记忆；"
                         "只能称为已撤回、已失效或不再记住，不得声称数据库记录已物理删除。"
                     ),
@@ -451,6 +455,32 @@ class AgentToolService:
                             },
                             "fact_id": {"type": "integer", "minimum": 1},
                             "merge_fact_id": {"type": "integer", "minimum": 1},
+                            "selector": _object_schema(
+                                {
+                                    "memory_key": {"type": "string", "maxLength": 128},
+                                    "old_content": {"type": "string", "maxLength": 4000},
+                                    "category": {"type": "string", "maxLength": 64},
+                                }
+                            )
+                            | {
+                                "description": (
+                                    "没有 fact_id 时使用；至少提供 memory_key 或 old_content，"
+                                    "并同时提供合法 target。仅唯一精确命中时执行变更。"
+                                )
+                            },
+                            "merge_selector": _object_schema(
+                                {
+                                    "memory_key": {"type": "string", "maxLength": 128},
+                                    "old_content": {"type": "string", "maxLength": 4000},
+                                    "category": {"type": "string", "maxLength": 64},
+                                }
+                            )
+                            | {
+                                "description": (
+                                    "merge 没有 merge_fact_id 时使用；"
+                                    "至少提供 memory_key 或 old_content。"
+                                )
+                            },
                             "target": _object_schema(
                                 {
                                     "subject_ref": {
@@ -1676,16 +1706,37 @@ class AgentToolService:
             "new_fact_id": result.new_fact_id,
             "reason_code": result.reason_code,
             "deduplicated": result.deduplicated,
+            "candidates": [
+                {
+                    "fact_id": candidate.fact_id,
+                    "memory_ref": candidate.memory_ref,
+                    "key": candidate.memory_key,
+                    "category": candidate.category,
+                    "kind": candidate.kind.value,
+                    "content": candidate.content,
+                    "status": candidate.status.value,
+                }
+                for candidate in result.candidates
+            ],
         }
         if result.ok and result.applied_operation is MemoryMutationAppliedOperation.INVALIDATE:
             payload["persistence_semantics"] = "invalidated_not_deleted"
         if result.reason_code == "invalid_self_memory_category":
             payload["allowed_self_categories"] = list(SELF_MEMORY_CATEGORIES)
         if not result.ok:
+            retryable = result.reason_code in {
+                "memory_candidate_ambiguous",
+                "memory_candidate_not_found",
+            }
             return self._result(
                 data=payload,
                 error=result.reason_code or "memory_change_rejected",
-                detail="记忆变更未执行，请根据 reason_code 调整请求",
+                detail=(
+                    "记忆定位未唯一命中；请选择候选 fact_id，或按需请求记忆读取工具后重试"
+                    if retryable
+                    else "记忆变更未执行，请根据 reason_code 调整请求"
+                ),
+                retryable=retryable,
             )
         return self._result(data=payload)
 

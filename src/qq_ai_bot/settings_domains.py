@@ -206,6 +206,11 @@ class MemorySettings(DomainSettings):
     memory_lexical_candidate_limit: int = Field(gt=0)
     memory_context_limit_per_entity: int = Field(gt=0)
     memory_overview_limit_per_entity: int = Field(gt=0)
+    memory_automatic_recall_per_target_limit: int = Field(gt=0, le=20)
+    memory_automatic_recall_background_limit: int = Field(gt=0, le=20)
+    memory_automatic_recall_continuation_limit: int = Field(gt=0, le=20)
+    memory_automatic_recall_focused_limit: int = Field(gt=0, le=20)
+    memory_automatic_recall_overview_limit: int = Field(gt=0, le=20)
     memory_always_on_explicit_preference_limit: int = Field(ge=0)
     memory_query_term_limit: int = Field(gt=0)
     memory_short_query_fallback_enabled: bool

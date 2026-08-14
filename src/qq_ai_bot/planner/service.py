@@ -9,7 +9,7 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode
-from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.memory.enums import MemoryAccessMode, MemoryContextMode
 from qq_ai_bot.planner.models import (
     DeliveryMode,
     MemoryContextReasonCode,
@@ -302,6 +302,7 @@ class PlannerService:
             updates["tool_selection"] = ToolSelection(mode=ToolMode.NONE)
             updates["memory_context"] = plan.memory_context.model_copy(
                 update={
+                    "access": MemoryAccessMode.NONE,
                     "mode": MemoryContextMode.NONE,
                     "reason_code": MemoryContextReasonCode.EFFECT_ONLY,
                     "self_recall": False,

@@ -24,7 +24,12 @@ from qq_ai_bot.emoji.models import (
     EmojiReplyPlan,
 )
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
+from qq_ai_bot.memory.enums import (
+    MemoryAccessMode,
+    MemoryContextMode,
+    MemoryScopeType,
+    MemorySourceType,
+)
 from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
@@ -41,6 +46,7 @@ from qq_ai_bot.planner import (
 )
 from qq_ai_bot.planner.models import ToolSelection
 from qq_ai_bot.planner.service import PlannerService
+from qq_ai_bot.services.chat import _automatic_memory_mode, _initial_scopes_for_memory_access
 from qq_ai_bot.services.processor import MENTION_ONLY_CONTEXT, _vision_failure_message
 
 
@@ -64,6 +70,31 @@ def inbound(
         group_id=group_id,
         mentions_bot=mentions_bot,
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image"),) if unsupported else (),
+    )
+
+
+def test_memory_access_strictly_controls_first_round_scope_and_automatic_recall() -> None:
+    requested = frozenset({"memory", "memory.read", "web"})
+
+    assert _initial_scopes_for_memory_access(
+        MemoryAccessMode.AUTOMATIC,
+        requested,
+    ) == frozenset({"web"})
+    assert _initial_scopes_for_memory_access(
+        MemoryAccessMode.NONE,
+        requested,
+    ) == frozenset({"web"})
+    assert _initial_scopes_for_memory_access(
+        MemoryAccessMode.TOOL,
+        frozenset({"web"}),
+    ) == frozenset({"memory", "web"})
+    assert (
+        _automatic_memory_mode(MemoryAccessMode.AUTOMATIC, MemoryContextMode.HYBRID)
+        is MemoryContextMode.HYBRID
+    )
+    assert (
+        _automatic_memory_mode(MemoryAccessMode.TOOL, MemoryContextMode.NONE)
+        is MemoryContextMode.NONE
     )
 
 
@@ -141,7 +172,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：222 项" in admin_text
+    assert "可修改运行时配置参数：227 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "planner.max_pending_messages" in admin_text
     assert "relationship.set_affection" in admin_text

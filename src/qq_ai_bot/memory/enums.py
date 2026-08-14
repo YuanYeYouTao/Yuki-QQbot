@@ -239,6 +239,14 @@ class MemoryContextMode(StrEnum):
     OVERVIEW = "overview"
 
 
+class MemoryAccessMode(StrEnum):
+    """Planner-selected first-round access path for long-term memory."""
+
+    NONE = "none"
+    AUTOMATIC = "automatic"
+    TOOL = "tool"
+
+
 class MemoryRecallPurpose(StrEnum):
     """Planner-owned semantic reason for recalling long-term memory."""
 

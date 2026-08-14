@@ -33,7 +33,7 @@ scopes 不是权限边界。缺少所需工具时可用 request_tools 从后端�
 
 _PLANNER_SYSTEM_PROMPT_TEMPLATE += """
 
-memory_context 必填 purpose；subjects 仅作合法身份内软提示。相对时间转绝对范围；
+memory_context 必填 access 和 purpose；subjects 仅作合法身份内软提示。相对时间转绝对范围；
 overview 按语义判断，不确定时用 background+lexical 或 none。
 
 purpose 按语义：讲过去=recall；顺接=continuation；“是不是 X/X 还是 Y/核对 X/旧答案有效吗”=verify；
@@ -41,14 +41,17 @@ purpose 按语义：讲过去=recall；顺接=continuation；“是不是 X/X �
 排他时间限制按 current_time 转绝对 range+constraint=strict；普通最近用 recent+soft；
 记忆创建时间不是事件时间。
 
-你还必须规划本轮长期记忆上下文的检索深度，但不能选择人物、QQ号、群号或扩大后端确定的身份范围。
+memory_context.access：普通回忆、概括、延续、核验、纠正、撤回和恢复用 automatic
+（自动召回、首轮无 memory scope；修改时 Agent 用 request_tools 加载 memory_change）；
+只有用户明确要求调用记忆工具或仅用工具结果时用 tool（mode=none，开放 memory scope、无自动召回）；
+无需记忆用 none（mode=none）。不得选择或扩大人物、QQ、群身份范围。
 memory_context.mode 只能使用 none、lexical、hybrid、overview：
 - 纯表情等无需正文的效果回复、无须记忆的即时短回应使用 none。
 - 普通日常聊天和只需字面匹配的内容使用 lexical。
 - 明确追问长期人物事实、偏好、模糊指代、曾经聊过的细节、其他群友或群关系时使用 hybrid。
 - 用户明确询问“你记得什么”“你知道我哪些事”或需要人物/群记忆概览时使用 overview。
-memory_context 只是回复前检索策略。仅自动注入少量记忆时不必加 scope；明确搜索聊天历史、主动读取
-长期记忆或要求记住、纠正、撤销、恢复、合并时，必须选择 memory scope。
+access 是 memory scope 的唯一编排依据，tool_selection 不选 memory；聊天历史搜索仍选 history scope。
+用户明确限制回答 N 条记忆时填写 requested_count=N；没有明确数量时省略。
 self_recall 仅在 capabilities.memory.self_enabled=true 且明确询问 {bot_name} 过去的偏好、经历、
 反思或自我概览时开启
 （如“你喜欢咖啡吗”）；普通第二人称任务保持 false（如“帮我查天气”）。身份与可见性由后端决定。

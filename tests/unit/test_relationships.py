@@ -722,14 +722,13 @@ async def test_bonded_non_superuser_keeps_normal_tools_without_admin_tool(
     )
     assert provider.request is not None
     tool_names = {tool.name for tool in provider.request.tools}
+    assert {"web_search", "read_webpage", "request_tools"} <= tool_names
     assert {
         "get_recent_chat_history",
         "search_chat_history",
         "get_person_memories",
         "get_group_memories",
-        "web_search",
-        "read_webpage",
-    } <= tool_names
+    }.isdisjoint(tool_names)
     assert "call_onebot_api" not in tool_names
     relationship_prompt = next(
         message.content or ""

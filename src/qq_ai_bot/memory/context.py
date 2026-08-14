@@ -58,17 +58,30 @@ def fact_context(fact: MemoryFact, timezone: str = "Asia/Shanghai") -> dict[str,
 def retrieval_fact_context(
     hit: MemoryRetrievalHit,
     timezone: str = "Asia/Shanghai",
+    *,
+    include_budget_metadata: bool = False,
 ) -> dict[str, Any]:
-    return {
+    context = {
         **fact_context(hit.fact, timezone),
         "memory_ref": f"M{hit.fact.id}",
         "retrieval_reason": hit.selection_reason,
     }
+    if include_budget_metadata:
+        context.update(
+            {
+                "_retrieval_score": hit.rerank_score,
+                "_retrieval_pinned": hit.exact_match or hit.selection_reason.endswith("_exact"),
+                "_preference_reserve": (hit.selection_reason == "always_on_explicit_preference"),
+            }
+        )
+    return context
 
 
 def self_retrieval_fact_context(
     hit: MemoryRetrievalHit,
     timezone: str = "Asia/Shanghai",
+    *,
+    include_budget_metadata: bool = False,
 ) -> dict[str, Any]:
     """Expose useful self content without visibility identities or audit internals."""
 
@@ -81,6 +94,14 @@ def self_retrieval_fact_context(
         "confidence": hit.fact.confidence,
         "importance": hit.fact.importance,
     }
+    if include_budget_metadata:
+        context.update(
+            {
+                "_retrieval_score": hit.rerank_score,
+                "_retrieval_pinned": hit.exact_match or hit.selection_reason.endswith("_exact"),
+                "_preference_reserve": (hit.selection_reason == "always_on_explicit_preference"),
+            }
+        )
     if hit.fact.kind is MemoryKind.EPISODE and hit.fact.valid_from is not None:
         context["occurred_at"] = local_iso(hit.fact.valid_from, timezone)
     return context
@@ -197,6 +218,14 @@ class MemoryContextService:
                 self_recall=self_recall,
                 memory_intent=memory_intent,
             )
+            query = query.model_copy(
+                update={
+                    "limit_per_target": min(
+                        query.limit_per_target,
+                        runtime.memory.automatic_recall_per_target_limit,
+                    )
+                }
+            )
         if runtime.memory.retrieval_enabled:
             result = await self._retriever.retrieve(
                 query,
@@ -215,7 +244,11 @@ class MemoryContextService:
                     runtime=runtime,
                 )
                 result = self._merge_results(result, episode)
-            return result
+            return (
+                result
+                if neutral_ordering
+                else self._limit_automatic_result(result, query.intent, runtime)
+            )
         current_targets = tuple(
             target
             for target in query.targets
@@ -233,7 +266,85 @@ class MemoryContextService:
                 "limit_per_target": runtime.memory.context_limit_per_entity,
             }
         )
-        return await self._retriever.retrieve(fallback, lexical_enabled=False)
+        result = await self._retriever.retrieve(fallback, lexical_enabled=False)
+        return (
+            result
+            if neutral_ordering
+            else self._limit_automatic_result(result, query.intent, runtime)
+        )
+
+    @staticmethod
+    def _limit_automatic_result(
+        result: MemoryRetrievalResult,
+        intent: MemoryQueryIntent | None,
+        runtime: RuntimeConfigSnapshot,
+    ) -> MemoryRetrievalResult:
+        memory = runtime.memory
+        purpose = intent.purpose if intent is not None else MemoryRecallPurpose.BACKGROUND
+        if result.mode is MemoryRetrievalMode.OVERVIEW:
+            total_limit = memory.automatic_recall_overview_limit
+            if intent is not None and intent.requested_count is not None:
+                total_limit = min(total_limit, intent.requested_count + 2)
+        elif purpose is MemoryRecallPurpose.BACKGROUND:
+            total_limit = memory.automatic_recall_background_limit
+        elif purpose is MemoryRecallPurpose.CONTINUATION:
+            total_limit = memory.automatic_recall_continuation_limit
+        else:
+            total_limit = memory.automatic_recall_focused_limit
+
+        def ordering(hit: MemoryRetrievalHit) -> tuple[int, int, float, float, int, int]:
+            exact = hit.exact_match or hit.selection_reason.endswith("_exact")
+            preference = hit.selection_reason == "always_on_explicit_preference"
+            return (
+                0 if exact else 1,
+                0 if preference else 1,
+                -hit.rerank_score,
+                -hit.base_rank_score,
+                hit.rank,
+                hit.fact.id,
+            )
+
+        ordered = sorted(result.hits, key=ordering)
+        selected: list[MemoryRetrievalHit] = []
+        per_target: dict[str, int] = {}
+        selected_ids: set[int] = set()
+        for hit in ordered:
+            if len(selected) >= total_limit:
+                break
+            if hit.fact.id in selected_ids:
+                continue
+            target_key = hit.target.block_id
+            if per_target.get(target_key, 0) >= memory.automatic_recall_per_target_limit:
+                continue
+            selected.append(hit)
+            selected_ids.add(hit.fact.id)
+            per_target[target_key] = per_target.get(target_key, 0) + 1
+
+        by_target: dict[str, list[MemoryRetrievalHit]] = {}
+        for hit in selected:
+            by_target.setdefault(hit.target.block_id, []).append(hit)
+        blocks = tuple(
+            block.model_copy(
+                update={
+                    "hits": tuple(
+                        item.model_copy(update={"rank": rank})
+                        for rank, item in enumerate(
+                            by_target.get(block.target.block_id, ()),
+                            start=1,
+                        )
+                    )
+                }
+            )
+            for block in result.blocks
+        )
+        final_hits = tuple(hit for block in blocks for hit in block.hits)
+        return result.model_copy(
+            update={
+                "blocks": blocks,
+                "hits": final_hits,
+                "selected_count": len(final_hits),
+            }
+        )
 
     async def _retrieve_current_self_episode(
         self,

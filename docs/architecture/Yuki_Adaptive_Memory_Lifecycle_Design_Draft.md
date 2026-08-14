@@ -209,7 +209,8 @@ MemoryQueryIntent
 └─ reason_codes
 ```
 
-这里的字段均由 Planner 根据完整对话上下文和当前消息进行语义判断。
+这里的字段均由 Planner 根据当前消息、最近 10 条有界历史和可信回复/提及元数据进行语义判断，
+Planner 不读取完整历史。
 
 ## 3.3 Memory 系统只消费结构化意图，不负责重新猜意图
 

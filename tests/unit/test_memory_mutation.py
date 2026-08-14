@@ -53,6 +53,7 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationOperation,
     MemoryMutationOutcome,
     MemoryMutationRequest,
+    MemoryMutationSelector,
     MemoryMutationTarget,
     SelfMemoryVisibilityMode,
 )
@@ -323,6 +324,237 @@ def _context(event: EventRecord) -> MemoryMutationContext:
         decision_actor_id="yuki-main-agent",
         executed_by_bot_user_id=event.bot_user_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_mutation_selector_executes_only_unique_exact_target_match(
+    database: Database,
+) -> None:
+    service, facts, ledger, _processor = _service(database)
+    fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            kind=MemoryKind.PREFERENCE,
+            memory_key="preference:test_dessert",
+            category="preference",
+            content="第一批修复测试甜点是海盐布丁",
+            source_type=MemorySourceType.EXPLICIT,
+        )
+    )
+    event = await _event(
+        ledger,
+        message_id="selector-unique",
+        sender_user_id="1001",
+        content="撤回第一批修复测试甜点偏好",
+    )
+
+    result = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.INVALIDATE,
+            selector=MemoryMutationSelector(
+                memory_key="preference:test_dessert",
+                old_content="第一批修复测试甜点是海盐布丁",
+                category="preference",
+            ),
+            target=MemoryMutationTarget(
+                subject_ref="current_speaker",
+                scope_type=MemoryScopeType.PERSON,
+            ),
+            reason="user_requested_retraction",
+        ),
+        _context(event),
+    )
+
+    assert result.ok
+    assert result.old_fact_id == fact.id
+    assert not result.candidates
+    assert (await facts.get_fact(fact.id)).status is MemoryStatus.INVALIDATED  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_mutation_selector_returns_three_bounded_lexical_candidates_without_writing(
+    database: Database,
+) -> None:
+    service, facts, ledger, _processor = _service(database)
+    created = []
+    for index, content in enumerate(("偏好深烘咖啡", "常喝无糖咖啡", "咖啡豆买深烘"), start=1):
+        created.append(
+            await facts.remember(
+                MemoryFactCreate(
+                    scope_type=MemoryScopeType.PERSON,
+                    subject_user_id="1001",
+                    kind=MemoryKind.PREFERENCE,
+                    memory_key=f"preference:coffee:{index}",
+                    category="preference",
+                    content=content,
+                    source_type=MemorySourceType.EXPLICIT,
+                )
+            )
+        )
+    event = await _event(
+        ledger,
+        message_id="selector-ambiguous",
+        sender_user_id="1001",
+        content="撤回咖啡偏好",
+    )
+
+    result = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.INVALIDATE,
+            selector=MemoryMutationSelector(old_content="咖啡", category="preference"),
+            target=MemoryMutationTarget(
+                subject_ref="current_speaker",
+                scope_type=MemoryScopeType.PERSON,
+            ),
+        ),
+        _context(event),
+    )
+
+    assert not result.ok
+    assert result.reason_code == "memory_candidate_ambiguous"
+    assert len(result.candidates) == 3
+    assert {candidate.fact_id for candidate in result.candidates} == {fact.id for fact in created}
+    for fact in created:
+        current = await facts.get_fact(fact.id)
+        assert current is not None and current.status is MemoryStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_mutation_selector_cannot_cross_resolved_identity_target(database: Database) -> None:
+    service, facts, ledger, _processor = _service(database)
+    other = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="2002",
+            kind=MemoryKind.FACT,
+            memory_key="private:cat",
+            category="profile",
+            content="养了一只猫",
+            source_type=MemorySourceType.EXPLICIT,
+        )
+    )
+    event = await _event(
+        ledger,
+        message_id="selector-isolation",
+        sender_user_id="1001",
+        content="撤回养猫记录",
+    )
+
+    result = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.INVALIDATE,
+            selector=MemoryMutationSelector(memory_key="private:cat"),
+            target=MemoryMutationTarget(
+                subject_ref="current_speaker",
+                scope_type=MemoryScopeType.PERSON,
+            ),
+        ),
+        _context(event),
+    )
+
+    assert not result.ok
+    assert result.reason_code == "memory_candidate_not_found"
+    assert not result.candidates
+    assert (await facts.get_fact(other.id)).status is MemoryStatus.ACTIVE  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_restore_and_merge_support_target_local_selectors(database: Database) -> None:
+    service, facts, ledger, _processor = _service(database)
+    restored_fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            kind=MemoryKind.PREFERENCE,
+            memory_key="preference:restorable",
+            category="preference",
+            content="可恢复的测试偏好",
+            source_type=MemorySourceType.EXPLICIT,
+        )
+    )
+    retract_event = await _event(
+        ledger,
+        message_id="selector-restore-retract",
+        sender_user_id="1001",
+        content="先撤回可恢复的测试偏好",
+    )
+    retracted = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.INVALIDATE,
+            fact_id=restored_fact.id,
+        ),
+        _context(retract_event),
+    )
+    assert retracted.ok
+    restore_event = await _event(
+        ledger,
+        message_id="selector-restore",
+        sender_user_id="1001",
+        content="恢复可恢复的测试偏好",
+    )
+    restored = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.RESTORE,
+            selector=MemoryMutationSelector(memory_key="preference:restorable"),
+            target=MemoryMutationTarget(
+                subject_ref="current_speaker",
+                scope_type=MemoryScopeType.PERSON,
+            ),
+        ),
+        _context(restore_event),
+    )
+    assert restored.ok
+    current = await facts.get_fact(restored_fact.id)
+    assert current is not None and current.status is MemoryStatus.ACTIVE
+
+    source = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            kind=MemoryKind.FACT,
+            memory_key="profile:duplicate_source",
+            category="profile",
+            content="重复资料来源",
+            source_type=MemorySourceType.EXPLICIT,
+        )
+    )
+    target = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            kind=MemoryKind.FACT,
+            memory_key="profile:duplicate_target",
+            category="profile",
+            content="重复资料目标",
+            source_type=MemorySourceType.EXPLICIT,
+        )
+    )
+    merge_event = await _event(
+        ledger,
+        message_id="selector-merge",
+        sender_user_id="1001",
+        content="把重复资料来源合并到重复资料目标",
+    )
+    merged = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.MERGE,
+            selector=MemoryMutationSelector(memory_key="profile:duplicate_source"),
+            merge_selector=MemoryMutationSelector(memory_key="profile:duplicate_target"),
+            target=MemoryMutationTarget(
+                subject_ref="current_speaker",
+                scope_type=MemoryScopeType.PERSON,
+            ),
+        ),
+        _context(merge_event),
+    )
+    assert merged.ok
+    assert merged.old_fact_id == source.id
+    assert merged.new_fact_id == target.id
+    source_after = await facts.get_fact(source.id)
+    target_after = await facts.get_fact(target.id)
+    assert source_after is not None and source_after.status is MemoryStatus.SUPERSEDED
+    assert target_after is not None and target_after.status is MemoryStatus.ACTIVE
 
 
 @pytest.mark.asyncio

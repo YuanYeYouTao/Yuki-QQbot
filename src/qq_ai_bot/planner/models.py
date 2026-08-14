@@ -19,6 +19,7 @@ from qq_ai_bot.emoji.models import (
     EmojiReplyPlan,
 )
 from qq_ai_bot.memory.enums import (
+    MemoryAccessMode,
     MemoryContextMode,
     MemoryKind,
     MemoryRecallPurpose,
@@ -167,6 +168,7 @@ class MemoryContextReasonCode(StrEnum):
 class MemoryContextPlan(_StrictPlannerModel):
     """Semantic intent only; identity targets remain backend-owned."""
 
+    access: MemoryAccessMode = MemoryAccessMode.AUTOMATIC
     mode: MemoryContextMode = MemoryContextMode.LEXICAL
     purpose: MemoryRecallPurpose = MemoryRecallPurpose.BACKGROUND
     subjects: tuple[MemorySubjectRole, ...] = Field(default=(), max_length=4)
@@ -178,8 +180,18 @@ class MemoryContextPlan(_StrictPlannerModel):
         ),
     )
     preferred_kinds: tuple[MemoryKind, ...] = Field(default=(), max_length=3)
+    requested_count: int | None = Field(default=None, ge=1, le=20)
     reason_code: MemoryContextReasonCode = MemoryContextReasonCode.DEFAULT
     self_recall: bool = False
+
+    @model_validator(mode="after")
+    def _validate_access_mode(self) -> MemoryContextPlan:
+        if self.access is MemoryAccessMode.AUTOMATIC:
+            if self.mode is MemoryContextMode.NONE:
+                raise ValueError("automatic memory access requires a retrieval mode")
+        elif self.mode is not MemoryContextMode.NONE:
+            raise ValueError("none/tool memory access requires mode=none")
+        return self
 
     def to_query_intent(self) -> MemoryQueryIntent:
         subjects = self.subjects
@@ -192,6 +204,7 @@ class MemoryContextPlan(_StrictPlannerModel):
             entities=self.entities,
             temporal=self.temporal,
             preferred_kinds=self.preferred_kinds,
+            requested_count=self.requested_count,
         )
 
 
@@ -418,6 +431,12 @@ class PlannerToolOutput(_StrictPlannerModel):
 class PlannerMemoryOutput(_StrictPlannerModel):
     """Required retrieval depth plus optional low-cardinality explanation."""
 
+    access: MemoryAccessMode = Field(
+        description=(
+            "首轮长期记忆访问路径：普通回忆使用 automatic；明确要求调用记忆工具时使用 "
+            "tool；完全不需要记忆时使用 none。"
+        )
+    )
     mode: MemoryContextMode = Field(
         description=(
             "日常短对话使用 lexical；追问人物、偏好、旧事或模糊指代使用 hybrid；"
@@ -436,6 +455,12 @@ class PlannerMemoryOutput(_StrictPlannerModel):
         ),
     )
     preferred_kinds: tuple[MemoryKind, ...] = Field(default=(), max_length=3)
+    requested_count: int | None = Field(
+        default=None,
+        ge=1,
+        le=20,
+        description="用户明确限制要返回多少条记忆时填写。",
+    )
     self_recall: bool = Field(
         default=False,
         description="是否检索过去形成的动态 SELF 记忆。",
@@ -465,12 +490,14 @@ class PlannerMemoryOutput(_StrictPlannerModel):
                 MemoryContextMode.OVERVIEW: MemoryContextReasonCode.EXPLICIT_OVERVIEW,
             }[self.mode]
         return MemoryContextPlan(
+            access=self.access,
             mode=self.mode,
             purpose=self.purpose,
             subjects=self.subjects,
             entities=self.entities,
             temporal=self.temporal,
             preferred_kinds=self.preferred_kinds,
+            requested_count=self.requested_count,
             reason_code=reason_code,
             self_recall=self.self_recall,
         )

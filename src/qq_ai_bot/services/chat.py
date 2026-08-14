@@ -19,6 +19,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities import (
     AuthorityContext,
     CapabilityDescriptor,
+    CapabilityEffect,
     CapabilityExposure,
     CapabilityPolicyContext,
     CapabilityPolicyEngine,
@@ -77,7 +78,7 @@ from qq_ai_bot.memory.attribution import (
     MemoryExposureRegistry,
 )
 from qq_ai_bot.memory.context import MemoryContextService
-from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.memory.enums import MemoryAccessMode, MemoryContextMode
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.models import MemoryQueryIntent
 from qq_ai_bot.memory.query import MemoryQueryBuilder
@@ -162,6 +163,29 @@ _SET_REPLY_TARGET_TOOL = ChatTool(
         "additionalProperties": False,
     },
 )
+
+
+def _initial_scopes_for_memory_access(
+    access: MemoryAccessMode,
+    scopes: frozenset[str],
+) -> frozenset[str]:
+    """Make Planner memory access the sole first-round Memory Scope decision."""
+
+    if access is MemoryAccessMode.TOOL:
+        return frozenset((*scopes, ToolGroup.MEMORY.value))
+    return frozenset(
+        scope
+        for scope in scopes
+        if scope != ToolGroup.MEMORY.value and not scope.startswith(f"{ToolGroup.MEMORY.value}.")
+    )
+
+
+def _automatic_memory_mode(
+    access: MemoryAccessMode,
+    mode: MemoryContextMode,
+) -> MemoryContextMode:
+    return mode if access is MemoryAccessMode.AUTOMATIC else MemoryContextMode.NONE
+
 
 _BUILTIN_SCOPE_DESCRIPTIONS = {
     "memory": (
@@ -376,6 +400,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._tool_turn_recorded = False
         self._request_tools_called = False
         self._first_real_tool_recorded = False
+        self._memory_locator_failed = False
         self._native_web_fallback = runtime.native_web_fallback
 
     def enable_native_web_fallback(self) -> None:
@@ -775,6 +800,15 @@ class _ChatAgentBackend(AgentToolBackend):
             self._first_real_tool_recorded = True
         effective_descriptor = self._effective_descriptor(call, descriptor)
         is_web_tool = ToolGroup.WEB.value in effective_descriptor.scope_ids
+        is_memory_read_tool = (
+            ToolGroup.MEMORY.value in effective_descriptor.scope_ids
+            and effective_descriptor.effect is CapabilityEffect.READ_STATE
+        )
+        if is_memory_read_tool and self._runtime.memory_access is MemoryAccessMode.AUTOMATIC:
+            self._service._tool_metrics.record_automatic_memory_read_tool_call(
+                locator_fallback=self._memory_locator_failed
+            )
+            self._memory_locator_failed = False
         config = self._runtime.runtime_config
         assert config is not None
         mutation_identity = self._mutation_identity(call)
@@ -961,6 +995,13 @@ class _ChatAgentBackend(AgentToolBackend):
                 # the successful result available so the model can summarize it.
                 self._admin_retry_constraint = None
                 self._admin_terminal_failure = None
+            elif (decoded.get("error") or decoded.get("error_code")) in {
+                "memory_candidate_ambiguous",
+                "memory_candidate_not_found",
+            }:
+                self._admin_terminal_failure = None
+                self._admin_retry_constraint = None
+                self._memory_locator_failed = True
             elif bool(decoded.get("retryable")):
                 self._admin_terminal_failure = None
                 self._admin_retry_constraint = self._retry_identity(call)
@@ -1169,6 +1210,8 @@ class _ChatAgentBackend(AgentToolBackend):
     def _request_tools(self, arguments_json: str) -> str:
         self._request_tools_called = True
         self._service._tool_metrics.record_request_tools()
+        if self._runtime.memory_access is MemoryAccessMode.AUTOMATIC:
+            self._service._tool_metrics.record_automatic_memory_request_tools()
         try:
             arguments = json.loads(arguments_json)
         except json.JSONDecodeError:
@@ -1222,6 +1265,12 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
         loaded_names = {match.entry.descriptor.model_name for match in matches}
+        if self._runtime.memory_access is MemoryAccessMode.AUTOMATIC and any(
+            ToolGroup.MEMORY.value in match.entry.descriptor.scope_ids
+            and match.entry.descriptor.effect is CapabilityEffect.READ_STATE
+            for match in matches
+        ):
+            self._service._tool_metrics.record_automatic_memory_read_tools_loaded()
         logger.info(
             "agent_request_tools_result conversation_hash=%s loaded_count=%d",
             identifier_hash(self._runtime.conversation_key) or "missing",
@@ -1834,10 +1883,21 @@ class ChatService:
             planner_scopes_explicit = bool(
                 planned_turn is not None and planned_turn.plan.tool_selection_explicit
             )
+            memory_access = (
+                planned_turn.plan.memory_context.access
+                if planned_turn is not None
+                else MemoryAccessMode.AUTOMATIC
+            )
+            if self._memory_context is not None:
+                self._memory_context.metrics.record_access(memory_access)
             planner_tool_groups = (
                 frozenset(planned_turn.plan.tool_selection.scope_ids)
                 if planned_turn is not None
                 else frozenset(group.value for group in ToolGroup)
+            )
+            planner_tool_groups = _initial_scopes_for_memory_access(
+                memory_access,
+                planner_tool_groups,
             )
             tool_groups = planner_tool_groups
             if scheduled_automation_allowed and (planned_turn is None or planner_scopes_explicit):
@@ -1888,6 +1948,11 @@ class ChatService:
                 tool_mode=(
                     ToolMode.INHERIT
                     if scheduled_automation_allowed
+                    or (
+                        memory_access is MemoryAccessMode.TOOL
+                        and planned_turn is not None
+                        and planned_turn.plan.tool_mode is ToolMode.NONE
+                    )
                     else (
                         planned_turn.plan.tool_mode
                         if planned_turn is not None
@@ -1915,6 +1980,7 @@ class ChatService:
                 memory_turn_id=memory_turn_id,
                 memory_exposures=automatic_memory_exposures,
                 memory_intent=memory_intent,
+                memory_access=memory_access,
                 planner_fallback=fallback_plan,
             )
             if planner_emoji_only:
@@ -2449,7 +2515,10 @@ class ChatService:
             runtime=runtime,
             planner_intent="",
             memory_mode=(
-                planned_turn.plan.memory_context.mode
+                _automatic_memory_mode(
+                    planned_turn.plan.memory_context.access,
+                    planned_turn.plan.memory_context.mode,
+                )
                 if planned_turn is not None
                 else MemoryContextMode.LEXICAL
             ),

@@ -22,6 +22,7 @@ from qq_ai_bot.memory.enums import (
     MemoryJobStatus,
     MemoryProcessingSource,
     MemoryRebuildJobOutcome,
+    MemoryReviewState,
     MemoryScopeType,
     MemoryStateAction,
     MemoryStatus,
@@ -341,6 +342,97 @@ class MemoryFactRepository:
                     MemoryFactModel.id.asc(),
                 )
                 .limit(max(1, limit))
+            )
+        ).all()
+        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+
+    async def list_mutation_locator_candidates(
+        self,
+        target: MemoryFactQuery,
+        *,
+        memory_key: str | None,
+        normalized_content: str | None,
+        category: str | None,
+        statuses: tuple[MemoryStatus, ...],
+        limit: int = 4,
+        session: AsyncSession | None = None,
+    ) -> tuple[MemoryFact, ...]:
+        """Return exact-first lexical candidates inside one exact mutation target."""
+
+        if not statuses or (memory_key is None and normalized_content is None):
+            return ()
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.list_mutation_locator_candidates(
+                    target,
+                    memory_key=memory_key,
+                    normalized_content=normalized_content,
+                    category=category,
+                    statuses=statuses,
+                    limit=limit,
+                    session=owned,
+                )
+        exact_parts: list[Any] = []
+        lexical_parts: list[Any] = []
+        if memory_key is not None:
+            exact_parts.append(MemoryFactModel.memory_key == memory_key)
+            lexical_parts.append(MemoryFactModel.memory_key.contains(memory_key, autoescape=True))
+        if normalized_content is not None:
+            exact_parts.append(MemoryFactModel.normalized_content == normalized_content)
+            lexical_parts.append(
+                MemoryFactModel.normalized_content.contains(
+                    normalized_content,
+                    autoescape=True,
+                )
+            )
+        if category is not None:
+            exact_parts.append(MemoryFactModel.category == category)
+        exact_match = and_(*exact_parts)
+        conditions: list[Any] = [
+            MemoryFactModel.scope_type == target.scope_type.value,
+            (
+                MemoryFactModel.subject_user_id.is_(None)
+                if target.subject_user_id is None
+                else MemoryFactModel.subject_user_id == target.subject_user_id
+            ),
+            (
+                MemoryFactModel.group_id.is_(None)
+                if target.group_id is None
+                else MemoryFactModel.group_id == target.group_id
+            ),
+            *self._exact_visibility_conditions(target),
+            MemoryFactModel.status.in_(tuple(status.value for status in statuses)),
+            MemoryFactModel.review_state != MemoryReviewState.QUARANTINED.value,
+            or_(
+                MemoryFactModel.valid_until.is_(None),
+                MemoryFactModel.valid_until > datetime.now(UTC),
+            ),
+            or_(*lexical_parts),
+        ]
+        if category is not None:
+            conditions.append(MemoryFactModel.category == category)
+        rows = (
+            await session.execute(
+                select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+                .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
+                .where(*conditions)
+                .group_by(MemoryFactModel.id)
+                .order_by(
+                    exact_match.desc(),
+                    (
+                        MemoryFactModel.memory_key == memory_key
+                        if memory_key is not None
+                        else exact_match
+                    ).desc(),
+                    (
+                        MemoryFactModel.normalized_content == normalized_content
+                        if normalized_content is not None
+                        else exact_match
+                    ).desc(),
+                    MemoryFactModel.updated_at.desc(),
+                    MemoryFactModel.id.asc(),
+                )
+                .limit(max(1, min(limit, 4)))
             )
         ).all()
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
