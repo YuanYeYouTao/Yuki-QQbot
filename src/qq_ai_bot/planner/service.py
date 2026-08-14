@@ -140,7 +140,10 @@ class PlannerService:
         elif not planner_input.necessity.should_enter_planner:
             plan = self._silent_gate_plan()
         elif not enabled_for_turn:
-            plan = deterministic_fallback_plan(planner_input)
+            plan = deterministic_fallback_plan(
+                planner_input,
+                reason_code=PlannerReasonCode.PLANNER_FALLBACK,
+            )
             fallback_used = True
         else:
             plan = await self._provider.plan(planner_input, runtime=runtime)

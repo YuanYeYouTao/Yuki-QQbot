@@ -88,12 +88,20 @@ def test_memory_access_strictly_controls_first_round_scope_and_automatic_recall(
         MemoryAccessMode.TOOL,
         frozenset({"web"}),
     ) == frozenset({"memory", "web"})
+    assert _initial_scopes_for_memory_access(
+        MemoryAccessMode.MUTATION,
+        frozenset({"admin", "web"}),
+    ) == frozenset({"admin", "memory", "web"})
     assert (
         _automatic_memory_mode(MemoryAccessMode.AUTOMATIC, MemoryContextMode.HYBRID)
         is MemoryContextMode.HYBRID
     )
     assert (
         _automatic_memory_mode(MemoryAccessMode.TOOL, MemoryContextMode.NONE)
+        is MemoryContextMode.NONE
+    )
+    assert (
+        _automatic_memory_mode(MemoryAccessMode.MUTATION, MemoryContextMode.NONE)
         is MemoryContextMode.NONE
     )
 
@@ -448,6 +456,65 @@ async def test_planner_none_keeps_generic_tool_request_gateway(
     tool_names = {tool.name for tool in provider.requests[-1].tools}
     assert "request_tools" in tool_names
     assert "memory_change" not in tool_names
+
+
+@pytest.mark.asyncio
+async def test_planner_fallback_fails_closed_before_agent_or_tools(
+    database: Database,
+) -> None:
+    provider = FakeLLMProvider(lambda _request: "不应运行主 Agent")
+    harness = build_harness(database, make_settings(database.url), provider)
+    plan = TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="fallback",
+        delivery_mode=DeliveryMode.SINGLE,
+        tool_selection=ToolSelection(mode=ToolMode.INHERIT, scopes=()),
+        confidence=0,
+        reason_code=PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
+    )
+    harness.processor._planner = PlannerService(
+        provider=FakePlannerProvider(plan),
+        observability=PlannerObservability(),
+    )
+    sender = MemorySender()
+
+    await harness.processor.handle(
+        inbound("请记住一个测试配置", message_id="planner-fail-closed"),
+        sender,
+    )
+
+    assert provider.requests == []
+    assert len(sender.messages) == 1
+    assert "未执行任何工具或持久化操作" in sender.messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_intentionally_disabled_planner_keeps_legacy_safe_fallback(
+    database: Database,
+) -> None:
+    provider = FakeLLMProvider(lambda _request: "普通安全降级回复")
+    harness = build_harness(database, make_settings(database.url), provider)
+    plan = TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="fallback",
+        delivery_mode=DeliveryMode.SINGLE,
+        tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
+        confidence=0,
+        reason_code=PlannerReasonCode.PLANNER_FALLBACK,
+    )
+    harness.processor._planner = PlannerService(
+        provider=FakePlannerProvider(plan),
+        observability=PlannerObservability(),
+    )
+    sender = MemorySender()
+
+    await harness.processor.handle(
+        inbound("普通问题", message_id="planner-disabled-fallback"),
+        sender,
+    )
+
+    assert len(provider.requests) == 1
+    assert sender.messages[0].text == "普通安全降级回复"
 
 
 @pytest.mark.asyncio

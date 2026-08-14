@@ -96,6 +96,7 @@ from qq_ai_bot.persistence.repositories import (
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner.models import (
     PlannedTurn,
+    PlannerReasonCode,
     ToolGroup,
     ToolMode,
     ToolScopeSummary,
@@ -149,6 +150,14 @@ _INHERITED_CANDIDATE_POOL_LIMIT = 24
 _ARTIFACT_PROVIDER_ID = "artifacts"
 _ARTIFACT_READER_NAME = "read_tool_artifact"
 _SET_REPLY_TARGET_NAME = "set_reply_target"
+_PLANNER_FAIL_CLOSED_MESSAGE = "本轮规划服务暂时不可用，未执行任何工具或持久化操作，请稍后重试。"
+_PLANNER_FAIL_CLOSED_REASONS = frozenset(
+    {
+        PlannerReasonCode.PLANNER_TIMEOUT_FALLBACK,
+        PlannerReasonCode.PLANNER_INVALID_RESPONSE_FALLBACK,
+        PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
+    }
+)
 _SET_REPLY_TARGET_TOOL = ChatTool(
     name=_SET_REPLY_TARGET_NAME,
     description=(
@@ -171,7 +180,7 @@ def _initial_scopes_for_memory_access(
 ) -> frozenset[str]:
     """Make Planner memory access the sole first-round Memory Scope decision."""
 
-    if access is MemoryAccessMode.TOOL:
+    if access in {MemoryAccessMode.TOOL, MemoryAccessMode.MUTATION}:
         return frozenset((*scopes, ToolGroup.MEMORY.value))
     return frozenset(
         scope
@@ -401,6 +410,8 @@ class _ChatAgentBackend(AgentToolBackend):
         self._request_tools_called = False
         self._first_real_tool_recorded = False
         self._memory_locator_failed = False
+        self._memory_mutation_attempted = False
+        self._last_memory_mutation_result: dict[str, object] | None = None
         self._native_web_fallback = runtime.native_web_fallback
 
     def enable_native_web_fallback(self) -> None:
@@ -494,6 +505,31 @@ class _ChatAgentBackend(AgentToolBackend):
                 if entry.descriptor.model_name in visible_names
             ),
         )
+        if self._runtime.memory_access in {
+            MemoryAccessMode.TOOL,
+            MemoryAccessMode.MUTATION,
+        }:
+            allowed_memory_effects = (
+                {CapabilityEffect.WRITE_STATE}
+                if self._runtime.memory_access is MemoryAccessMode.MUTATION
+                else {CapabilityEffect.READ_STATE, CapabilityEffect.EXTERNAL_READ}
+            )
+            filtered_catalog = replace(
+                filtered_catalog,
+                entries=tuple(
+                    entry
+                    for entry in filtered_catalog.entries
+                    if (
+                        ToolGroup.MEMORY.value in entry.descriptor.scope_ids
+                        and entry.descriptor.effect in allowed_memory_effects
+                    )
+                    or entry.descriptor.model_name in self._requested_tool_names
+                    or (
+                        self._runtime.memory_access is MemoryAccessMode.TOOL
+                        and entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+                    )
+                ),
+            )
         if self._runtime.scheduled_automation_intent:
             # A deterministic automation hint grants visibility, not an
             # obligation to create a task.  Keep automation_create present
@@ -630,6 +666,10 @@ class _ChatAgentBackend(AgentToolBackend):
         may_request_more = bool(
             self._runtime.origin is TurnOrigin.USER_MESSAGE
             and self._requestable_catalog is not None
+            and (
+                self._runtime.memory_access is not MemoryAccessMode.MUTATION
+                or self._memory_locator_failed
+            )
             and any(
                 entry.descriptor.model_name not in exposed_names
                 for entry in self._requestable_catalog.entries
@@ -759,6 +799,18 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
         if name == REQUEST_TOOLS_NAME:
+            if (
+                self._runtime.memory_access is MemoryAccessMode.MUTATION
+                and not self._memory_locator_failed
+            ):
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": "capability_not_loaded",
+                        "detail": "记忆写入定位尚未失败，本轮不能提前加载其他能力。",
+                    },
+                    ensure_ascii=False,
+                )
             return self._request_tools(arguments_json)
         if name not in self._callable_tool_names:
             requestable = (
@@ -803,6 +855,10 @@ class _ChatAgentBackend(AgentToolBackend):
         is_memory_read_tool = (
             ToolGroup.MEMORY.value in effective_descriptor.scope_ids
             and effective_descriptor.effect is CapabilityEffect.READ_STATE
+        )
+        is_memory_write_tool = (
+            ToolGroup.MEMORY.value in effective_descriptor.scope_ids
+            and effective_descriptor.effect is CapabilityEffect.WRITE_STATE
         )
         if is_memory_read_tool and self._runtime.memory_access is MemoryAccessMode.AUTOMATIC:
             self._service._tool_metrics.record_automatic_memory_read_tool_call(
@@ -900,7 +956,11 @@ class _ChatAgentBackend(AgentToolBackend):
                 should_finalize_after_commit = bool(
                     mutation_committed
                     and (
-                        outcome.finalize_after_commit is True
+                        (
+                            is_memory_write_tool
+                            and self._runtime.memory_access is MemoryAccessMode.MUTATION
+                        )
+                        or outcome.finalize_after_commit is True
                         or effective_descriptor.finalize_after_commit
                     )
                 )
@@ -971,6 +1031,14 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._web_calls_used += 1
                 self._web_was_used = True
         decoded = self._service._decode_tool_result(result)
+        if is_memory_write_tool and self._runtime.memory_access is MemoryAccessMode.MUTATION:
+            if not self._memory_mutation_attempted:
+                self._service._record_memory_mutation_turn_outcome("attempted")
+            self._memory_mutation_attempted = True
+            self._last_memory_mutation_result = decoded
+            self._service._record_memory_mutation_turn_outcome(
+                self._memory_mutation_outcome(decoded)
+            )
         if (
             descriptor.provider_id == "automation"
             and descriptor.provider_tool_name == "automation_create"
@@ -990,6 +1058,8 @@ class _ChatAgentBackend(AgentToolBackend):
                     self._completed_admin_mutations.add(mutation_identity)
                     self._remember_committed_mutation(decoded)
                     self._mutation_committed = True
+                    if self._runtime.memory_access is MemoryAccessMode.MUTATION:
+                        self._tools_closed = True
             elif (decoded.get("error") or decoded.get("error_code")) == "duplicate_mutation":
                 # A prior identical call already committed in this turn. Keep
                 # the successful result available so the model can summarize it.
@@ -1018,6 +1088,8 @@ class _ChatAgentBackend(AgentToolBackend):
         return result
 
     def finalize(self, content: str, runtime: AgentRuntime) -> str:
+        if self._runtime.memory_access is MemoryAccessMode.MUTATION:
+            return self._memory_mutation_final_text()
         if self._admin_terminal_failure is not None:
             return self._service._admin_failure_text(self._admin_terminal_failure)
         if self._capability_was_used and contains_internal_capability_payload(content):
@@ -1049,6 +1121,11 @@ class _ChatAgentBackend(AgentToolBackend):
     def post_commit_recovery_text(self) -> str | None:
         """Return a deterministic reply when model finalization fails after a commit."""
 
+        if (
+            self._runtime.memory_access is MemoryAccessMode.MUTATION
+            and self._memory_mutation_attempted
+        ):
+            return self._memory_mutation_final_text()
         if not self._committed_mutation_messages:
             return None
         return "\n".join(self._committed_mutation_messages)
@@ -1067,9 +1144,93 @@ class _ChatAgentBackend(AgentToolBackend):
             self._committed_mutation_messages.append(message)
 
     def exhausted(self, runtime: AgentRuntime) -> str:
+        if self._runtime.memory_access is MemoryAccessMode.MUTATION:
+            return self._memory_mutation_final_text()
         if self._admin_terminal_failure is not None:
             return self._service._admin_failure_text(self._admin_terminal_failure)
         return "这次操作的工具调用次数过多，已停止继续执行。请把请求拆小后再试。"
+
+    @staticmethod
+    def _memory_mutation_outcome(result: dict[str, object]) -> str:
+        data = result.get("data")
+        payload = data if isinstance(data, dict) else {}
+        applied = str(payload.get("applied_operation") or "")
+        outcome = str(payload.get("outcome") or "")
+        error = str(result.get("error") or result.get("error_code") or "")
+        if applied == "noop" or outcome in {"no_change", "deduplicated"}:
+            return "noop"
+        if error == "memory_candidate_ambiguous":
+            return "ambiguous"
+        if error == "memory_candidate_not_found":
+            return "not_found"
+        if result.get("mutation_committed") is True:
+            return "committed"
+        return "rejected"
+
+    def _memory_mutation_final_text(self) -> str:
+        result = self._last_memory_mutation_result
+        if not self._memory_mutation_attempted or result is None:
+            self._service._record_memory_mutation_turn_outcome("not_attempted")
+            return "记忆变更未执行，本轮没有取得任何有效的记忆写入回执。"
+        data = result.get("data")
+        payload = data if isinstance(data, dict) else {}
+        applied = str(payload.get("applied_operation") or "")
+        outcome = str(payload.get("outcome") or "")
+        reason = str(payload.get("reason_code") or "")
+        error = str(result.get("error") or result.get("error_code") or "")
+        candidates = payload.get("candidates")
+        if error == "memory_candidate_ambiguous":
+            lines = ["记忆变更尚未执行：当前条件不能唯一定位目标。"]
+            if isinstance(candidates, list):
+                for candidate in candidates[:3]:
+                    if not isinstance(candidate, dict):
+                        continue
+                    fact_id = candidate.get("fact_id")
+                    memory_ref = candidate.get("memory_ref") or (
+                        f"M{fact_id}" if isinstance(fact_id, int) else "未知引用"
+                    )
+                    summary = "｜".join(
+                        str(value)
+                        for value in (
+                            memory_ref,
+                            candidate.get("key"),
+                            candidate.get("category"),
+                            candidate.get("content"),
+                            candidate.get("status"),
+                        )
+                        if value not in (None, "")
+                    )
+                    if summary:
+                        lines.append(f"- {summary}")
+            lines.append("请明确选择其中一条后再试。")
+            return "\n".join(lines)
+        if error == "memory_candidate_not_found":
+            return "记忆变更未执行：在当前合法作用域内没有找到可唯一定位的目标。"
+        if not bool(result.get("ok")):
+            public = str(result.get("public_message") or "").strip()
+            detail = public or "记忆变更未执行"
+            return f"{detail}（reason_code={error or reason or 'unknown'}）"
+        if applied == "noop" or outcome == "no_change":
+            return "记忆状态没有发生变化，本轮没有完成新的覆盖、撤回或恢复。"
+        if outcome == "committed_as_contested" or applied == "contest":
+            return "该记忆存在冲突，已标记为有争议；没有按原请求直接覆盖或删除。"
+        if applied == "merge_evidence" or outcome == "deduplicated":
+            return "这条信息已经存在，本轮只合并了证据，没有创建重复记忆。"
+        if applied == "create":
+            return "已将这条信息写入长期记忆。"
+        if applied == "correct":
+            return "记忆已按你的要求纠正，旧版本不再作为当前有效答案。"
+        if applied == "invalidate":
+            return "这条记忆已撤回并失效；审计记录仍保留，但不会再作为有效记忆使用。"
+        if applied == "restore":
+            return "这条记忆已恢复为有效状态。"
+        if applied == "merge":
+            return "相关记忆已经合并，重复版本不再分别作为有效记忆使用。"
+        if applied == "reassign":
+            return "记忆归属已经按真实回执更新。"
+        if applied == "update_metadata":
+            return "记忆元数据已经按真实回执更新。"
+        return f"记忆变更已完成（outcome={outcome or 'committed'}）。"
 
     def _is_mutating_call(self, call: ToolCall) -> bool:
         entry = (
@@ -1759,6 +1920,10 @@ class ChatService:
 
         self._prompt_composer.configure_plugin_limits(runtime)
 
+    def _record_memory_mutation_turn_outcome(self, outcome: str) -> None:
+        if self._memory_context is not None:
+            self._memory_context.metrics.record_mutation_turn_outcome(outcome)
+
     def set_event_publisher(self, publisher: LifecycleEventPublisher) -> None:
         """Attach the host notification bus without changing reply control flow."""
 
@@ -1804,6 +1969,21 @@ class ChatService:
                 and planned_turn.plan.emoji.is_exclusive
                 and planned_turn.plan.tool_mode is ToolMode.NONE
             )
+            fallback_plan = planned_turn is not None and planned_turn.fallback_used
+            if (
+                planned_turn is not None
+                and planned_turn.plan.reason_code in _PLANNER_FAIL_CLOSED_REASONS
+                and not planner_emoji_only
+            ):
+                self._record_memory_mutation_turn_outcome("planner_fail_closed")
+                logger.warning(
+                    "planner_fallback_fail_closed conversation_hash=%s reason=%s",
+                    identifier_hash(identity.key) or "missing",
+                    planned_turn.plan.reason_code.value,
+                )
+                result = await sender.send(OutboundMessage(text=_PLANNER_FAIL_CLOSED_MESSAGE))
+                await self._record_outbound(inbound, _PLANNER_FAIL_CLOSED_MESSAGE, result)
+                return 1
             if planner_emoji_only:
                 messages: tuple[ChatMessage, ...] = ()
                 visible_event_ids: frozenset[int] = frozenset()
@@ -1840,7 +2020,6 @@ class ChatService:
                 )
                 and is_scheduled_automation_request(content)
             )
-            fallback_plan = planned_turn is not None and planned_turn.fallback_used
             scheduled_automation_allowed = scheduled_automation_intent and not fallback_plan
             if scheduled_automation_allowed:
                 messages = (
@@ -1949,7 +2128,7 @@ class ChatService:
                     ToolMode.INHERIT
                     if scheduled_automation_allowed
                     or (
-                        memory_access is MemoryAccessMode.TOOL
+                        memory_access in {MemoryAccessMode.TOOL, MemoryAccessMode.MUTATION}
                         and planned_turn is not None
                         and planned_turn.plan.tool_mode is ToolMode.NONE
                     )

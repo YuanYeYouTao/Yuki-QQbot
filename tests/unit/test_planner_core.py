@@ -11,6 +11,7 @@ from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic import TypeAdapter, ValidationError
 
 from qq_ai_bot.admin.models import (
     AgentRuntimeConfig,
@@ -34,7 +35,7 @@ from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode, 
 from qq_ai_bot.emoji.request_detector import EmojiRequestDetector
 from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.memory.enums import MemoryContextMode, MemorySubjectRole
 from qq_ai_bot.model_runtime.structured import _compact_json_schema
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner import (
@@ -59,6 +60,7 @@ from qq_ai_bot.planner import (
 )
 from qq_ai_bot.planner.context import PlannerContextBuilder
 from qq_ai_bot.planner.models import (
+    PlannerAutomaticMemoryOutput,
     PlannerEmojiContext,
     PlannerMemoryOutput,
     PlannerModelOutput,
@@ -223,13 +225,14 @@ def _runtime() -> RuntimeConfigSnapshot:
 
 
 def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
-    output = PlannerMemoryOutput(
+    output = PlannerAutomaticMemoryOutput(
         access="automatic",
         mode=MemoryContextMode.HYBRID,
         purpose="background",
     )
     assert output.materialize().self_recall is False
-    opened = PlannerMemoryOutput.model_validate(
+    memory_output_adapter = TypeAdapter(PlannerMemoryOutput)
+    opened = memory_output_adapter.validate_python(
         {
             "access": "automatic",
             "mode": MemoryContextMode.HYBRID,
@@ -246,7 +249,7 @@ def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
     assert "即使句子中出现“记得”也不要误判成 recall" in PLANNER_SYSTEM_PROMPT
     assert "constraint=strict" in PLANNER_SYSTEM_PROMPT
 
-    strict = PlannerMemoryOutput.model_validate(
+    strict = memory_output_adapter.validate_python(
         {
             "access": "automatic",
             "mode": "hybrid",
@@ -262,9 +265,26 @@ def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
     assert strict.temporal.constraint.value == "strict"
     assert strict.temporal.start_at == datetime(2026, 7, 31, 16, tzinfo=UTC)
 
+    self_context = MemoryContextPlan(
+        access="automatic",
+        mode="hybrid",
+        purpose="recall",
+        subjects=(MemorySubjectRole.CURRENT_SELF,),
+        self_recall=True,
+    )
+    assert self_context.to_query_intent().subjects == (MemorySubjectRole.CURRENT_SELF,)
+    with pytest.raises(ValueError, match="current_self requires self_recall=true"):
+        MemoryContextPlan(
+            access="automatic",
+            mode="hybrid",
+            purpose="recall",
+            subjects=(MemorySubjectRole.CURRENT_SELF,),
+        )
+
 
 def test_planner_memory_access_contract_and_requested_count_are_strict() -> None:
-    automatic = PlannerMemoryOutput.model_validate(
+    memory_output_adapter = TypeAdapter(PlannerMemoryOutput)
+    automatic = memory_output_adapter.validate_python(
         {
             "access": "automatic",
             "mode": "overview",
@@ -272,21 +292,42 @@ def test_planner_memory_access_contract_and_requested_count_are_strict() -> None
             "requested_count": 2,
         }
     ).materialize()
-    tool = PlannerMemoryOutput.model_validate(
+    tool = memory_output_adapter.validate_python(
         {"access": "tool", "mode": "none", "purpose": "recall"}
+    ).materialize()
+    mutation = memory_output_adapter.validate_python(
+        {"access": "mutation", "mode": "none", "purpose": "correct"}
     ).materialize()
 
     assert automatic.requested_count == 2
     assert automatic.to_query_intent().requested_count == 2
     assert tool.mode is MemoryContextMode.NONE
-    with pytest.raises(ValueError, match="automatic memory access requires a retrieval mode"):
-        PlannerMemoryOutput.model_validate(
+    assert mutation.mode is MemoryContextMode.NONE
+    with pytest.raises(ValidationError):
+        memory_output_adapter.validate_python(
             {"access": "automatic", "mode": "none", "purpose": "recall"}
-        ).materialize()
-    with pytest.raises(ValueError, match="none/tool memory access requires mode=none"):
-        PlannerMemoryOutput.model_validate(
+        )
+    with pytest.raises(ValidationError):
+        memory_output_adapter.validate_python(
             {"access": "tool", "mode": "lexical", "purpose": "recall"}
-        ).materialize()
+        )
+    with pytest.raises(ValidationError):
+        memory_output_adapter.validate_python(
+            {
+                "access": "automatic",
+                "mode": "hybrid",
+                "purpose": "recall",
+                "subjects": ["current_self"],
+                "self_recall": True,
+            }
+        )
+
+
+def test_planner_memory_access_schema_is_discriminated() -> None:
+    schema = TypeAdapter(PlannerMemoryOutput).json_schema()
+
+    assert schema["discriminator"]["propertyName"] == "access"
+    assert len(schema["oneOf"]) == 4
 
 
 @pytest.mark.asyncio
@@ -307,6 +348,25 @@ async def test_invalid_memory_access_mode_combination_uses_whole_plan_fallback()
     assert plan.confidence == 0
     assert plan.memory_context.access.value == "automatic"
     assert plan.memory_context.mode is MemoryContextMode.LEXICAL
+
+
+@pytest.mark.asyncio
+async def test_intentionally_disabled_planner_uses_non_error_fallback_reason() -> None:
+    provider = FakePlannerProvider()
+    service = PlannerService(
+        provider=provider,
+        observability=PlannerObservability(),
+    )
+    runtime = replace(
+        _runtime(),
+        planner=replace(_runtime().planner, direct_enabled=False),
+    )
+
+    outcome = await service.plan(_planner_input(), runtime=runtime, turn_version=1)
+
+    assert provider.inputs == []
+    assert outcome.planned_turn.fallback_used is True
+    assert outcome.planned_turn.plan.reason_code is PlannerReasonCode.PLANNER_FALLBACK
 
 
 def test_planner_prompt_requires_explicit_scope_and_query_rewrite_for_tool_tasks() -> None:
@@ -1366,6 +1426,27 @@ async def test_llm_planner_materializes_sparse_output_with_backend_defaults() ->
     assert plan.memory_context.mode is MemoryContextMode.LEXICAL
     assert plan.emoji.mode is EmojiReplyMode.NONE
     assert plan.voice.mode is VoiceMode.TEXT
+
+
+@pytest.mark.asyncio
+async def test_llm_planner_materializes_mutation_access_without_memory_scope() -> None:
+    payload = _valid_plan_payload(
+        tool_selection={"mode": "none", "scopes": []},
+    )
+    payload["memory_context"] = {
+        "access": "mutation",
+        "mode": "none",
+        "purpose": "correct",
+    }
+    llm = FakeLLMProvider(lambda _request: json.dumps(payload))
+    provider = LLMPlannerProvider(llm, model="planner-model")
+
+    plan = await provider.plan(_planner_input(), runtime=_runtime())
+
+    assert plan.memory_context.access.value == "mutation"
+    assert plan.memory_context.mode is MemoryContextMode.NONE
+    assert plan.tool_mode is ToolMode.NONE
+    assert plan.tool_selection.scope_ids == ()
 
 
 def test_sparse_planner_schema_requires_all_non_inferable_decisions() -> None:

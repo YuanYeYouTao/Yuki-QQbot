@@ -1242,7 +1242,33 @@ MemoryAttributionOutput
 
 ---
 
-# 22. 一句话目标
+# 22. 写入路径与读取路径的职责分离
+
+`MemoryAccessMode` 使用四条互斥路径：
+
+```text
+none       不访问长期记忆
+automatic  后端自动召回；首轮不暴露 Memory Scope
+tool       不自动召回；显式开放记忆读取路径
+mutation   不自动召回；首轮只开放获授权的 memory/write_state 能力
+```
+
+创建、纠正、撤回和恢复不是“先召回一些内容再猜是否需要修改”的读取问题，而是独立的终端写入
+操作。Planner 只负责选择 `mutation + mode=none`，后端再按真实 origin、权限、风险和 capability
+metadata 选择写能力；不得按工具名、正则或用户措辞建立另一套路由规则。locator 无法唯一命中时，
+Agent 可以通过 `request_tools` 显式加载读取工具缩小目标，但任何降级都不能扩大身份和可见性范围。
+
+修改轮次的最终陈述属于后端完成门。模型可以决定要提交的变更，却不能决定变更是否真的成功；
+正文必须由最后一次真实工具回执中的 `applied_operation / outcome / reason_code / candidates` 生成。
+尤其是 `invalidate` 只表示状态失效并保留审计记录，不能描述为物理删除。
+
+Planner 输出对 `access` 使用结构化联合类型，使非法的 access/mode 组合在模型边界直接失败。除可信
+纯表情效果外，Planner 超时、供应商错误或最终输出无效时整轮失败关闭，不启动 Agent、召回或工具，
+从而消除“Planner 降级后 Agent 无工具却口头声称写入成功”的假完成路径。
+
+---
+
+# 23. 一句话目标
 
 > **将 Yuki 的自动记忆从“自动形成和整理记忆”升级为完整的自适应记忆生命周期：由 Planner 基于当前消息、有界历史与可信消息元数据承担全部 Recall Intent 的语义理解，Memory 系统不使用 Regex、关键词或固定规则猜测意图；后端继续独占身份与可见性解析；长期记忆随时间自然淡化，根据人物角色、实体、时间和当前语境被重新唤起，严格区分检索、选择、注入、真正使用和强化，仅对真正参与且已成功发送的 Memory 进行再强化，并继续由现有 Evidence、Lifecycle、Conflict 与 Dream 负责真实性治理和长期巩固。**
 

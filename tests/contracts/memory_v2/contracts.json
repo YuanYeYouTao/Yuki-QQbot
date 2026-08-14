@@ -117,7 +117,7 @@
   },
   "versions": {
     "embedding_profile_schema": 1,
-    "memory_context_schema": 4,
+    "memory_context_schema": 5,
     "memory_evidence_schema": 4,
     "memory_fact_schema": 3,
     "memory_query_schema": 5,

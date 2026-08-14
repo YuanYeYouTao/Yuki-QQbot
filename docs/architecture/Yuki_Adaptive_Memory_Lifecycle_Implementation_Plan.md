@@ -55,9 +55,10 @@
 ## 自动召回与 Memory Scope 互斥（2026-08-15）
 
 - `MemoryContextPlan.access` 是首轮记忆访问的唯一编排依据：`none` 不读取也不开放工具，
-  `automatic` 自动召回且移除首轮 Memory Scope，`tool` 跳过自动召回并开放 Memory Scope。
-- `request_tools` 仍可从当前真实权限目录加载记忆工具，作为修改请求和窄定位失败后的显式降级；
-  它不改变首轮互斥语义。
+  `automatic` 自动召回且移除首轮 Memory Scope，`tool` 跳过自动召回并开放只读 Memory Scope，
+  `mutation` 跳过自动召回并首轮只开放记忆写能力。
+- `request_tools` 在 mutation 的 locator 返回歧义或未找到后才开放，仍从当前真实权限目录加载工具；
+  它不改变首轮互斥语义，也不扩大身份和可见性范围。
 - 自动召回每目标最多 4 条；整轮 `background/continuation/focused/overview` 默认分别最多
   3/4/6/8 条。overview 有 `requested_count` 时采用 `min(requested_count + 2, 8)`。
 - 全局限额在目标内 Intent/Activation rerank 与 MMR 后执行；精确命中和显式偏好保留位优先，
@@ -65,3 +66,21 @@
 - `memory_change` 没有 fact ID 时可使用 `selector`；后端只在已解析的精确 target、允许状态且
   非 quarantined 的事实中执行无 Embedding 定位。只有唯一精确命中才写入，否则返回至多 3 条
   词法候选或 `memory_candidate_not_found`。`merge` 同样支持 `merge_selector`。
+
+## 记忆写入独立路径（2026-08-15）
+
+- `MemoryContextPlan.access` 扩展为 `none / automatic / tool / mutation`。Memory Context
+  合同版本升至 5，Memory Query 与 Plugin Memory Facade 版本不变。
+- Planner 的模型输出使用以 `access` 为 discriminator 的联合类型：只有 `automatic` 可以选择
+  `lexical / hybrid / overview`；其余三条路径只能使用 `mode=none`。模型侧 `subjects` 不接受
+  `current_self`，SELF 访问只由 `self_recall=true` 表达。
+- 创建、纠正、撤回和恢复统一走 `mutation + mode=none`：不自动召回，首轮只开放通过当前
+  origin、权限和风险策略的 `scope=memory + effect=write_state` 能力。当前目录自然选择
+  `memory_change`，不依赖工具名或用户措辞硬编码；管理员和通用记忆读取工具不会首轮出现。
+- locator 返回歧义或未找到后，`request_tools` 仍可按真实权限加载读取能力，再重试写入；该降级
+  不扩大身份、群、SELF 可见性或允许状态范围。
+- 修改轮次是终端操作。最终正文由后端依据最后一次真实写工具回执渲染，模型正文不能覆盖：未调用、
+  歧义、未找到、noop 和 contest 都必须明确未完成原请求；`invalidate` 只能称为撤回或失效，
+  不得称为物理删除。
+- Planner 超时、供应商错误或输出验证失败时，除可信的纯表情效果外完全失败关闭：不构建 Agent
+  上下文、不召回、不执行工具，并明确告知本轮未发生持久化或外部操作。

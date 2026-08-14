@@ -29,7 +29,7 @@ from qq_ai_bot.memory.attribution import (
     MemoryExposureRegistry,
     MemoryExposureSource,
 )
-from qq_ai_bot.memory.enums import MemoryContextMode, MemoryRecallPurpose
+from qq_ai_bot.memory.enums import MemoryAccessMode, MemoryContextMode, MemoryRecallPurpose
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryQueryIntent
 from qq_ai_bot.model_runtime.models import (
@@ -119,6 +119,20 @@ class AttributionQueue:
     def enqueue(self, job: MemoryAttributionJob) -> bool:
         self.jobs.append(job)
         return True
+
+
+def test_adaptive_metrics_include_mutation_access_and_terminal_outcomes() -> None:
+    metrics = MemoryLifecycleMetrics()
+
+    metrics.record_access(MemoryAccessMode.MUTATION)
+    metrics.record_mutation_turn_outcome("attempted")
+    metrics.record_mutation_turn_outcome("not_found")
+
+    snapshot = metrics.adaptive_snapshot()
+    assert snapshot["memory_access_mutation"] == 1
+    assert snapshot["memory_mutation_turn_attempted_count"] == 1
+    assert snapshot["memory_mutation_turn_not_found_count"] == 1
+    assert snapshot["memory_mutation_turn_committed_count"] == 0
 
 
 def _exposure(fact_id: int, *, source: MemoryExposureSource) -> MemoryExposure:

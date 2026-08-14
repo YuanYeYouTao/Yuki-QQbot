@@ -19,6 +19,11 @@
   第三方来源始终记录为 `third_party`，高权威冲突可以实际落为 `contest`，不会冒充本人。
 - 读取本轮提及群友时只开放当前群 `person_group`，不再投影对方跨群 `person` 事实。
 - 普通变更是版本化/状态化操作，不做物理删除；`forgetme` 仍沿用独立隐私删除路径。
+- 普通对话中的创建、纠正、撤回和恢复由 Planner 统一路由到 `mutation + mode=none`。该路径跳过
+  自动召回，首轮依据 capability metadata 只开放已授权的 `memory/write_state` 能力；不依赖
+  `memory_change` 工具名或自然语言关键词硬编码。
+- 修改轮次的最终正文由聊天后端根据真实工具回执渲染。未调用、歧义、未找到、noop 或 contest
+  不得声称原请求已完成；`invalidate` 必须表述为撤回/失效且保留审计，不得表述为物理删除。
 
 ## 1. 摘要
 

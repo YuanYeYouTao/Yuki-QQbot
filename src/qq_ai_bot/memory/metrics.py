@@ -58,6 +58,16 @@ ADAPTIVE_REINFORCEMENT_SKIP_REASONS = (
     "fact_ineligible",
 )
 ADAPTIVE_ACTIVATION_BUCKETS = ("0_025", "025_050", "050_075", "075_100")
+MEMORY_MUTATION_TURN_OUTCOMES = (
+    "attempted",
+    "committed",
+    "noop",
+    "ambiguous",
+    "not_found",
+    "rejected",
+    "not_attempted",
+    "planner_fail_closed",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +169,7 @@ class MemoryLifecycleMetrics:
 
     def __init__(self) -> None:
         self._counts: Counter[str] = Counter()
+        self._attribution_queue_depth = 0
         self.classifier_recent_errors = 0
         self.maintenance_last_success_at: datetime | None = None
 
@@ -216,6 +227,7 @@ class MemoryLifecycleMetrics:
             "memory_mutation_locator_unique_count",
             "memory_mutation_locator_ambiguous_count",
             "memory_mutation_locator_not_found_count",
+            *(f"memory_mutation_turn_{outcome}_count" for outcome in MEMORY_MUTATION_TURN_OUTCOMES),
         ]
         snapshot = {name: int(self._counts[name]) for name in names}
         snapshot["memory_attribution_queue_depth"] = self._attribution_queue_depth
@@ -227,6 +239,11 @@ class MemoryLifecycleMetrics:
 
     def record_access(self, access: MemoryAccessMode) -> None:
         self.increment(f"memory_access_{access.value}")
+
+    def record_mutation_turn_outcome(self, outcome: str) -> None:
+        if outcome not in MEMORY_MUTATION_TURN_OUTCOMES:
+            raise ValueError(f"unsupported memory mutation turn outcome: {outcome}")
+        self.increment(f"memory_mutation_turn_{outcome}_count")
 
     def record_recall_stage(self, stage: str, count: int) -> None:
         if stage not in ADAPTIVE_MEMORY_STAGES:

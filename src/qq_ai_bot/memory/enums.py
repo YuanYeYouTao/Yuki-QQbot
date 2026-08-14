@@ -245,6 +245,7 @@ class MemoryAccessMode(StrEnum):
     NONE = "none"
     AUTOMATIC = "automatic"
     TOOL = "tool"
+    MUTATION = "mutation"
 
 
 class MemoryRecallPurpose(StrEnum):
