@@ -288,7 +288,7 @@ async def test_core_memory_tool_uses_scoped_query_retriever(database: Database) 
     assert [item["fact_id"] for item in result["data"]["memories"]] == [wanted.id]
     assert result["data"]["memories"][0]["retrieval_reason"] == "lexical_match"
     used = await memories.repository.get_fact(wanted.id)
-    assert used is not None and used.last_used_at is not None
+    assert used is not None and used.last_injected_at is not None
 
 
 class HistoryGateway:

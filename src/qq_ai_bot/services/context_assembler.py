@@ -26,6 +26,7 @@ from qq_ai_bot.memory.context import (
     self_retrieval_fact_context,
 )
 from qq_ai_bot.memory.enums import MemoryContextMode, MemoryTargetRole
+from qq_ai_bot.memory.models import MemoryQueryIntent
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     EventRecord,
@@ -65,6 +66,9 @@ class AssembledContext:
     metrics: ContextMetrics
     visible_event_ids: frozenset[int] = frozenset()
     external_events: tuple[dict[str, object], ...] = ()
+    memory_turn_id: str = ""
+    injected_memory_ids: tuple[int, ...] = ()
+    memory_intent: MemoryQueryIntent | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +124,8 @@ class ContextAssembler:
         planner_intent: str = "",
         memory_mode: MemoryContextMode = MemoryContextMode.LEXICAL,
         self_recall: bool = False,
+        memory_intent: MemoryQueryIntent | None = None,
+        turn_origin: str = "user_message",
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
 
@@ -140,6 +146,7 @@ class ContextAssembler:
             runtime=runtime,
             memory_mode=memory_mode,
             self_recall=self_recall,
+            memory_intent=memory_intent,
         )
         hits_by_role = {
             block.target.role: block.hits
@@ -256,7 +263,16 @@ class ContextAssembler:
             int(total_budget * self._settings.context_metadata_budget_ratio),
         )
         metadata_payload, selected_fact_ids = self._fit_metadata(context, metadata_budget)
-        await self._memory_context.mark_used(retrieval, selected_fact_ids)
+        await self._memory_context.mark_injected(retrieval, selected_fact_ids)
+        recall_turn = await self._memory_context.record_recall(
+            conversation_key=identity.key,
+            trigger_message_id=inbound.message_id,
+            origin=turn_origin,
+            intent=memory_intent,
+            result=retrieval,
+            injected_fact_ids=selected_fact_ids,
+            runtime=runtime,
+        )
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -308,6 +324,9 @@ class ContextAssembler:
             metrics=metrics,
             visible_event_ids=bounded_messages.visible_event_ids,
             external_events=external_events,
+            memory_turn_id=recall_turn.turn_id if recall_turn is not None else "",
+            injected_memory_ids=selected_fact_ids,
+            memory_intent=memory_intent,
         )
 
     async def assemble_external(
@@ -349,6 +368,7 @@ class ContextAssembler:
             runtime=runtime,
             memory_mode=MemoryContextMode.LEXICAL,
             self_recall=True,
+            neutral_ordering=True,
         )
         hits_by_role = {
             block.target.role: block.hits
@@ -392,7 +412,7 @@ class ContextAssembler:
                 ),
             ),
         )
-        await self._memory_context.mark_used(retrieval, selected_fact_ids)
+        await self._memory_context.mark_injected(retrieval, selected_fact_ids)
         metadata_characters = len(
             json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         )

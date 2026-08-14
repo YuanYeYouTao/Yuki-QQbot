@@ -1,16 +1,16 @@
 # Memory V2 Quality Report
 
 - Suite: `memory-v2-quality-v1` / `full`
-- Commit: `b7160d70ff3a0941081e5e1863edbc52024e7e0d`
-- Dataset: `c3c6e108d22c4671f8d13a0fa76b6e4087ae092741887b754e18449280dce11d`
+- Commit: `23945cdd6989b60594617356049b0bcb117d4594`
+- Dataset: `84b7aa3cc6c099548e63b84e4cd6e2b3763d2bdf98f1b33724192493cf776ca3`
 - Cases: 18/18 passed
 - Failed IDs: none
-- Duration: 3.062s
+- Duration: 4.078s
 
 | Metric | Value | Numerator/denominator |
 |---|---:|---:|
 | `average_consolidation_requests_per_claim` | 0.0 | 0/12 |
-| `average_context_characters` | 212.0 | 212/1 |
+| `average_context_characters` | 226.0 | 226/1 |
 | `average_extraction_requests_per_event` | 0.8571428571428571 | 12/14 |
 | `average_query_embedding_requests_per_query` | 0.05263157894736842 | 1/19 |
 | `blank_evidence_rate` | 0.0 | 0/1 |
@@ -20,7 +20,7 @@
 | `conflict_coactivation_rate` | 0.0 | 0/1 |
 | `conflict_resolution_accuracy` | 1.0 | 1/1 |
 | `contested_context_leak_rate` | 0.0 | 0/1 |
-| `context_latency_p50_ms` | 0.023900065571069717 | 0.0239001/1 |
+| `context_latency_p50_ms` | 0.039499951526522636 | 0.0395/1 |
 | `context_latency_p95_ms` | null | 0/0 |
 | `context_precision` | 1.0 | 14/14 |
 | `context_recall` | 1.0 | 14/14 |
@@ -31,7 +31,7 @@
 | `duplicate_evidence_rate` | 0.0 | 0/12 |
 | `empty_query_fact_leak_rate` | 0.0 | 0/1 |
 | `evidence_provenance_accuracy` | 1.0 | 12/12 |
-| `extraction_latency_p50_ms` | 15.29310003388673 | 15.2931/1 |
+| `extraction_latency_p50_ms` | 15.947199892252684 | 15.9472/1 |
 | `extraction_latency_p95_ms` | null | 0/0 |
 | `fact_accuracy` | 1.0 | 23/23 |
 | `fact_state_accuracy` | 1.0 | 23/23 |
@@ -43,7 +43,7 @@
 | `outbound_evidence_rate` | 0.0 | 0/1 |
 | `pipeline_error_rate` | 0.0 | 0/18 |
 | `precision_at_k` | 1.0 | 14/14 |
-| `quality_suite_total_ms` | 599.3008997756988 | 599.301/1 |
+| `quality_suite_total_ms` | 812.8038002178073 | 812.804/1 |
 | `rebuild_duplicate_commit_rate` | 0.0 | 0/1 |
 | `rebuild_historical_overwrite_rate` | 0.0 | 0/1 |
 | `rebuild_receipt_accuracy` | 1.0 | 1/1 |
@@ -51,7 +51,7 @@
 | `rebuild_review_bypass_rate` | 0.0 | 0/1 |
 | `recall_at_k` | 1.0 | 14/14 |
 | `retraction_resolution_accuracy` | null | 0/0 |
-| `retrieval_latency_p50_ms` | 4.985799896530807 | 4.9858/1 |
+| `retrieval_latency_p50_ms` | 7.288700086064637 | 7.2887/1 |
 | `retrieval_latency_p95_ms` | null | 0/0 |
 | `scope_attribution_accuracy` | 1.0 | 12/12 |
 | `source_event_mismatch_rate` | 0.0 | 0/12 |

@@ -41,6 +41,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     MembershipModel,
+    MemoryActivationStateModel,
     MemoryEvidenceModel,
     MemoryFactModel,
     MemoryFactRelationModel,
@@ -55,6 +56,16 @@ from qq_ai_bot.persistence.repository_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _initial_activation(fact: MemoryFactCreate) -> float:
+    if fact.source_type.value == "explicit" or fact.authority is MemoryAuthority.EXPLICIT:
+        return 0.95
+    if fact.kind.value == "preference":
+        return 0.80
+    if fact.kind.value == "episode":
+        return 0.75 if fact.importance >= 4 else 0.65
+    return 0.70
 
 
 class MemoryFactRepository:
@@ -408,7 +419,7 @@ class MemoryFactRepository:
             ).all()
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
-    async def mark_used(self, fact_ids: tuple[int, ...]) -> int:
+    async def mark_injected(self, fact_ids: tuple[int, ...]) -> int:
         unique_ids = tuple(dict.fromkeys(fact_ids))
         if not unique_ids:
             return 0
@@ -420,7 +431,7 @@ class MemoryFactRepository:
                     MemoryFactModel.status == MemoryStatus.ACTIVE.value,
                     MemoryFactModel.review_state != "quarantined",
                 )
-                .values(last_used_at=datetime.now(UTC))
+                .values(last_injected_at=datetime.now(UTC))
             )
         return int(cast(CursorResult[Any], result).rowcount or 0)
 
@@ -501,12 +512,23 @@ class MemoryFactRepository:
             invalidated_reason=(
                 fact.invalidated_reason.value if fact.invalidated_reason is not None else None
             ),
-            last_used_at=None,
+            last_injected_at=None,
             validation_version=fact.validation_version,
             last_audited_at=fact.last_audited_at,
             review_state=fact.review_state.value,
         )
         session.add(row)
+        await session.flush()
+        session.add(
+            MemoryActivationStateModel(
+                fact_id=row.id,
+                activation=_initial_activation(fact),
+                activation_updated_at=now,
+                last_recalled_at=None,
+                recall_count=0,
+                revision=0,
+            )
+        )
         await session.flush()
         return row
 
@@ -1020,7 +1042,7 @@ class MemoryFactRepository:
             updated_at=row.updated_at,
             last_confirmed_at=row.last_confirmed_at,
             invalidated_reason=row.invalidated_reason,
-            last_used_at=row.last_used_at,
+            last_injected_at=row.last_injected_at,
             evidence_count=evidence_count,
             validation_version=row.validation_version,
             last_audited_at=row.last_audited_at,

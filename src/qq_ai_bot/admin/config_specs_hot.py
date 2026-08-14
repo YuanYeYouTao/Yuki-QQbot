@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from qq_ai_bot.admin.config_spec_helpers import (
+    _G,
     _GGU,
     _field,
     _max_auto_delta,
@@ -176,6 +177,152 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
             getter=_field("memory_hybrid_rrf_k"),
             settings_fields=("memory_hybrid_rrf_k",),
             category="memory",
+        ),
+        *tuple(
+            _spec(
+                f"memory.{key.removeprefix('memory_')}",
+                title,
+                description,
+                value_type="boolean",
+                scopes=_G,
+                env_alias=key.upper(),
+                getter=_field(key),
+                settings_fields=(key,),
+                category="memory",
+            )
+            for key, title, description in (
+                (
+                    "memory_intent_rerank_enabled",
+                    "记忆意图重排",
+                    "是否应用 Planner 的结构化记忆意图进行软重排。",
+                ),
+                (
+                    "memory_activation_ranking_enabled",
+                    "记忆 Activation 排序",
+                    "是否将按需计算的 Activation 用作软排序特征。",
+                ),
+                (
+                    "memory_usage_reporting_enabled",
+                    "记忆使用归因",
+                    "是否向符合条件的主对话 Agent 暴露本地记忆使用报告工具。",
+                ),
+                (
+                    "memory_reinforcement_enabled",
+                    "记忆强化",
+                    "是否在归因正文成功发送后强化实际使用的记忆。",
+                ),
+                (
+                    "memory_recall_receipts_enabled",
+                    "记忆召回回执",
+                    "是否保存不含正文的有界召回阶段与分数追踪。",
+                ),
+            )
+        ),
+        *tuple(
+            _spec(
+                f"memory.{key.removeprefix('memory_')}",
+                title,
+                description,
+                value_type="number",
+                minimum=0.01,
+                maximum=3650,
+                scopes=_G,
+                env_alias=key.upper(),
+                getter=_field(key),
+                settings_fields=(key,),
+                category="memory",
+            )
+            for key, title, description in (
+                (
+                    "memory_activation_half_life_episode_days",
+                    "Episode Activation 半衰期",
+                    "Episode 记忆的默认 Activation 半衰期天数。",
+                ),
+                (
+                    "memory_activation_half_life_fact_days",
+                    "Fact Activation 半衰期",
+                    "Fact 记忆的默认 Activation 半衰期天数。",
+                ),
+                (
+                    "memory_activation_half_life_preference_days",
+                    "Preference Activation 半衰期",
+                    "Preference 记忆的默认 Activation 半衰期天数。",
+                ),
+                (
+                    "memory_activation_half_life_explicit_days",
+                    "Explicit Activation 半衰期",
+                    "显式来源或权威记忆的默认 Activation 半衰期天数。",
+                ),
+            )
+        ),
+        *tuple(
+            _spec(
+                f"memory.{key.removeprefix('memory_')}",
+                title,
+                description,
+                value_type="number",
+                minimum=0,
+                maximum=1,
+                scopes=_G,
+                env_alias=key.upper(),
+                getter=_field(key),
+                settings_fields=(key,),
+                category="memory",
+            )
+            for key, title, description in (
+                (
+                    "memory_reinforcement_alpha_background",
+                    "Background 强化系数",
+                    "背景记忆在确认使用并发送后的强化系数。",
+                ),
+                (
+                    "memory_reinforcement_alpha_continuation",
+                    "Continuation 强化系数",
+                    "延续对话记忆在确认使用并发送后的强化系数。",
+                ),
+                (
+                    "memory_reinforcement_alpha_recall",
+                    "Recall 强化系数",
+                    "主动回忆记忆在确认使用并发送后的强化系数。",
+                ),
+                (
+                    "memory_reinforcement_alpha_verify",
+                    "Verify 强化系数",
+                    "核验记忆在确认使用并发送后的强化系数。",
+                ),
+            )
+        ),
+        *tuple(
+            _spec(
+                f"memory.{key.removeprefix('memory_')}",
+                title,
+                description,
+                value_type="integer",
+                minimum=1,
+                maximum=3650 if "days" in key else 100,
+                scopes=_G,
+                env_alias=key.upper(),
+                getter=_field(key),
+                settings_fields=(key,),
+                category="memory",
+            )
+            for key, title, description in (
+                (
+                    "memory_intent_recent_window_days",
+                    "近期记忆窗口",
+                    "Recent 时间意图由满分线性衰减到零的天数。",
+                ),
+                (
+                    "memory_recall_receipt_retention_days",
+                    "召回回执保留天数",
+                    "不含内容的召回回执保留天数。",
+                ),
+                (
+                    "memory_recall_trace_candidate_limit",
+                    "召回候选追踪上限",
+                    "每个目标最多持久化的重排候选数。",
+                ),
+            )
         ),
         _spec(
             "memory.consolidation_enabled",

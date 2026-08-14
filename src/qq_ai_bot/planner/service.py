@@ -248,7 +248,16 @@ class PlannerService:
             )
         memory_context = plan.memory_context
         if not planner_input.memory.self_enabled:
-            memory_context = memory_context.model_copy(update={"self_recall": False})
+            memory_context = memory_context.model_copy(
+                update={
+                    "self_recall": False,
+                    "subjects": tuple(
+                        subject
+                        for subject in memory_context.subjects
+                        if subject.value != "current_self"
+                    ),
+                }
+            )
         if memory_context.mode is MemoryContextMode.HYBRID and not runtime.memory.semantic_enabled:
             memory_context = memory_context.model_copy(update={"mode": MemoryContextMode.LEXICAL})
         updates["memory_context"] = memory_context
@@ -296,6 +305,7 @@ class PlannerService:
                     "mode": MemoryContextMode.NONE,
                     "reason_code": MemoryContextReasonCode.EFFECT_ONLY,
                     "self_recall": False,
+                    "subjects": (),
                 }
             )
         updates["emoji"] = emoji_plan

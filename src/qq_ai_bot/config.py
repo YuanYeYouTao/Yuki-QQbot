@@ -189,6 +189,22 @@ class Settings(BaseSettings):
     memory_hybrid_lexical_weight: float = 1.0
     memory_hybrid_semantic_weight: float = 1.0
     memory_hybrid_rrf_k: int = 60
+    memory_intent_rerank_enabled: bool = True
+    memory_activation_ranking_enabled: bool = True
+    memory_usage_reporting_enabled: bool = True
+    memory_reinforcement_enabled: bool = True
+    memory_recall_receipts_enabled: bool = True
+    memory_activation_half_life_episode_days: float = Field(default=14.0, gt=0)
+    memory_activation_half_life_fact_days: float = Field(default=60.0, gt=0)
+    memory_activation_half_life_preference_days: float = Field(default=120.0, gt=0)
+    memory_activation_half_life_explicit_days: float = Field(default=365.0, gt=0)
+    memory_reinforcement_alpha_background: float = Field(default=0.05, ge=0, le=1)
+    memory_reinforcement_alpha_continuation: float = Field(default=0.12, ge=0, le=1)
+    memory_reinforcement_alpha_recall: float = Field(default=0.25, ge=0, le=1)
+    memory_reinforcement_alpha_verify: float = Field(default=0.08, ge=0, le=1)
+    memory_intent_recent_window_days: int = Field(default=90, gt=0)
+    memory_recall_receipt_retention_days: int = Field(default=30, gt=0)
+    memory_recall_trace_candidate_limit: int = Field(default=20, gt=0, le=100)
     memory_consolidation_enabled: bool = True
     memory_consolidation_candidate_limit: int = 12
     memory_consolidation_min_relevance: float = 0.25

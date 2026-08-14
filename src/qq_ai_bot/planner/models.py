@@ -18,7 +18,13 @@ from qq_ai_bot.emoji.models import (
     EmojiReplyMode,
     EmojiReplyPlan,
 )
-from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.memory.enums import (
+    MemoryContextMode,
+    MemoryKind,
+    MemoryRecallPurpose,
+    MemorySubjectRole,
+)
+from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryTemporalIntent
 from qq_ai_bot.speech.models import (
     SpeechLanguageHint,
     VoiceAgentToolPolicy,
@@ -162,8 +168,31 @@ class MemoryContextPlan(_StrictPlannerModel):
     """Semantic intent only; identity targets remain backend-owned."""
 
     mode: MemoryContextMode = MemoryContextMode.LEXICAL
+    purpose: MemoryRecallPurpose = MemoryRecallPurpose.BACKGROUND
+    subjects: tuple[MemorySubjectRole, ...] = Field(default=(), max_length=4)
+    entities: tuple[str, ...] = Field(default=(), max_length=5)
+    temporal: MemoryTemporalIntent = Field(
+        default_factory=MemoryTemporalIntent,
+        description=(
+            "可信时间意图；明确要求范围外不要使用时输出绝对 range 并设置 constraint=strict。"
+        ),
+    )
+    preferred_kinds: tuple[MemoryKind, ...] = Field(default=(), max_length=3)
     reason_code: MemoryContextReasonCode = MemoryContextReasonCode.DEFAULT
     self_recall: bool = False
+
+    def to_query_intent(self) -> MemoryQueryIntent:
+        subjects = self.subjects
+        if self.self_recall and MemorySubjectRole.CURRENT_SELF not in subjects:
+            subjects = (*subjects, MemorySubjectRole.CURRENT_SELF)
+        return MemoryQueryIntent(
+            mode=self.mode,
+            purpose=self.purpose,
+            subjects=subjects,
+            entities=self.entities,
+            temporal=self.temporal,
+            preferred_kinds=self.preferred_kinds,
+        )
 
 
 class PlannerMemoryContext(_StrictPlannerModel):
@@ -395,6 +424,18 @@ class PlannerMemoryOutput(_StrictPlannerModel):
             "询问完整记忆概览使用 overview；纯效果回复使用 none。"
         )
     )
+    purpose: MemoryRecallPurpose = Field(
+        description="本轮记忆的用途：background、recall、continuation、verify 或 correct。"
+    )
+    subjects: tuple[MemorySubjectRole, ...] = Field(default=(), max_length=4)
+    entities: tuple[str, ...] = Field(default=(), max_length=5)
+    temporal: MemoryTemporalIntent = Field(
+        default_factory=MemoryTemporalIntent,
+        description=(
+            "相对时间须按 current_time 转换为绝对范围；只有用户明确排除范围外内容时使用 strict。"
+        ),
+    )
+    preferred_kinds: tuple[MemoryKind, ...] = Field(default=(), max_length=3)
     self_recall: bool = Field(
         default=False,
         description="是否检索过去形成的动态 SELF 记忆。",
@@ -425,6 +466,11 @@ class PlannerMemoryOutput(_StrictPlannerModel):
             }[self.mode]
         return MemoryContextPlan(
             mode=self.mode,
+            purpose=self.purpose,
+            subjects=self.subjects,
+            entities=self.entities,
+            temporal=self.temporal,
+            preferred_kinds=self.preferred_kinds,
             reason_code=reason_code,
             self_recall=self.self_recall,
         )

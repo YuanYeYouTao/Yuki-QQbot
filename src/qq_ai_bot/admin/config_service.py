@@ -1086,6 +1086,42 @@ class RuntimeConfigService:
                     cast(float | int, value("memory.hybrid_semantic_weight"))
                 ),
                 hybrid_rrf_k=int(cast(int, value("memory.hybrid_rrf_k"))),
+                intent_rerank_enabled=bool(value("memory.intent_rerank_enabled")),
+                activation_ranking_enabled=bool(value("memory.activation_ranking_enabled")),
+                usage_reporting_enabled=bool(value("memory.usage_reporting_enabled")),
+                reinforcement_enabled=bool(value("memory.reinforcement_enabled")),
+                recall_receipts_enabled=bool(value("memory.recall_receipts_enabled")),
+                activation_half_life_episode_days=float(
+                    cast(float | int, value("memory.activation_half_life_episode_days"))
+                ),
+                activation_half_life_fact_days=float(
+                    cast(float | int, value("memory.activation_half_life_fact_days"))
+                ),
+                activation_half_life_preference_days=float(
+                    cast(float | int, value("memory.activation_half_life_preference_days"))
+                ),
+                activation_half_life_explicit_days=float(
+                    cast(float | int, value("memory.activation_half_life_explicit_days"))
+                ),
+                reinforcement_alpha_background=float(
+                    cast(float | int, value("memory.reinforcement_alpha_background"))
+                ),
+                reinforcement_alpha_continuation=float(
+                    cast(float | int, value("memory.reinforcement_alpha_continuation"))
+                ),
+                reinforcement_alpha_recall=float(
+                    cast(float | int, value("memory.reinforcement_alpha_recall"))
+                ),
+                reinforcement_alpha_verify=float(
+                    cast(float | int, value("memory.reinforcement_alpha_verify"))
+                ),
+                intent_recent_window_days=int(cast(int, value("memory.intent_recent_window_days"))),
+                recall_receipt_retention_days=int(
+                    cast(int, value("memory.recall_receipt_retention_days"))
+                ),
+                recall_trace_candidate_limit=int(
+                    cast(int, value("memory.recall_trace_candidate_limit"))
+                ),
                 consolidation_enabled=bool(value("memory.consolidation_enabled")),
                 consolidation_candidate_limit=int(
                     cast(int, value("memory.consolidation_candidate_limit"))

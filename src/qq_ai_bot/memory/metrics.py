@@ -7,7 +7,11 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
-from qq_ai_bot.memory.enums import MemoryRetrievalMode
+from qq_ai_bot.memory.enums import (
+    MemoryContextMode,
+    MemoryRecallPurpose,
+    MemoryRetrievalMode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,17 @@ OPERATIONAL_LIFECYCLE_COUNTERS = (
     "memory_unknown_subject_rejections",
 )
 
+ADAPTIVE_MEMORY_STAGES = ("candidate", "selected", "injected", "used", "reinforced")
+ADAPTIVE_USAGE_REPORT_OUTCOMES = ("valid", "empty", "missing", "invalid")
+ADAPTIVE_REINFORCEMENT_SKIP_REASONS = (
+    "disabled",
+    "activation_unavailable",
+    "alpha_zero",
+    "not_used",
+    "fact_ineligible",
+)
+ADAPTIVE_ACTIVATION_BUCKETS = ("0_025", "025_050", "050_075", "075_100")
+
 
 @dataclass(frozen=True, slots=True)
 class MemoryRetrievalMetric:
@@ -50,6 +65,7 @@ class MemoryRetrievalMetric:
     semantic_degraded: bool = False
     semantic_search_latency: float = 0
     hybrid_rank_latency: float = 0
+    intent_rerank_latency: float = 0
 
 
 class MemoryRetrievalMetrics:
@@ -80,7 +96,7 @@ class MemoryRetrievalMetrics:
             "selected=%d context_selected=%d fts_latency=%.6f total_latency=%.6f "
             "overview=%s short_fallback=%s referenced_people=%d semantic_candidates=%d "
             "semantic_selected=%d hybrid_selected=%d semantic_degraded=%s "
-            "semantic_latency=%.6f hybrid_latency=%.6f",
+            "semantic_latency=%.6f hybrid_latency=%.6f rerank_latency=%.6f",
             metric.mode.value,
             metric.query_hash,
             metric.target_count,
@@ -98,6 +114,7 @@ class MemoryRetrievalMetrics:
             metric.semantic_degraded,
             metric.semantic_search_latency,
             metric.hybrid_rank_latency,
+            metric.intent_rerank_latency,
         )
 
     def operational_snapshot(self) -> dict[str, int]:
@@ -158,6 +175,55 @@ class MemoryLifecycleMetrics:
             "memory_unknown_subject_rejections": self._counts["unknown_subject_rejections"],
         }
         return {name: int(values[name]) for name in OPERATIONAL_LIFECYCLE_COUNTERS}
+
+    def adaptive_snapshot(self) -> dict[str, int]:
+        """Return a fixed-cardinality, content-free lifecycle metric projection."""
+
+        names = [
+            *(f"memory_intent_mode_{mode.value}" for mode in MemoryContextMode),
+            *(f"memory_intent_purpose_{purpose.value}" for purpose in MemoryRecallPurpose),
+            *(f"memory_recall_{stage}_count" for stage in ADAPTIVE_MEMORY_STAGES),
+            *(f"memory_usage_report_{outcome}_count" for outcome in ADAPTIVE_USAGE_REPORT_OUTCOMES),
+            *(
+                f"memory_reinforcement_skipped_{reason}_count"
+                for reason in ADAPTIVE_REINFORCEMENT_SKIP_REASONS
+            ),
+            *(f"memory_activation_bucket_{bucket}_count" for bucket in ADAPTIVE_ACTIVATION_BUCKETS),
+            "memory_activation_state_missing_count",
+            "memory_recall_receipts_cleaned_count",
+            "memory_usage_report_extra_model_request_count",
+        ]
+        return {name: int(self._counts[name]) for name in names}
+
+    def record_intent(self, *, mode: MemoryContextMode, purpose: MemoryRecallPurpose) -> None:
+        self.increment(f"memory_intent_mode_{mode.value}")
+        self.increment(f"memory_intent_purpose_{purpose.value}")
+
+    def record_recall_stage(self, stage: str, count: int) -> None:
+        if stage not in ADAPTIVE_MEMORY_STAGES:
+            raise ValueError(f"unsupported memory recall stage: {stage}")
+        self.increment(f"memory_recall_{stage}_count", count)
+
+    def record_usage_report(self, outcome: str) -> None:
+        if outcome not in ADAPTIVE_USAGE_REPORT_OUTCOMES:
+            raise ValueError(f"unsupported memory usage report outcome: {outcome}")
+        self.increment(f"memory_usage_report_{outcome}_count")
+
+    def record_reinforcement_skip(self, reason: str, count: int = 1) -> None:
+        if reason not in ADAPTIVE_REINFORCEMENT_SKIP_REASONS:
+            raise ValueError(f"unsupported reinforcement skip reason: {reason}")
+        self.increment(f"memory_reinforcement_skipped_{reason}_count", count)
+
+    def record_activation(self, value: float) -> None:
+        if value < 0.25:
+            bucket = "0_025"
+        elif value < 0.5:
+            bucket = "025_050"
+        elif value < 0.75:
+            bucket = "050_075"
+        else:
+            bucket = "075_100"
+        self.increment(f"memory_activation_bucket_{bucket}_count")
 
     def record_classifier_error(self) -> None:
         self.classifier_recent_errors += 1

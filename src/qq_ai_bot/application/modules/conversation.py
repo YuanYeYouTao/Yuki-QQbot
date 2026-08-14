@@ -273,6 +273,7 @@ class ConversationModule:
             runtime_config=self._runtime_config,
             metrics=persistence.memory_metrics,
             mutations=memory_mutations,
+            receipts=persistence.memory_receipts,
         )
         memory_reflection_worker = MemoryGovernanceWorker(
             settings=settings,

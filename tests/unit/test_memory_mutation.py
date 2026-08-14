@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -321,6 +322,68 @@ def _context(event: EventRecord) -> MemoryMutationContext:
         decision_actor_type=MemoryDecisionActorType.AGENT,
         decision_actor_id="yuki-main-agent",
         executed_by_bot_user_id=event.bot_user_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_superuser_self_retraction_is_not_recorded_as_admin_invalidation(
+    database: Database,
+) -> None:
+    service, facts, ledger, _processor = _service(database)
+    own = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            kind=MemoryKind.PREFERENCE,
+            memory_key="lifecycle-drink",
+            category="preference",
+            content="生命周期测试饮料是无糖乌龙茶",
+            source_type=MemorySourceType.EXPLICIT,
+        )
+    )
+    other = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1002",
+            kind=MemoryKind.FACT,
+            memory_key="admin-test",
+            category="profile",
+            content="用于管理员失效测试",
+            source_type=MemorySourceType.EXPLICIT,
+        )
+    )
+    event = await _event(
+        ledger,
+        message_id="superuser-self-retraction",
+        sender_user_id="1001",
+        content="撤回我的生命周期测试饮料偏好",
+    )
+    context = replace(_context(event), actor_is_superuser=True)
+
+    own_result = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.INVALIDATE,
+            fact_id=own.id,
+            reason="agent_requested_memory_change",
+        ),
+        context,
+    )
+    other_result = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.INVALIDATE,
+            fact_id=other.id,
+            reason="agent_requested_memory_change",
+        ),
+        context,
+    )
+
+    assert own_result.ok and own_result.reason_code == "user_retracted"
+    assert (await facts.get_fact(own.id)).invalidated_reason is (  # type: ignore[union-attr]
+        MemoryInvalidationReason.USER_RETRACTED
+    )
+    assert other_result.ok and other_result.reason_code == "administrator_invalidated"
+    assert (await facts.get_fact(other.id)).invalidated_reason is (  # type: ignore[union-attr]
+        MemoryInvalidationReason.ADMINISTRATOR_INVALIDATED
     )
 
 

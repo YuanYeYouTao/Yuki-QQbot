@@ -2135,6 +2135,13 @@ class MemoryMutationService:
         requested = prepared.request.reason
         if context.decision_actor_type is MemoryDecisionActorType.PLUGIN:
             return MemoryInvalidationReason.PLUGIN_EXPLICIT_INVALIDATION
+        if (
+            context.decision_actor_type
+            in {MemoryDecisionActorType.AGENT, MemoryDecisionActorType.COMMAND}
+            and prepared.request.request_basis is MemoryMutationRequestBasis.USER_REQUESTED
+            and prepared.target.subject_user_id == context.trigger_actor_user_id
+        ):
+            return MemoryInvalidationReason.USER_RETRACTED
         if context.actor_is_superuser:
             try:
                 return MemoryInvalidationReason(requested)

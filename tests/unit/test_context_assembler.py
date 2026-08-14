@@ -548,7 +548,9 @@ async def test_sqlite_connections_enable_wal_and_bounded_busy_wait(database: Dat
 
 
 @pytest.mark.asyncio
-async def test_only_facts_surviving_context_budget_are_marked_used(database: Database) -> None:
+async def test_only_facts_surviving_context_budget_are_marked_injected(
+    database: Database,
+) -> None:
     repository = MemoryFactRepository(database)
     memories = MemoryFactService(repository)
     selected = await memories.remember(
@@ -596,13 +598,13 @@ async def test_only_facts_surviving_context_budget_are_marked_used(database: Dat
         context,
         required_cost + selected_cost,
     )
-    await memories.mark_used(fact_ids)
+    await memories.mark_injected(fact_ids)
 
     selected_row = await repository.get_fact(selected.id)
     omitted_row = await repository.get_fact(omitted.id)
     assert fact_ids == (selected.id,)
-    assert selected_row is not None and selected_row.last_used_at is not None
-    assert omitted_row is not None and omitted_row.last_used_at is None
+    assert selected_row is not None and selected_row.last_injected_at is not None
+    assert omitted_row is not None and omitted_row.last_injected_at is None
 
 
 def test_recent_delivery_projects_only_confirmed_transport_metadata() -> None:

@@ -22,7 +22,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
-from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
     MemoryRetrievalMode,
     MemoryScopeType,
@@ -31,15 +31,17 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.models import MemoryEntityTarget
+from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent
 from qq_ai_bot.memory.mutation.models import (
     SELF_MEMORY_CATEGORIES,
     MemoryDecisionActorType,
+    MemoryMutationAppliedOperation,
     MemoryMutationContext,
     MemoryMutationRequest,
 )
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.query import MemoryQueryBuilder
+from qq_ai_bot.memory.receipt import MemoryUsageControl
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
@@ -119,6 +121,11 @@ class ToolRuntime:
     max_model_requests_override: int | None = None
     native_web_fallback: bool = False
     web_route: WebRouteDecision | None = None
+    memory_turn_id: str = ""
+    memory_usage_allowed_fact_ids: tuple[int, ...] = ()
+    memory_usage_control: MemoryUsageControl | None = None
+    memory_intent: MemoryQueryIntent | None = None
+    planner_fallback: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,7 +431,8 @@ class AgentToolService:
                         "memory_key 和 category；invalidate、restore、contest、merge 和"
                         "update_metadata 可通过 fact_id 直接定位，不必重复 target；但 SELF 不支持"
                         " reassign 或 update_metadata。reassign 仍必须提供新 target。"
-                        "reason 可省略。"
+                        "reason 可省略。invalidate 成功表示事实保留审计记录但不再作为有效记忆；"
+                        "只能称为已撤回、已失效或不再记住，不得声称数据库记录已物理删除。"
                     ),
                     parameters=_object_schema(
                         {
@@ -669,13 +677,17 @@ class AgentToolService:
                 if name == "get_relationship":
                     return await self._relationship(arguments, runtime)
                 if name == "get_person_memories":
-                    return await self._person_memories(arguments, runtime)
+                    result = await self._person_memories(arguments, runtime)
+                    return await self._capture_memory_tool_result(result, runtime)
                 if name == "get_self_memories":
-                    return await self._self_memories(arguments, runtime)
+                    result = await self._self_memories(arguments, runtime)
+                    return await self._capture_memory_tool_result(result, runtime)
                 if name == "get_group_memories":
-                    return await self._group_memories(arguments, runtime)
+                    result = await self._group_memories(arguments, runtime)
+                    return await self._capture_memory_tool_result(result, runtime)
                 if name == "get_memory_fact":
-                    return await self._memory_fact(arguments, runtime)
+                    result = await self._memory_fact(arguments, runtime)
+                    return await self._capture_memory_tool_result(result, runtime)
                 if name == "get_memory_evidence":
                     return await self._memory_evidence(arguments, runtime)
                 if name == "memory_change":
@@ -1118,10 +1130,6 @@ class AgentToolService:
                     reverse=True,
                 )
                 visible_hits = visible_hits[:limit]
-            await self._memory_context.mark_used(
-                result,
-                tuple(hit.fact.id for hit in visible_hits),
-            )
             memories = [
                 self._memory_json(
                     hit.fact,
@@ -1445,10 +1453,6 @@ class AgentToolService:
                 runtime=self._runtime(),
                 limit=limit,
             )
-            await self._memory_context.mark_used(
-                result,
-                tuple(hit.fact.id for hit in result.hits),
-            )
             memories = [
                 self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
                 for hit in result.hits
@@ -1497,10 +1501,6 @@ class AgentToolService:
         )
         visible_hits = tuple(
             hit for hit in result.hits if hit.fact.scope_type is MemoryScopeType.SELF
-        )
-        await self._memory_context.mark_used(
-            result,
-            tuple(hit.fact.id for hit in visible_hits),
         )
         return self._result(
             data={
@@ -1677,6 +1677,8 @@ class AgentToolService:
             "reason_code": result.reason_code,
             "deduplicated": result.deduplicated,
         }
+        if result.ok and result.applied_operation is MemoryMutationAppliedOperation.INVALIDATE:
+            payload["persistence_semantics"] = "invalidated_not_deleted"
         if result.reason_code == "invalid_self_memory_category":
             payload["allowed_self_categories"] = list(SELF_MEMORY_CATEGORIES)
         if not result.ok:
@@ -1752,6 +1754,7 @@ class AgentToolService:
     ) -> dict[str, Any]:
         payload = {
             "fact_id": row.id,
+            "memory_ref": f"M{row.id}",
             "scope": row.scope_type.value,
             "subject": {
                 "user_id": row.subject_user_id,
@@ -1771,6 +1774,7 @@ class AgentToolService:
             "last_confirmed_at": row.last_confirmed_at.isoformat(),
             "retrieval_reason": retrieval_reason,
         }
+        payload["occurred_at"] = row.valid_from.isoformat() if row.valid_from is not None else None
         if same_group_evidence_projection:
             payload.update(
                 {
@@ -1784,8 +1788,9 @@ class AgentToolService:
     def _self_memory_json(row: Any, *, retrieval_reason: str) -> dict[str, Any]:
         """Project SELF facts without visibility identities or evidence internals."""
 
-        return {
+        payload = {
             "fact_id": row.id,
+            "memory_ref": f"M{row.id}",
             "kind": row.kind.value,
             "category": row.category,
             "content": row.content,
@@ -1794,6 +1799,41 @@ class AgentToolService:
             "status": row.status.value,
             "retrieval_reason": retrieval_reason,
         }
+        payload["occurred_at"] = row.valid_from.isoformat() if row.valid_from is not None else None
+        return payload
+
+    async def _capture_memory_tool_result(
+        self,
+        result: str,
+        runtime: ToolRuntime,
+    ) -> str:
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            return result
+        fact_ids: list[int] = []
+
+        def visit(value: object) -> None:
+            if isinstance(value, dict):
+                ref = value.get("memory_ref")
+                if isinstance(ref, str) and ref.startswith("M") and ref[1:].isdigit():
+                    fact_ids.append(int(ref[1:]))
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(payload)
+        unique_ids = tuple(dict.fromkeys(fact_ids))
+        if unique_ids:
+            await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
+            if runtime.memory_usage_control is not None:
+                runtime.memory_usage_control.register_presented(unique_ids)
+            if isinstance(payload, dict):
+                payload["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
+                return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return result
 
     async def _call_onebot(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         if (

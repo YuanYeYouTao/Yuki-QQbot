@@ -141,13 +141,13 @@ def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None
     ).report_for_message(inbound("9000"))
 
     assert report.permission_level is PermissionLevel.SUPERUSER
-    assert report.mutable_config_count == 203
+    assert report.mutable_config_count == 219
     assert report.protected_config_count == 12
     assert report.business_action_count == 44
     assert report.mutating_action_count == 33
     assert report.self_service_operation_count == 49
     assert report.onebot_gateway_count == 1
-    assert len(report.capabilities) == 309
+    assert len(report.capabilities) == 325
 
     config_ids = {
         descriptor.id
@@ -178,8 +178,8 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
 
     assert first == second
     assert first["counts"] == {
-        "total": 309,
-        "mutable_configurations": 203,
+        "total": 325,
+        "mutable_configurations": 219,
         "protected_configurations": 12,
         "business_actions": 44,
         "mutating_business_actions": 33,
@@ -217,7 +217,7 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
         for items in kinds.values()
         for item in items
     }
-    assert len(rendered) < 36000
+    assert len(rendered) < 39000
     assert compact_ids == {descriptor.id for descriptor in report.capabilities}
 
     summary = report.to_model_dict("summary")
@@ -275,7 +275,7 @@ def test_deterministic_text_contains_every_capability_and_onebot_scope() -> None
             capability_id = capability_id.removeprefix("onebot:")
         assert capability_id in rendered
 
-    assert "可修改运行时配置参数：203 项" in rendered
+    assert "可修改运行时配置参数：219 项" in rendered
     assert "管理员业务接口：44 项，其中修改型 33 项" in rendered
     assert "NapCat/OneBot 通用全接口网关：1 项" in rendered
     assert "全部公开 action" in rendered
@@ -289,7 +289,7 @@ def test_category_filter_recomputes_counts_and_preserves_sorted_output() -> None
         category="memory",
     )
 
-    assert report.mutable_config_count == 54
+    assert report.mutable_config_count == 70
     assert report.business_action_count == 5
     assert report.mutating_action_count == 4
     assert report.self_service_operation_count == 23
@@ -343,7 +343,7 @@ def test_injected_registry_entries_appear_without_copying_registry_tables() -> N
     assert "action:diagnostics.snapshot:any_group" in {
         descriptor.id for descriptor in report.capabilities
     }
-    assert report.mutable_config_count == 204
+    assert report.mutable_config_count == 220
     assert report.business_action_count == 45
 
 

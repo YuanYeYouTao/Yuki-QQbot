@@ -29,6 +29,7 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
 from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.memory.receipt import FINALIZE_MEMORY_RESPONSE_TOOL, MemoryUsageControl
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.chat import ChatService, _ChatAgentBackend
@@ -304,6 +305,87 @@ class NonTerminalMutationBackend(VoiceEffectBackend):
         )
 
 
+class TerminalMemoryProvider(LLMProvider):
+    def __init__(self, *, refs: tuple[str, ...]) -> None:
+        self.refs = refs
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        assert request.tool_choice == "required"
+        assert {tool.name for tool in request.tools} == {FINALIZE_MEMORY_RESPONSE_TOOL}
+        return ChatResponse(
+            content="",
+            latency_seconds=0,
+            tool_calls=(
+                ToolCall(
+                    id="memory-final-1",
+                    function=ToolFunction(
+                        name=FINALIZE_MEMORY_RESPONSE_TOOL,
+                        arguments=json.dumps(
+                            {"content": "记得你偏好深烘咖啡。", "memory_refs": list(self.refs)},
+                            ensure_ascii=False,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+
+class TerminalMemoryBackend(VoiceEffectBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.usage = MemoryUsageControl(
+            turn_id="turn-terminal",
+            injected_fact_ids=(249,),
+            enabled=True,
+        )
+
+    def definitions(
+        self,
+        runtime: AgentRuntime,
+        *,
+        web_was_used: bool,
+    ) -> tuple[ChatTool, ...]:
+        del runtime, web_was_used
+        if not self.usage.report_available:
+            return ()
+        return (
+            ChatTool(
+                name=FINALIZE_MEMORY_RESPONSE_TOOL,
+                description="submit final response",
+                parameters={"type": "object"},
+            ),
+        )
+
+    def terminal_tool_names(self, runtime: AgentRuntime) -> frozenset[str]:
+        del runtime
+        return frozenset({FINALIZE_MEMORY_RESPONSE_TOOL})
+
+    def requires_terminal_response(self, runtime: AgentRuntime) -> bool:
+        del runtime
+        return self.usage.report_available
+
+    def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
+        del runtime
+        self.usage.begin_batch(tuple(call.function.name for call in calls))
+
+    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        del runtime
+        self.usage.note_call(name)
+        assert name == FINALIZE_MEMORY_RESPONSE_TOOL
+        return self.usage.apply(arguments_json)
+
+    def counts_toward_limit(self, name: str, runtime: AgentRuntime) -> bool:
+        del runtime
+        return name != FINALIZE_MEMORY_RESPONSE_TOOL
+
+    def finalize(self, content: str, runtime: AgentRuntime) -> str:
+        del runtime
+        self.usage.finalize(content)
+        return content
+
+
 def _agent_runtime() -> AgentRuntime:
     now = datetime.now(UTC)
     config = cast(
@@ -472,6 +554,28 @@ async def test_non_terminal_mutation_can_continue_with_another_tool_round() -> N
     assert result.tool_calls_used == 2
     assert len(backend.effects) == 2
     assert all(request.tools for request in provider.requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("refs", "used"), [(("M249",), (249,)), ((), ())])
+async def test_terminal_memory_response_uses_one_model_request_without_business_budget(
+    refs: tuple[str, ...],
+    used: tuple[int, ...],
+) -> None:
+    provider = TerminalMemoryProvider(refs=refs)
+    backend = TerminalMemoryBackend()
+
+    result = await AgentRunner(provider, ConcurrencyManager(1)).run(
+        (ChatMessage(role="user", content="我喜欢哪种咖啡？"),),
+        _agent_runtime(),
+        backend,
+    )
+
+    assert result.text == "记得你偏好深烘咖啡。"
+    assert result.model_requests == 1
+    assert result.tool_calls_used == 0
+    assert backend.usage.used_fact_ids == used
+    assert len(provider.requests) == 1
 
 
 def test_voice_effect_cannot_complete_chat_without_text() -> None:

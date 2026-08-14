@@ -77,6 +77,9 @@ class AgentRunResult:
     citations: tuple[ResponseCitation, ...] = ()
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
     web_route: WebRouteDecision | None = None
+    memory_turn_id: str = ""
+    used_memory_fact_ids: tuple[int, ...] = ()
+    memory_usage_reported: bool = False
 
 
 class AgentToolBackend(Protocol):
@@ -150,6 +153,7 @@ class AgentRunner:
         force_finalization = False
         reusable_tool_results: dict[tuple[str, str], str] = {}
         finalization_prompt_added = False
+        terminal_response_retry_used = False
         web_route = runtime.web_route
         tavily_fallback = bool(
             runtime.force_tavily_fallback
@@ -198,6 +202,8 @@ class AgentRunner:
                 definitions = tuple(
                     item for item in definitions if item.name not in {"web_search", "read_webpage"}
                 )
+            terminal_names = self._terminal_tool_names(tools, runtime)
+            terminal_required = self._requires_terminal_response(tools, runtime)
             if continuation is not None:
                 # Responses continuations are one cumulative request chain.
                 # Tools may be added after request_tools, but removing a tool
@@ -213,27 +219,48 @@ class AgentRunner:
             if finalization_only:
                 # Chat Completions can omit tools entirely. Responses continuations
                 # must retain every previously declared schema, so keep those
-                # definitions but force tool_choice=none below.
+                # definitions. A terminal response control remains callable so the
+                # last request can submit text and attribution without another turn.
                 if continuation is None:
-                    definitions = ()
+                    definitions = (
+                        tuple(item for item in definitions if item.name in terminal_names)
+                        if terminal_required
+                        else ()
+                    )
                     native_definitions = ()
                 if not finalization_prompt_added:
                     messages.append(
                         ChatMessage(
                             role="system",
                             content=(
-                                "这是本轮预留的最终回复请求。不得继续调用工具；请只根据"
-                                "当前对话和已经取得的工具结果，给出简短、真实的最终答复。"
-                                "不得声称未成功的操作已经完成。"
+                                (
+                                    "这是本轮预留的最终回复请求。不得继续调用业务工具；请只根据"
+                                    "当前对话和已经取得的工具结果，单独调用最终响应控制工具提交"
+                                    "完整正文和实质使用的记忆引用。不得声称未成功的操作已经完成。"
+                                )
+                                if terminal_required
+                                else (
+                                    "这是本轮预留的最终回复请求。不得继续调用工具；请只根据"
+                                    "当前对话和已经取得的工具结果，给出简短、真实的最终答复。"
+                                    "不得声称未成功的操作已经完成。"
+                                )
                             ),
                         )
                     )
                     finalization_prompt_added = True
             if incomplete_recovery_used and continuation is None:
-                definitions = ()
+                definitions = (
+                    tuple(item for item in definitions if item.name in terminal_names)
+                    if terminal_required
+                    else ()
+                )
                 native_definitions = ()
             if no_progress_recovery and continuation is None:
-                definitions = ()
+                definitions = (
+                    tuple(item for item in definitions if item.name in terminal_names)
+                    if terminal_required
+                    else ()
+                )
                 native_definitions = ()
             try:
                 response = await self._concurrency.run_llm(
@@ -249,9 +276,13 @@ class AgentRunner:
                             thinking_enabled=runtime.runtime_config.llm.thinking_enabled,
                             tools=definitions,
                             tool_choice=(
-                                "none"
-                                if finalization_only and (definitions or native_definitions)
-                                else ("auto" if definitions or native_definitions else None)
+                                "required"
+                                if terminal_required
+                                else (
+                                    "none"
+                                    if finalization_only and (definitions or native_definitions)
+                                    else ("auto" if definitions or native_definitions else None)
+                                )
                             ),
                             native_tools=native_definitions,
                             continuation=continuation,
@@ -459,6 +490,27 @@ class AgentRunner:
                 web_route = self._fallback_route(web_route, terminal_web_failure)
                 continue
             if not response.tool_calls:
+                if (
+                    terminal_required
+                    and not terminal_response_retry_used
+                    and request_index + 1 < runtime.max_model_requests
+                ):
+                    terminal_response_retry_used = True
+                    logger.warning(
+                        "agent_terminal_response_missing_retry model_requests=%d",
+                        request_index + 1,
+                    )
+                    messages.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "本轮已提供长期记忆，因此不能直接返回正文。请保留刚才准备的回答，"
+                                "改为单独调用最终响应控制工具：content 填完整正文；memory_refs 只填"
+                                "实质支撑正文的白名单引用，没有使用则填空数组。"
+                            ),
+                        )
+                    )
+                    continue
                 content = response.content
                 if tools is not None:
                     content = tools.finalize(content, runtime)
@@ -510,7 +562,12 @@ class AgentRunner:
                     response_status=response_status,
                     web_route=web_route,
                 )
-            if finalization_only:
+            terminal_only_batch = bool(
+                terminal_required
+                and len(response.tool_calls) == 1
+                and response.tool_calls[0].function.name in terminal_names
+            )
+            if finalization_only and not terminal_only_batch:
                 logger.warning(
                     "agent_finalization_tool_call_rejected tool_calls=%d model_requests=%d",
                     len(response.tool_calls),
@@ -612,6 +669,22 @@ class AgentRunner:
                     )
                 else:
                     messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
+            terminal_content = self._terminal_response_content(batch, terminal_names)
+            if terminal_content is not None:
+                content = terminal_content
+                if tools is not None:
+                    content = tools.finalize(content, runtime)
+                if content.strip():
+                    return AgentRunResult(
+                        text=content,
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        native_tool_events=tuple(native_events),
+                        citations=tuple(citations),
+                        response_status=response_status,
+                        web_route=web_route,
+                    )
             if finalizing_commit_in_batch:
                 force_finalization = True
                 reusable_tool_results.clear()
@@ -825,6 +898,43 @@ class AgentRunner:
             return False
         probe = getattr(tools, "is_side_effecting", None)
         return bool(callable(probe) and probe(call.function.name, call.function.arguments, runtime))
+
+    @staticmethod
+    def _terminal_tool_names(
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+    ) -> frozenset[str]:
+        probe = getattr(tools, "terminal_tool_names", None)
+        if not callable(probe):
+            return frozenset()
+        names = probe(runtime)
+        return frozenset(str(name) for name in names)
+
+    @staticmethod
+    def _requires_terminal_response(
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+    ) -> bool:
+        probe = getattr(tools, "requires_terminal_response", None)
+        return bool(callable(probe) and probe(runtime))
+
+    @staticmethod
+    def _terminal_response_content(
+        batch: tuple[tuple[ToolCall, str, bool], ...],
+        terminal_names: frozenset[str],
+    ) -> str | None:
+        if len(batch) != 1 or batch[0][0].function.name not in terminal_names:
+            return None
+        try:
+            payload = json.loads(batch[0][1])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        content = payload.get("terminal_response")
+        if payload.get("ok") is not True or not isinstance(content, str) or not content.strip():
+            return None
+        return content
 
     @staticmethod
     def _record_failure_usage(

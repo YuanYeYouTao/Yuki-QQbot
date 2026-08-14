@@ -223,11 +223,15 @@ def _runtime() -> RuntimeConfigSnapshot:
 
 
 def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
-    output = PlannerMemoryOutput(mode=MemoryContextMode.HYBRID)
+    output = PlannerMemoryOutput(
+        mode=MemoryContextMode.HYBRID,
+        purpose="background",
+    )
     assert output.materialize().self_recall is False
     opened = PlannerMemoryOutput.model_validate(
         {
             "mode": MemoryContextMode.HYBRID,
+            "purpose": "recall",
             "reason_code": MemoryContextReasonCode.SELF_MEMORY_RECALL,
             "self_recall": True,
         }
@@ -236,6 +240,24 @@ def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
     assert opened.reason_code is MemoryContextReasonCode.SELF_MEMORY_RECALL
     assert "你喜欢咖啡吗" in PLANNER_SYSTEM_PROMPT
     assert "帮我查天气" in PLANNER_SYSTEM_PROMPT
+    assert "X 还是 Y" in PLANNER_SYSTEM_PROMPT
+    assert "即使句子中出现“记得”也不要误判成 recall" in PLANNER_SYSTEM_PROMPT
+    assert "constraint=strict" in PLANNER_SYSTEM_PROMPT
+
+    strict = PlannerMemoryOutput.model_validate(
+        {
+            "mode": "hybrid",
+            "purpose": "recall",
+            "temporal": {
+                "mode": "range",
+                "constraint": "strict",
+                "start_at": "2026-08-01T00:00:00+08:00",
+                "end_at": "2026-08-10T23:59:59+08:00",
+            },
+        }
+    ).materialize()
+    assert strict.temporal.constraint.value == "strict"
+    assert strict.temporal.start_at == datetime(2026, 7, 31, 16, tzinfo=UTC)
 
 
 def test_planner_prompt_requires_explicit_scope_and_query_rewrite_for_tool_tasks() -> None:
@@ -314,6 +336,7 @@ def _valid_plan_payload(**updates: object) -> dict[str, object]:
         "reason_code": "direct_request",
         "memory_context": {
             "mode": "lexical",
+            "purpose": "background",
             "reason_code": "routine_context",
         },
         "emoji": {"intent": "neutral", "mode": "none"},
@@ -1256,7 +1279,7 @@ async def test_llm_planner_materializes_sparse_output_with_backend_defaults() ->
                 "reason_code": "direct_request",
                 "delivery_mode": "single",
                 "desired_messages": 1,
-                "memory_context": {"mode": "lexical"},
+                "memory_context": {"mode": "lexical", "purpose": "background"},
                 "emoji": {"intent": "neutral", "mode": "none"},
                 "voice": {"mode": "text", "intent": "neutral"},
             }
@@ -1317,7 +1340,7 @@ def test_sparse_planner_derives_secondary_effect_defaults() -> None:
             "reason_code": "direct_request",
             "delivery_mode": "single",
             "desired_messages": 1,
-            "memory_context": {"mode": "none"},
+            "memory_context": {"mode": "none", "purpose": "background"},
             "emoji": {"intent": "explicit_request", "mode": "emoji_only"},
             "voice": {"mode": "voice", "intent": "explicit_request"},
         }
@@ -1339,7 +1362,7 @@ def test_sparse_planner_preserves_explicit_empty_tool_selection() -> None:
             "delivery_mode": "single",
             "desired_messages": 1,
             "tool_selection": {"mode": "inherit", "scopes": []},
-            "memory_context": {"mode": "lexical"},
+            "memory_context": {"mode": "lexical", "purpose": "background"},
             "emoji": {"intent": "neutral", "mode": "none"},
             "voice": {"mode": "text", "intent": "neutral"},
         }
