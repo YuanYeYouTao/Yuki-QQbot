@@ -202,6 +202,40 @@ async def test_deepseek_max_reasoning_omits_tool_choice_in_thinking_mode() -> No
 
 
 @pytest.mark.asyncio
+async def test_deepseek_non_thinking_also_omits_tool_choice() -> None:
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        payload = json.loads(http_request.content)
+        assert payload["thinking"] == {"type": "disabled"}
+        assert "tools" in payload
+        assert "tool_choice" not in payload
+        return httpx.Response(
+            200,
+            request=http_request,
+            json={"choices": [{"message": {"content": "answer"}}]},
+        )
+
+    chat_request = ChatRequest(
+        messages=(ChatMessage("user", "hello"),),
+        model="deepseek-v4-flash",
+        thinking_enabled=False,
+        tools=(ChatTool(name="search", description="search", parameters={}),),
+        tool_choice="auto",
+    )
+    async with httpx.AsyncClient(
+        base_url="https://api.deepseek.com", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = OpenAICompatibleProvider(
+            base_url="https://api.deepseek.com",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        response = await provider.complete(chat_request)
+    assert response.content == "answer"
+
+
+@pytest.mark.asyncio
 async def test_non_deepseek_thinking_keeps_explicit_tool_choice() -> None:
     def handler(http_request: httpx.Request) -> httpx.Response:
         payload = json.loads(http_request.content)

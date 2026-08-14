@@ -61,7 +61,7 @@ Codex 实现时必须以 DeepSeek 官方文档和真实响应夹具为准，不�
 - Responses API 当前支持 `deepseek-v4-flash`；
 - 官方页面仍标记 `deepseek-v4-pro` 暂不支持；
 - 支持 `function` 和服务端执行的 `web_search`；
-- 支持 `tool_choice=none | auto | required | 指定工具`；
+- 当前接入端点不接受 `tool_choice`；Yuki 对 DeepSeek 的请求必须始终省略该字段；
 - 支持 `reasoning.effort`；
 - 支持 `text.format`；
 - `previous_response_id`、`conversation`、`store` 不支持；
@@ -631,16 +631,18 @@ max_tool_calls
 
 ### 8.6 tool_choice
 
-首期必须正确转换：
+DeepSeek 请求不得发送该字段。上层统一请求对象即使携带选择状态，Provider 也必须在 wire payload
+边界丢弃：
 
 ```text
 None       → 省略
-"none"     → "none"
-"auto"     → "auto"
-"required" → "required"
+"none"     → 省略
+"auto"     → 省略
+"required" → 省略
 ```
 
-为后续指定工具预留结构化转换，但首期主 Agent 默认使用 `auto`。
+工具是否调用由模型根据可信 instructions 和已提供 schema 自主选择；副作用真实性由本地完成门验证，
+不得把 `tool_choice` 当作安全或正确性边界。
 
 ### 8.7 reasoning
 
@@ -1267,7 +1269,7 @@ protocol
 5. 多个 Function Call；
 6. `function_call_output` 第二次请求；
 7. 原生 `web_search + auto`；
-8. 原生 `web_search + required`；
+8. 原生 `web_search` 且请求体无 `tool_choice`；
 9. 原生搜索与 Function Tool 同时存在；
 10. 原生搜索后再发 Function Call；
 11. 多个 message item；
@@ -1402,7 +1404,7 @@ native_with_tavily_fallback
 10. leading system/developer 正确进入 instructions；
 11. user/assistant message 正确转换；
 12. Function Tool 使用 Responses 的扁平格式；
-13. `tool_choice=none/auto/required` 正确；
+13. 无论上层选择状态为何，DeepSeek 请求体均无 `tool_choice`；
 14. max_output_tokens 正确；
 15. reasoning.effort 正确；
 16. native tool 未批准时不出现在请求中；

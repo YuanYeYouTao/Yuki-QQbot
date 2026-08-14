@@ -1262,6 +1262,10 @@ Agent 可以通过 `request_tools` 显式加载读取工具缩小目标，但任
 正文必须由最后一次真实工具回执中的 `applied_operation / outcome / reason_code / candidates` 生成。
 尤其是 `invalidate` 只表示状态失效并保留审计记录，不能描述为物理删除。
 
+主 Agent 的 mutation 路径通过末尾系统执行契约提示“先调用当前唯一写能力”，但不依赖模型供应商
+不支持的强制工具选择字段。DeepSeek Chat Completions 与 Responses 的线上请求体均省略
+`tool_choice`；即使模型没有调用工具，后端完成门也只能返回“未执行”，不能补写或伪造回执。
+
 Planner 输出对 `access` 使用结构化联合类型，使非法的 access/mode 组合在模型边界直接失败。除可信
 纯表情效果外，Planner 超时、供应商错误或最终输出无效时整轮失败关闭，不启动 Agent、召回或工具，
 从而消除“Planner 降级后 Agent 无工具却口头声称写入成功”的假完成路径。

@@ -151,6 +151,11 @@ _ARTIFACT_PROVIDER_ID = "artifacts"
 _ARTIFACT_READER_NAME = "read_tool_artifact"
 _SET_REPLY_TARGET_NAME = "set_reply_target"
 _PLANNER_FAIL_CLOSED_MESSAGE = "本轮规划服务暂时不可用，未执行任何工具或持久化操作，请稍后重试。"
+_MEMORY_MUTATION_EXECUTION_CONTRACT = (
+    "本轮是后端授权的长期记忆变更终端轮次。必须先调用当前唯一暴露的长期记忆写能力，"
+    "并严格以真实工具回执为准；不得直接用正文确认、模拟或承诺变更。定位失败时也必须"
+    "保留真实失败回执，不得改用管理员能力。本轮不继续处理其他问答。"
+)
 _PLANNER_FAIL_CLOSED_REASONS = frozenset(
     {
         PlannerReasonCode.PLANNER_TIMEOUT_FALLBACK,
@@ -194,6 +199,15 @@ def _automatic_memory_mode(
     mode: MemoryContextMode,
 ) -> MemoryContextMode:
     return mode if access is MemoryAccessMode.AUTOMATIC else MemoryContextMode.NONE
+
+
+def _with_memory_mutation_contract(
+    messages: tuple[ChatMessage, ...],
+    access: MemoryAccessMode,
+) -> tuple[ChatMessage, ...]:
+    if access is not MemoryAccessMode.MUTATION:
+        return messages
+    return (*messages, ChatMessage(role="system", content=_MEMORY_MUTATION_EXECUTION_CONTRACT))
 
 
 _BUILTIN_SCOPE_DESCRIPTIONS = {
@@ -426,7 +440,11 @@ class _ChatAgentBackend(AgentToolBackend):
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         self._web_was_used = self._web_was_used or web_was_used
-        response_controls = self._response_control_definitions()
+        response_controls = (
+            ()
+            if self._runtime.memory_access is MemoryAccessMode.MUTATION
+            else self._response_control_definitions()
+        )
         if self._tools_closed:
             self._callable_tool_names = {tool.name for tool in response_controls}
             self._log_tool_exposure(
@@ -2010,6 +2028,11 @@ class ChatService:
                         TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
                     ),
                 )
+            memory_access = (
+                planned_turn.plan.memory_context.access
+                if planned_turn is not None
+                else MemoryAccessMode.AUTOMATIC
+            )
             scheduled_automation_intent = bool(
                 not autonomous
                 and not visual_input_present
@@ -2020,7 +2043,11 @@ class ChatService:
                 )
                 and is_scheduled_automation_request(content)
             )
-            scheduled_automation_allowed = scheduled_automation_intent and not fallback_plan
+            scheduled_automation_allowed = bool(
+                scheduled_automation_intent
+                and not fallback_plan
+                and memory_access is not MemoryAccessMode.MUTATION
+            )
             if scheduled_automation_allowed:
                 messages = (
                     *messages,
@@ -2035,6 +2062,8 @@ class ChatService:
                         ),
                     ),
                 )
+            if not planner_emoji_only:
+                messages = _with_memory_mutation_contract(messages, memory_access)
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
@@ -2061,11 +2090,6 @@ class ChatService:
                 )
             planner_scopes_explicit = bool(
                 planned_turn is not None and planned_turn.plan.tool_selection_explicit
-            )
-            memory_access = (
-                planned_turn.plan.memory_context.access
-                if planned_turn is not None
-                else MemoryAccessMode.AUTOMATIC
             )
             if self._memory_context is not None:
                 self._memory_context.metrics.record_access(memory_access)

@@ -10,6 +10,7 @@ from tests.conftest import MemorySender, build_harness, make_settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
+    ChatMessage,
     InboundMessage,
     OutboundMedia,
     OutboundMessage,
@@ -27,6 +28,7 @@ from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.enums import (
     MemoryAccessMode,
     MemoryContextMode,
+    MemoryRecallPurpose,
     MemoryScopeType,
     MemorySourceType,
 )
@@ -38,6 +40,7 @@ from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.planner import (
     DeliveryMode,
     FakePlannerProvider,
+    MemoryContextPlan,
     PlannerDecision,
     PlannerObservability,
     PlannerReasonCode,
@@ -46,7 +49,11 @@ from qq_ai_bot.planner import (
 )
 from qq_ai_bot.planner.models import ToolSelection
 from qq_ai_bot.planner.service import PlannerService
-from qq_ai_bot.services.chat import _automatic_memory_mode, _initial_scopes_for_memory_access
+from qq_ai_bot.services.chat import (
+    _automatic_memory_mode,
+    _initial_scopes_for_memory_access,
+    _with_memory_mutation_contract,
+)
 from qq_ai_bot.services.processor import MENTION_ONLY_CONTEXT, _vision_failure_message
 
 
@@ -104,6 +111,20 @@ def test_memory_access_strictly_controls_first_round_scope_and_automatic_recall(
         _automatic_memory_mode(MemoryAccessMode.MUTATION, MemoryContextMode.NONE)
         is MemoryContextMode.NONE
     )
+
+
+def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
+    messages = (ChatMessage(role="user", content="更新测试配置"),)
+
+    mutation_messages = _with_memory_mutation_contract(messages, MemoryAccessMode.MUTATION)
+
+    assert len(mutation_messages) == 2
+    assert mutation_messages[-1].role == "system"
+    assert "真实工具回执" in (mutation_messages[-1].content or "")
+    assert "管理员能力" in (mutation_messages[-1].content or "")
+    assert _with_memory_mutation_contract(messages, MemoryAccessMode.AUTOMATIC) is messages
+    assert _with_memory_mutation_contract(messages, MemoryAccessMode.TOOL) is messages
+    assert _with_memory_mutation_contract(messages, MemoryAccessMode.NONE) is messages
 
 
 @pytest.mark.parametrize(
@@ -456,6 +477,49 @@ async def test_planner_none_keeps_generic_tool_request_gateway(
     tool_names = {tool.name for tool in provider.requests[-1].tools}
     assert "request_tools" in tool_names
     assert "memory_change" not in tool_names
+
+
+@pytest.mark.asyncio
+async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract(
+    database: Database,
+) -> None:
+    provider = FakeLLMProvider(lambda _request: "已经撤回")
+    harness = build_harness(database, make_settings(database.url), provider)
+    harness.processor._chat._tools._memory_mutations = object()  # type: ignore[assignment]
+    plan = TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="撤回长期记忆",
+        delivery_mode=DeliveryMode.SINGLE,
+        desired_messages=1,
+        tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
+        memory_context=MemoryContextPlan(
+            access=MemoryAccessMode.MUTATION,
+            mode=MemoryContextMode.NONE,
+            purpose=MemoryRecallPurpose.CORRECT,
+        ),
+        confidence=1.0,
+        reason_code=PlannerReasonCode.DIRECT_REQUEST,
+    )
+    harness.processor._planner = PlannerService(
+        provider=FakePlannerProvider(plan),
+        observability=PlannerObservability(),
+    )
+    sender = MemorySender()
+
+    await harness.processor.handle(
+        inbound("撤回一条测试配置", message_id="mutation-auto-write-only"),
+        sender,
+    )
+
+    assert len(provider.requests) == 1
+    request = provider.requests[0]
+    assert request.tool_choice == "auto"
+    assert {tool.name for tool in request.tools} == {"memory_change"}
+    assert any(
+        message.role == "system" and "真实工具回执" in (message.content or "")
+        for message in request.messages
+    )
+    assert sender.messages[0].text == "记忆变更未执行，本轮没有取得任何有效的记忆写入回执。"
 
 
 @pytest.mark.asyncio

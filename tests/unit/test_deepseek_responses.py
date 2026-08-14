@@ -108,10 +108,10 @@ async def test_request_mapping_is_responses_native_and_flat() -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_thinking_request_keeps_explicit_tool_choice() -> None:
+async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
-        assert payload["tool_choice"] == "required"
+        assert "tool_choice" not in payload
         assert "reasoning" not in payload
         return httpx.Response(200, request=request, json=_fixture("text_completed.json"))
 
