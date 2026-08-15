@@ -11,7 +11,7 @@ from scripts.build_release_bundle import (
     select_bundle_files,
     tracked_files,
 )
-from scripts.release_smoke import prepare_deployment
+from scripts.release_smoke import SmokeError, prepare_deployment
 from scripts.release_validate import (
     ReleaseValidationError,
     validate_release_identity,
@@ -122,12 +122,28 @@ def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> 
     assert speaker_sentinel.read_text(encoding="utf-8") == "offline-file-sentinel"
 
 
+def test_release_smoke_sentinels_are_idempotent_and_conflict_safe(tmp_path: Path) -> None:
+    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.2\n", encoding="utf-8")
+    sentinels = prepare_deployment(tmp_path)
+
+    assert prepare_deployment(tmp_path) == sentinels
+
+    conflicting = tmp_path / "data/.release-smoke-data"
+    conflicting.write_text("unexpected", encoding="utf-8")
+    with pytest.raises(SmokeError, match="unexpected content"):
+        prepare_deployment(tmp_path)
+
+
 def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:
     workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     quality = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
     assert "workflow_call:" in quality
     assert "force_docker: true" in workflow
     assert workflow.count(":bootstrap-amd64") == 2
+    assert "finalize_version:" in workflow
+    assert "Verify immutable public version images" in workflow
+    assert "org.opencontainers.image.revision" in workflow
+    assert "yuki-source-free-anonymous" in workflow
     assert "--require-main-ancestor" in workflow
     assert "--platform linux/amd64" in workflow
     assert '--deploy-dir "$deploy_dir" --version "$VERSION" --full' in workflow

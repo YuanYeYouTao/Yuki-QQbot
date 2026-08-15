@@ -8,9 +8,13 @@ on:
     inputs:
       bootstrap:
         description: Publish one-time bootstrap-amd64 tags so GHCR packages can be made public
-        required: true
-        default: true
+        required: false
+        default: false
         type: boolean
+      finalize_version:
+        description: Resume a version whose immutable images were pushed before final verification failed
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -30,6 +34,7 @@ jobs:
     outputs:
       mode: ${{ steps.release.outputs.mode }}
       version: ${{ steps.release.outputs.version }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,22 +49,45 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           BOOTSTRAP: ${{ inputs.bootstrap || false }}
+          FINALIZE_VERSION: ${{ inputs.finalize_version || '' }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin main:refs/remotes/origin/main
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            if [[ "$BOOTSTRAP" != "true" ]]; then
-              echo "workflow_dispatch is reserved for the one-time GHCR bootstrap" >&2
+            if [[ "$BOOTSTRAP" == "true" && -n "$FINALIZE_VERSION" ]]; then
+              echo "bootstrap and finalize_version are mutually exclusive" >&2
               exit 1
             fi
-            version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-            tag="v$version"
-            python -m scripts.release_validate --tag "$tag"
-            git merge-base --is-ancestor HEAD origin/main || {
-              echo "bootstrap commit must be reachable from origin/main" >&2
+            if [[ "$BOOTSTRAP" == "true" ]]; then
+              version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+              tag="v$version"
+              python -m scripts.release_validate --tag "$tag"
+              git merge-base --is-ancestor HEAD origin/main || {
+                echo "bootstrap commit must be reachable from origin/main" >&2
+                exit 1
+              }
+              release_sha="$GITHUB_SHA"
+              mode=bootstrap
+            elif [[ "$FINALIZE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              version="$FINALIZE_VERSION"
+              current_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+              if [[ "$version" != "$current_version" ]]; then
+                echo "finalize_version $version does not match current project version $current_version" >&2
+                exit 1
+              fi
+              tag="v$version"
+              git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+              git checkout --detach "$tag"
+              python -m scripts.release_validate \
+                --tag "$tag" \
+                --require-main-ancestor \
+                --main-ref origin/main
+              release_sha="$(git rev-list -n 1 "$tag")"
+              mode=finalize
+            else
+              echo "workflow_dispatch requires bootstrap=true or finalize_version=X.Y.Z" >&2
               exit 1
-            }
-            mode=bootstrap
+            fi
           else
             tag="$REF_NAME"
             python -m scripts.release_validate \
@@ -67,10 +95,12 @@ jobs:
               --require-main-ancestor \
               --main-ref origin/main
             version="${tag#v}"
+            release_sha="$(git rev-list -n 1 "$tag")"
             mode=release
           fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
 
   quality:
     needs: validate
@@ -132,6 +162,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_SHA: ${{ needs.validate.outputs.release_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -149,9 +180,9 @@ jobs:
             --platform linux/amd64
             --load
             --build-arg "YUKI_VERSION=$VERSION"
-            --build-arg "VCS_REF=$GITHUB_SHA"
+            --build-arg "VCS_REF=$RELEASE_SHA"
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"
-            --label "org.opencontainers.image.revision=$GITHUB_SHA"
+            --label "org.opencontainers.image.revision=$RELEASE_SHA"
             --label "org.opencontainers.image.version=$VERSION"
             --label "org.opencontainers.image.licenses=MIT"
           )
@@ -159,7 +190,7 @@ jobs:
           docker buildx build "${common[@]}" --tag "$WORKER_IMAGE:$VERSION" services/genie_tts_worker
           for image in "$BOT_IMAGE:$VERSION" "$WORKER_IMAGE:$VERSION"; do
             test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$VERSION"
-            test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+            test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$RELEASE_SHA"
             test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.source"}}')" = "https://github.com/$GITHUB_REPOSITORY"
             test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}')" = "MIT"
           done
@@ -199,7 +230,7 @@ jobs:
             if docker manifest inspect "$image:$VERSION" >/dev/null 2>&1; then
               docker pull "$image:$VERSION"
               revision="$(docker image inspect "$image:$VERSION" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
-              if [[ "$revision" != "$GITHUB_SHA" ]]; then
+              if [[ "$revision" != "$RELEASE_SHA" ]]; then
                 echo "Refusing to overwrite immutable $image:$VERSION from revision $revision" >&2
                 exit 1
               fi
@@ -217,11 +248,17 @@ jobs:
           set -euo pipefail
           docker logout ghcr.io
           docker image rm --force "$BOT_IMAGE:$VERSION" "$WORKER_IMAGE:$VERSION" || true
+          anonymous_root="$RUNNER_TEMP/yuki-source-free-anonymous"
+          mkdir -p "$anonymous_root"
+          unzip -q "dist/yuki-$VERSION-deploy.zip" -d "$anonymous_root"
+          anonymous_deploy_dir="$anonymous_root/yuki-$VERSION-deploy"
+          test ! -e "$anonymous_deploy_dir/src"
+          test ! -e "$anonymous_deploy_dir/pyproject.toml"
           (
-            cd "$DEPLOY_DIR"
+            cd "$anonymous_deploy_dir"
             docker compose --profile speech pull
           )
-          python scripts/release_smoke.py --deploy-dir "$DEPLOY_DIR" --version "$VERSION"
+          python scripts/release_smoke.py --deploy-dir "$anonymous_deploy_dir" --version "$VERSION"
 
       - uses: docker/login-action@v3
         with:
@@ -235,6 +272,113 @@ jobs:
           set -euo pipefail
           docker pull "$BOT_IMAGE:$VERSION"
           docker pull "$WORKER_IMAGE:$VERSION"
+          docker tag "$BOT_IMAGE:$VERSION" "$BOT_IMAGE:latest"
+          docker tag "$WORKER_IMAGE:$VERSION" "$WORKER_IMAGE:latest"
+          docker push "$BOT_IMAGE:latest"
+          docker push "$WORKER_IMAGE:latest"
+
+      - name: Verify public version and latest digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io
+          docker image rm --force \
+            "$BOT_IMAGE:$VERSION" "$BOT_IMAGE:latest" \
+            "$WORKER_IMAGE:$VERSION" "$WORKER_IMAGE:latest" || true
+          for image in "$BOT_IMAGE" "$WORKER_IMAGE"; do
+            version_digest="$(docker buildx imagetools inspect --raw "$image:$VERSION" | sha256sum | cut -d' ' -f1)"
+            latest_digest="$(docker buildx imagetools inspect --raw "$image:latest" | sha256sum | cut -d' ' -f1)"
+            test "$version_digest" = "$latest_digest"
+          done
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "Yuki $VERSION" --notes-file "docs/releases/v$VERSION.md"
+          else
+            gh release create "$tag" --verify-tag --title "Yuki $VERSION" --notes-file "docs/releases/v$VERSION.md"
+          fi
+          gh release upload "$tag" --clobber \
+            "dist/yuki-$VERSION-deploy.zip" \
+            "dist/yuki-$VERSION-deploy.tar.gz" \
+            "dist/docker-compose.yml" \
+            "dist/.env.example" \
+            "dist/Yuki-$VERSION-Upgrade.md"
+
+  finalize:
+    needs: validate
+    if: needs.validate.outputs.mode == 'finalize'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_SHA: ${{ needs.validate.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/v${{ needs.validate.outputs.version }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build tracked allowlist deploy bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.build_release_bundle --version "$VERSION" --output-dir dist
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 5
+
+      - name: Verify immutable public version images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io || true
+          for image in "$BOT_IMAGE" "$WORKER_IMAGE"; do
+            docker pull "$image:$VERSION"
+            revision="$(docker image inspect "$image:$VERSION" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+            image_version="$(docker image inspect "$image:$VERSION" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
+            source="$(docker image inspect "$image:$VERSION" --format '{{index .Config.Labels "org.opencontainers.image.source"}}')"
+            license="$(docker image inspect "$image:$VERSION" --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}')"
+            architecture="$(docker image inspect "$image:$VERSION" --format '{{.Architecture}}')"
+            test "$revision" = "$RELEASE_SHA"
+            test "$image_version" = "$VERSION"
+            test "$source" = "https://github.com/$GITHUB_REPOSITORY"
+            test "$license" = "MIT"
+            test "$architecture" = "amd64"
+          done
+
+      - name: Verify anonymous Bot startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_root="$RUNNER_TEMP/yuki-source-free-finalize"
+          mkdir -p "$smoke_root"
+          unzip -q "dist/yuki-$VERSION-deploy.zip" -d "$smoke_root"
+          deploy_dir="$smoke_root/yuki-$VERSION-deploy"
+          test ! -e "$deploy_dir/src"
+          test ! -e "$deploy_dir/pyproject.toml"
+          (
+            cd "$deploy_dir"
+            docker compose --profile speech pull
+          )
+          python scripts/release_smoke.py --deploy-dir "$deploy_dir" --version "$VERSION"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update latest after public version verification
+        shell: bash
+        run: |
+          set -euo pipefail
           docker tag "$BOT_IMAGE:$VERSION" "$BOT_IMAGE:latest"
           docker tag "$WORKER_IMAGE:$VERSION" "$WORKER_IMAGE:latest"
           docker push "$BOT_IMAGE:latest"

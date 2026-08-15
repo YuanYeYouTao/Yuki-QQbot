@@ -88,6 +88,10 @@ def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
         deploy_directory / "data/speech/genie_data/speaker_encoder.onnx": "offline-file-sentinel",
     }
     for path, value in sentinels.items():
+        if path.exists():
+            if path.read_text(encoding="utf-8") != value:
+                raise SmokeError(f"existing release sentinel has unexpected content: {path}")
+            continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(value, encoding="utf-8")
     return sentinels
