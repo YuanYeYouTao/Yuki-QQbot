@@ -9,18 +9,12 @@
 <p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.5.1">
-    <img src="https://img.shields.io/badge/Version-3.5.1-orange" alt="Version 3.5.1">
-  </a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.5.1"><img src="https://img.shields.io/badge/Version-3.5.1-orange" alt="Version 3.5.1"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2 and OneBot v11">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml">
-    <img src="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml/badge.svg" alt="Quality">
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License">
-  </a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
 </p>
 
 <p>
