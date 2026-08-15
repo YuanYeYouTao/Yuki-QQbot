@@ -13,7 +13,13 @@ from scripts.build_release_bundle import (
     select_bundle_files,
     tracked_files,
 )
-from scripts.release_smoke import Compose, SmokeError, prepare_deployment, wait_healthy
+from scripts.release_smoke import (
+    Compose,
+    SmokeError,
+    prepare_deployment,
+    verify_bot,
+    wait_healthy,
+)
 from scripts.release_validate import (
     ReleaseValidationError,
     validate_release_identity,
@@ -202,6 +208,29 @@ def test_release_smoke_allows_transient_unhealthy_state(
     monkeypatch.setattr("scripts.release_smoke.time.sleep", lambda _: None)
 
     assert wait_healthy(compose, "bot", timeout_seconds=1) == "container-id"
+
+
+def test_release_smoke_reads_alembic_version_inside_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    class FakeCompose:
+        def run(self, *arguments: str, capture: bool = False) -> str:
+            calls.append(arguments)
+            if "urllib.request" in arguments[-1]:
+                return '{"status":"ok","version":"3.5.3","database":"ok"}'
+            if "SELECT version_num FROM alembic_version" in arguments[-1]:
+                return "0036"
+            raise AssertionError(arguments)
+
+    monkeypatch.setattr("scripts.release_smoke.wait_healthy", lambda *args: "container-id")
+
+    verify_bot(FakeCompose(), tmp_path, VERSION)  # type: ignore[arg-type]
+
+    assert len(calls) == 2
+    assert all(call[:4] == ("exec", "-T", "bot", "python") for call in calls)
+    assert not (tmp_path / "data/qq_ai_bot.db").exists()
 
 
 def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:

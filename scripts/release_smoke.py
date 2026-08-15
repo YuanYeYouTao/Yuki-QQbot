@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -198,11 +197,17 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     actual = {key: health.get(key) for key in expected}
     if actual != expected:
         raise SmokeError(f"unexpected /healthz response: {actual}")
-    database = deploy_directory / "data/qq_ai_bot.db"
-    with sqlite3.connect(database) as connection:
-        row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    if row != ("0036",):
-        raise SmokeError(f"unexpected Alembic version: {row}")
+    migration_command = (
+        "import sqlite3; "
+        "connection=sqlite3.connect('/app/data/qq_ai_bot.db'); "
+        "row=connection.execute('SELECT version_num FROM alembic_version').fetchone(); "
+        "connection.close(); print(row[0] if row else '')"
+    )
+    alembic_version = compose.run(
+        "exec", "-T", "bot", "python", "-c", migration_command, capture=True
+    )
+    if alembic_version != "0036":
+        raise SmokeError(f"unexpected Alembic version: {alembic_version!r}")
 
 
 def verify_guided_setup(deploy_directory: Path, version: str) -> None:
