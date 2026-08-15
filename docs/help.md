@@ -1,5 +1,9 @@
 # Yuki-QQbot
 
+> **3.5.3 正式版：**新增 `qq-ai-bot-cli setup` 彩色引导配置和 Linux / Windows 安装器。
+> 首次部署只需 Docker；可选能力按需提问，密钥不回显，确认后原子写入并自动完成 Compose
+> 启动、健康检查和 NapCat 登录提示。Alembic head 仍为 `0036`，Plugin API 仍为 `1.1`。
+
 > **3.5.2 正式版：**部署改用固定版本 GHCR 镜像和无源码 Release 部署包；生产 Compose 不再
 > 本地构建 Bot 或语音 Worker。升级时先修改 `.env` 中的 `YUKI_VERSION`，再执行
 > `docker compose pull` 和 `docker compose up -d`。本版本没有新增数据库迁移。
@@ -82,15 +86,22 @@
 当前 Plugin API 为 `1.1`，并兼容声明 `1.0` 的插件。第三方插件若把 `yuki_requires` 上限写成
 `<3.0`，需要在确认兼容后改为 `<4.0`；不要根据 Yuki 产品版本猜测 Plugin API 版本。
 
-从 GitHub Release 解压部署包，复制 `.env.example` 为 `.env` 并填写必要配置，然后执行：
+从 GitHub Release 下载 `install.sh` 或 `install.ps1`。Linux 执行：
 
 ```bash
-docker compose up -d
-docker compose ps
-docker compose logs -f bot napcat
+chmod +x install.sh
+./install.sh
 ```
 
-看到 NapCat 的反向 WebSocket 已连接后即可在 QQ 测试。`Ctrl+C` 只退出日志查看，不会停止容器。之后日常启动只需：
+Windows PowerShell 执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+向导只要求基础主模型配置，并按你的选择继续配置 Flash、Embedding、Web、Vision、MCP、Plugin、
+Automation 和 Speech。它不会在线试用 API Key；完成后再打开
+<http://127.0.0.1:6099> 登录 NapCat。之后日常启动只需：
 
 ```bash
 docker compose up -d
@@ -112,7 +123,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.5.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 3.5.3 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。

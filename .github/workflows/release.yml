@@ -200,9 +200,9 @@ jobs:
         run: |
           set -euo pipefail
           python -m scripts.build_release_bundle --version "$VERSION" --output-dir dist
-          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 5
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 8
 
-      - name: Run source-free local smoke and persistence checks
+      - name: Run source-free Guided Setup, image, and persistence smoke
         shell: bash
         run: |
           set -euo pipefail
@@ -308,7 +308,10 @@ jobs:
             "dist/yuki-$VERSION-deploy.tar.gz" \
             "dist/docker-compose.yml" \
             "dist/.env.example" \
-            "dist/Yuki-$VERSION-Upgrade.md"
+            "dist/Yuki-$VERSION-Upgrade.md" \
+            "dist/install.sh" \
+            "dist/install.ps1" \
+            "dist/SHA256SUMS"
 
   finalize:
     needs: validate
@@ -332,7 +335,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m scripts.build_release_bundle --version "$VERSION" --output-dir dist
-          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 5
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 8
 
       - name: Verify immutable public version images
         shell: bash
@@ -415,4 +418,7 @@ jobs:
             "dist/yuki-$VERSION-deploy.tar.gz" \
             "dist/docker-compose.yml" \
             "dist/.env.example" \
-            "dist/Yuki-$VERSION-Upgrade.md"
+            "dist/Yuki-$VERSION-Upgrade.md" \
+            "dist/install.sh" \
+            "dist/install.ps1" \
+            "dist/SHA256SUMS"

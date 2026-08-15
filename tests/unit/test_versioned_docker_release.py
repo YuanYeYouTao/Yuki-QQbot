@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import tarfile
 import zipfile
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -19,14 +21,14 @@ from scripts.release_validate import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "3.5.2"
+VERSION = "3.5.3"
 
 
 def test_release_identity_matches_all_version_surfaces() -> None:
-    assert validate_release_identity(ROOT, "v3.5.2") == VERSION
+    assert validate_release_identity(ROOT, "v3.5.3") == VERSION
 
 
-@pytest.mark.parametrize("tag", ["3.5.2", "v3.5", "v3.5.2-rc1", "v03.5.2", "latest"])
+@pytest.mark.parametrize("tag", ["3.5.3", "v3.5", "v3.5.3-rc1", "v03.5.3", "latest"])
 def test_release_identity_rejects_non_final_tags(tag: str) -> None:
     with pytest.raises(ReleaseValidationError, match=r"vX\.Y\.Z"):
         validate_release_identity(ROOT, tag)
@@ -34,7 +36,7 @@ def test_release_identity_rejects_non_final_tags(tag: str) -> None:
 
 def test_release_identity_rejects_mismatched_tag() -> None:
     with pytest.raises(ReleaseValidationError, match="do not match"):
-        validate_release_identity(ROOT, "v3.5.3")
+        validate_release_identity(ROOT, "v3.5.2")
 
 
 def test_tag_commit_must_be_reachable_from_main(tmp_path: Path) -> None:
@@ -47,17 +49,19 @@ def test_tag_commit_must_be_reachable_from_main(tmp_path: Path) -> None:
     _git(tmp_path, "switch", "-c", "side")
     (tmp_path / "state.txt").write_text("side\n", encoding="utf-8")
     _git(tmp_path, "commit", "-am", "side")
-    _git(tmp_path, "tag", "v3.5.2")
+    _git(tmp_path, "tag", "v3.5.3")
 
     with pytest.raises(ReleaseValidationError, match="not reachable"):
-        validate_tag_commit(tmp_path, "v3.5.2", "main")
+        validate_tag_commit(tmp_path, "v3.5.3", "main")
 
 
 def test_bundle_allowlist_requires_persona() -> None:
     tracked = {
         "docker-compose.yml",
         ".env.example",
-        "docs/releases/v3.5.2.md",
+        "docs/releases/v3.5.3.md",
+        "install.sh",
+        "install.ps1",
         "config/memory_contracts.toml",
         "config/memory_quality_gates.example.toml",
         "config/memory_quality_gates.toml",
@@ -70,29 +74,46 @@ def test_bundle_allowlist_requires_persona() -> None:
 
 
 def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Path) -> None:
-    tracked = tracked_files(ROOT) | {"docs/releases/v3.5.2.md"}
+    tracked = tracked_files(ROOT) | {"docs/releases/v3.5.3.md", "install.sh", "install.ps1"}
     assets = build_release_bundle(ROOT, tmp_path, VERSION, tracked=tracked)
     assert {path.name for path in assets} == {
-        "yuki-3.5.2-deploy.zip",
-        "yuki-3.5.2-deploy.tar.gz",
+        "yuki-3.5.3-deploy.zip",
+        "yuki-3.5.3-deploy.tar.gz",
         "docker-compose.yml",
         ".env.example",
-        "Yuki-3.5.2-Upgrade.md",
+        "Yuki-3.5.3-Upgrade.md",
+        "install.sh",
+        "install.ps1",
+        "SHA256SUMS",
     }
-    with zipfile.ZipFile(tmp_path / "yuki-3.5.2-deploy.zip") as archive:
+    with zipfile.ZipFile(tmp_path / "yuki-3.5.3-deploy.zip") as archive:
         names = set(archive.namelist())
-    prefix = "yuki-3.5.2-deploy/"
+        shell_mode = archive.getinfo("yuki-3.5.3-deploy/install.sh").external_attr >> 16
+    prefix = "yuki-3.5.3-deploy/"
     assert f"{prefix}docker-compose.yml" in names
     assert f"{prefix}.env.example" in names
     assert f"{prefix}config/persona.md" in names
     assert f"{prefix}data/speech/japanese_frontend/lexicon.toml" in names
     assert f"{prefix}napcat-data/" in names
+    assert f"{prefix}install.sh" in names
+    assert f"{prefix}install.ps1" in names
+    assert shell_mode & 0o111
     assert not any(name.startswith(f"{prefix}src/") for name in names)
     assert not any("/tests/" in name for name in names)
     assert not any(name.endswith(".pyc") or "__pycache__" in name for name in names)
     assert f"{prefix}.env" not in names
+    assert f"{prefix}.mcp.json" not in names
     assert f"{prefix}config/system_prompt.md" not in names
     assert f"{prefix}config/model_profiles.toml" not in names
+    with tarfile.open(tmp_path / "yuki-3.5.3-deploy.tar.gz", "r:gz") as archive:
+        assert archive.getmember(f"{prefix}install.sh").mode & 0o111
+    checksum_lines = (tmp_path / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    checksums = {
+        name: digest for line in checksum_lines for digest, name in (line.split("  ", maxsplit=1),)
+    }
+    assert len(checksums) == 7
+    for name, expected in checksums.items():
+        assert sha256((tmp_path / name).read_bytes()).hexdigest() == expected
 
 
 def test_production_and_development_compose_are_separated() -> None:
@@ -103,6 +124,7 @@ def test_production_and_development_compose_are_separated() -> None:
     assert "ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:${YUKI_VERSION:?missing}" in production
     assert production.count("platform: linux/amd64") == 2
     assert production.count("pull_policy: missing") == 2
+    assert "./.mcp.json:/app/.mcp.json:ro" in production
     assert "image: yuki-qqbot:dev" in development
     assert "image: yuki-genie-tts-worker:dev" in development
     assert development.count("pull_policy: build") == 2
@@ -110,7 +132,7 @@ def test_production_and_development_compose_are_separated() -> None:
 
 
 def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> None:
-    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.2\n", encoding="utf-8")
+    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.3\n", encoding="utf-8")
 
     sentinels = prepare_deployment(tmp_path)
 
@@ -120,10 +142,11 @@ def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> 
     assert sentinels[speaker_sentinel] == "offline-file-sentinel"
     assert hubert_sentinel.read_text(encoding="utf-8") == "offline-directory"
     assert speaker_sentinel.read_text(encoding="utf-8") == "offline-file-sentinel"
+    assert (tmp_path / ".mcp.json").read_text(encoding="utf-8") == '{"mcpServers": {}}\n'
 
 
 def test_release_smoke_sentinels_are_idempotent_and_conflict_safe(tmp_path: Path) -> None:
-    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.2\n", encoding="utf-8")
+    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.3\n", encoding="utf-8")
     sentinels = prepare_deployment(tmp_path)
 
     assert prepare_deployment(tmp_path) == sentinels
@@ -160,8 +183,26 @@ def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:
         "docker-compose.yml",
         ".env.example",
         "Yuki-$VERSION-Upgrade.md",
+        "install.sh",
+        "install.ps1",
+        "SHA256SUMS",
     ):
         assert f'"dist/{asset}"' in workflow
+
+
+def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> None:
+    shell = (ROOT / "install.sh").read_text(encoding="utf-8")
+    powershell = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    for installer in (shell, powershell):
+        assert "docker.sock" not in installer
+        assert "SHA256SUMS" in installer
+        assert "qq-ai-bot-cli" in installer
+        assert "setup --deployment-root /deploy" in installer
+        assert "docker compose" in installer
+        assert "apply-pending" in installer
+        assert "setup verify" in installer
+    assert '--user "$(id -u):$(id -g)"' in shell
+    assert "icacls" in powershell
 
 
 def _git(root: Path, *arguments: str) -> None:

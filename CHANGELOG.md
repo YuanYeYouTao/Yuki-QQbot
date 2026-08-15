@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 3.5.3 - 2026-08-16
+
+### Guided Deployment v1
+
+- 新增彩色交互式 `qq-ai-bot-cli setup`，在构造完整 Settings 前即可从空部署目录配置管理员、
+  主模型及 Flash、Embedding、Web、Vision、MCP、Plugin、Automation、Speech 八类可选能力。
+- 向导按选择条件提问，隐藏所有密钥输入，以脱敏摘要确认后原子写入；重跑时支持区块级修改、
+  未知 `.env` 项保留、配置备份轮换和取消零写入。
+- 模型档案由向导显式生成：Flash 关闭时全部任务使用主模型，开启时结构化后台任务使用 Flash；
+  DeepSeek Responses 保留原生 Web 能力且请求继续完全省略 `tool_choice`。
+- MCP 引导仅接受 Streamable HTTP，并把敏感 Header 移入 `.env`；插件只扫描 Manifest，逐项批准
+  后在数据库迁移完成后应用，不导入插件代码，也不自动启用任何插件。
+- 新增 Linux 与 Windows 安装器，校验精确版本部署包后用一次性无 Docker Socket 容器运行向导，
+  再固定执行 Compose 校验、拉取、启动、插件应用和健康检查。
+- Release 资产新增 `install.sh`、`install.ps1` 和 `SHA256SUMS`，生产 Compose 增加只读
+  `.mcp.json` 挂载；正式平台仍为 `linux/amd64`，Alembic head 保持 `0036`，Plugin API 保持 `1.1`。
+
 ## 3.5.2 - 2026-08-15
 
 ### Versioned Docker Release

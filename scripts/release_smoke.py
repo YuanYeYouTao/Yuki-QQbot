@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import sqlite3
 import subprocess
 import time
@@ -15,6 +14,24 @@ from typing import Any
 
 class SmokeError(RuntimeError):
     """Raised when a release image or deployment contract fails smoke testing."""
+
+
+_MODEL_TASKS = (
+    "chat_agent",
+    "planner",
+    "memory_extraction",
+    "memory_self_reflection",
+    "memory_consolidation",
+    "memory_dream",
+    "memory_attribution",
+    "relationship_evaluation",
+    "emoji_replacement",
+    "automation_text_generation",
+    "automation_agent",
+    "plugin_agent_session",
+    "tool_selection",
+    "utility_structured",
+)
 
 
 class Compose:
@@ -75,7 +92,55 @@ def validate_production_compose(deploy_directory: Path, version: str, compose: C
 def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
     env_file = deploy_directory / ".env"
     if not env_file.exists():
-        shutil.copyfile(deploy_directory / ".env.example", env_file)
+        environment = (deploy_directory / ".env.example").read_text(encoding="utf-8")
+        replacements = {
+            "ONEBOT_ACCESS_TOKEN=replace-with-a-long-random-token": (
+                "ONEBOT_ACCESS_TOKEN=release-smoke-onebot-token"
+            ),
+            "NAPCAT_WEBUI_TOKEN=replace-with-a-long-random-webui-token": (
+                "NAPCAT_WEBUI_TOKEN=release-smoke-napcat-token"
+            ),
+            "SUPERUSERS=replace-with-superuser-qq": "SUPERUSERS=10000",
+            "LLM_PROVIDER=openai": "LLM_PROVIDER=openai_compatible",
+            "LLM_BASE_URL=https://replace-with-provider.example/v1": (
+                "LLM_BASE_URL=https://models.example.invalid/v1"
+            ),
+            "LLM_API_KEY=replace-with-api-key": "LLM_API_KEY=release-smoke-key",
+            "LLM_MODEL=replace-with-model-name": "LLM_MODEL=release-smoke-model",
+        }
+        for old, new in replacements.items():
+            environment = environment.replace(old, new)
+        env_file.write_text(environment, encoding="utf-8")
+    mcp_file = deploy_directory / ".mcp.json"
+    if not mcp_file.exists():
+        mcp_file.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    model_profiles = deploy_directory / "config/model_profiles.toml"
+    if not model_profiles.exists():
+        model_profiles.parent.mkdir(parents=True, exist_ok=True)
+        routes = "\n".join(f'{task} = "main"' for task in _MODEL_TASKS)
+        model_profiles.write_text(
+            """schema_version = 2
+
+[profiles.main]
+provider = "openai_compatible"
+protocol = "chat_completions"
+base_url_env = "LLM_BASE_URL"
+api_key_env = "LLM_API_KEY"
+model_env = "LLM_MODEL"
+timeout_seconds = 120.0
+max_retries = 0
+default_temperature = 0.0
+default_max_output_tokens = 512
+thinking_mode = "disabled"
+structured_output_mode = "function_tool"
+capabilities = ["tools", "structured_output", "long_context"]
+
+[routes]
+"""
+            + routes
+            + "\n",
+            encoding="utf-8",
+        )
     sentinels = {
         deploy_directory / "data/.release-smoke-data": "data",
         deploy_directory / "config/.release-smoke-config": "config",
@@ -136,6 +201,36 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
         raise SmokeError(f"unexpected Alembic version: {row}")
 
 
+def verify_guided_setup(deploy_directory: Path, version: str) -> None:
+    command = ["docker", "run", "--rm"]
+    if os.name != "nt":
+        command.extend(("--user", f"{os.getuid()}:{os.getgid()}"))
+    command.extend(
+        (
+            "--entrypoint",
+            "qq-ai-bot-cli",
+            "--volume",
+            f"{deploy_directory.resolve()}:/deploy",
+            "--workdir",
+            "/deploy",
+            f"ghcr.io/yuanyeyoutao/yuki-qqbot:{version}",
+            "setup",
+            "validate",
+            "--deployment-root",
+            "/deploy",
+            "--no-color",
+        )
+    )
+    completed = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if "配置通过本地严格验证" not in completed.stdout or "\033[" in completed.stdout:
+        raise SmokeError("source-free Guided Setup validation failed")
+
+
 def verify_persistence(
     compose: Compose, deploy_directory: Path, sentinels: dict[Path, str]
 ) -> None:
@@ -188,6 +283,7 @@ def run_smoke(deploy_directory: Path, version: str, *, full: bool) -> None:
     sentinels = prepare_deployment(deploy_directory)
     try:
         validate_production_compose(deploy_directory, version, compose)
+        verify_guided_setup(deploy_directory, version)
         compose.run("up", "-d", "--no-deps", "bot")
         verify_bot(compose, deploy_directory, version)
         if full:

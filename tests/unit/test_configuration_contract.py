@@ -18,6 +18,8 @@ _EXTERNAL_ENVIRONMENT_KEYS = {
     "NAPCAT_IMAGE",
     "NAPCAT_UID",
     "NAPCAT_WEBUI_TOKEN",
+    # Compose reads this before starting services; the application ignores it.
+    "COMPOSE_PROFILES",
     "SPEECH_WORKER_IDLE_RECYCLE_SECONDS",
     # Compose selects immutable Yuki image tags before application settings load.
     "YUKI_VERSION",
