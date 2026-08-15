@@ -18,6 +18,7 @@ from scripts.release_smoke import (
     SmokeError,
     prepare_deployment,
     verify_bot,
+    verify_guided_setup,
     wait_healthy,
 )
 from scripts.release_validate import (
@@ -231,6 +232,29 @@ def test_release_smoke_reads_alembic_version_inside_container(
     assert len(calls) == 2
     assert all(call[:4] == ("exec", "-T", "bot", "python") for call in calls)
     assert not (tmp_path / "data/qq_ai_bot.db").exists()
+
+
+def test_release_smoke_cleans_root_owned_permission_fixture_in_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            stdout="配置通过本地严格验证\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    verify_guided_setup(tmp_path, VERSION)
+
+    cleanup = calls[-1]
+    assert cleanup[:4] == ["docker", "run", "--rm", "--entrypoint"]
+    assert "--user" not in cleanup
+    assert "unlink(missing_ok=True)" in cleanup[-1]
 
 
 def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:
