@@ -11,6 +11,7 @@ from scripts.build_release_bundle import (
     select_bundle_files,
     tracked_files,
 )
+from scripts.release_smoke import prepare_deployment
 from scripts.release_validate import (
     ReleaseValidationError,
     validate_release_identity,
@@ -106,6 +107,19 @@ def test_production_and_development_compose_are_separated() -> None:
     assert "image: yuki-genie-tts-worker:dev" in development
     assert development.count("pull_policy: build") == 2
     assert development.count("build:") == 2
+
+
+def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> None:
+    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.2\n", encoding="utf-8")
+
+    sentinels = prepare_deployment(tmp_path)
+
+    hubert_sentinel = tmp_path / "data/speech/genie_data/chinese-hubert-base/.release-smoke"
+    speaker_sentinel = tmp_path / "data/speech/genie_data/speaker_encoder.onnx"
+    assert sentinels[hubert_sentinel] == "offline-directory"
+    assert sentinels[speaker_sentinel] == "offline-file-sentinel"
+    assert hubert_sentinel.read_text(encoding="utf-8") == "offline-directory"
+    assert speaker_sentinel.read_text(encoding="utf-8") == "offline-file-sentinel"
 
 
 def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:
