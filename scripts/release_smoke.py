@@ -295,7 +295,25 @@ def verify_guided_setup(deploy_directory: Path, version: str) -> None:
         ],
         check=True,
     )
-    (deploy_directory / "data/setup/pending.json").unlink()
+    cleanup_script = (
+        "from pathlib import Path; "
+        "(Path('/deploy')/'data/setup/pending.json').unlink(missing_ok=True)"
+    )
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "python",
+            "--volume",
+            f"{deploy_directory.resolve()}:/deploy",
+            image,
+            "-c",
+            cleanup_script,
+        ],
+        check=True,
+    )
 
 
 def verify_persistence(
