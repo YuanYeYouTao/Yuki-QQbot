@@ -742,30 +742,40 @@ def _validate_credentials_and_endpoints(
     required = ("SUPERUSERS", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
     missing = [name for name in required if not _configured_value(environment.get(name, ""))]
     if missing:
-        raise SetupValidationError("基础配置不完整：" + ", ".join(missing))
+        raise SetupValidationError("基础配置本地验证失败，缺少：" + ", ".join(missing))
     endpoint_names = ["LLM_BASE_URL"]
     if flash_enabled:
-        for name in ("LLM_FLASH_BASE_URL", "LLM_FLASH_API_KEY", "LLM_FLASH_MODEL"):
-            if not _configured_value(environment.get(name, "")):
-                raise SetupValidationError("Flash 配置不完整")
+        missing_flash = [
+            name
+            for name in ("LLM_FLASH_BASE_URL", "LLM_FLASH_API_KEY", "LLM_FLASH_MODEL")
+            if not _configured_value(environment.get(name, ""))
+        ]
+        if missing_flash:
+            raise SetupValidationError("Flash 本地验证失败，缺少：" + ", ".join(missing_flash))
         endpoint_names.append("LLM_FLASH_BASE_URL")
     if environment.get("MEMORY_EMBEDDING_ENABLED", "false").casefold() == "true":
-        if not all(
-            _configured_value(environment.get(name, ""))
+        missing_embedding = [
+            name
             for name in (
                 "MEMORY_EMBEDDING_BASE_URL",
                 "MEMORY_EMBEDDING_API_KEY",
                 "MEMORY_EMBEDDING_MODEL",
             )
-        ):
-            raise SetupValidationError("Embedding 配置不完整")
+            if not _configured_value(environment.get(name, ""))
+        ]
+        if missing_embedding:
+            raise SetupValidationError(
+                "Embedding 本地验证失败，缺少：" + ", ".join(missing_embedding)
+            )
         endpoint_names.append("MEMORY_EMBEDDING_BASE_URL")
     if environment.get("VISION_ENABLED", "false").casefold() == "true":
-        if not all(
-            _configured_value(environment.get(name, ""))
+        missing_vision = [
+            name
             for name in ("VISION_BASE_URL", "VISION_API_KEY", "VISION_MODEL")
-        ):
-            raise SetupValidationError("Vision 配置不完整")
+            if not _configured_value(environment.get(name, ""))
+        ]
+        if missing_vision:
+            raise SetupValidationError("Vision 本地验证失败，缺少：" + ", ".join(missing_vision))
         endpoint_names.append("VISION_BASE_URL")
     if environment.get("WEB_MODE", "disabled").casefold() == "tavily" and not _configured_value(
         environment.get("TAVILY_API_KEY", "")

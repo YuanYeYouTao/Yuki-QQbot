@@ -285,7 +285,11 @@ def _run_page_state_machine(
                     entry_snapshots.pop(page_index, None)
                 else:
                     raise
-            ui.warning("请在当前页面修正配置，或使用 :back / :quit")
+            ui.warning("本页没有通过验证，尚未保存；接下来会重新显示本页。")
+            ui.warning(
+                "可以修正后重试，或输入 :back 返回、输入 :quit 退出；"
+                "两个命令都必须带开头的英文冒号“:”。"
+            )
 
 
 def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
@@ -366,6 +370,7 @@ def _page_embedding(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> No
     del paths
     environment = draft.environment
     ui.info("Embedding 提升长期记忆语义召回，关闭后仍保留 SQLite FTS。")
+    ui.info("启用后必须填写 API Key；向导只检查是否填写，不会联网验证凭据。")
     enabled = ui.confirm(
         "启用 Embedding？",
         default=_as_bool(environment.get("MEMORY_EMBEDDING_ENABLED", "false")),
@@ -446,6 +451,7 @@ def _page_vision(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
 def _page_mcp(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     environment = draft.environment
     ui.info("MCP 连接外部工具；Docker 引导版仅支持 Streamable HTTP。")
+    ui.info("启用后至少配置一个未禁用 Server；配置过程中可输入 :back 或 :quit。")
     enabled = ui.confirm(
         "启用 MCP？",
         default=_as_bool(environment.get("MCP_ENABLED", "false")),
@@ -674,7 +680,7 @@ def _configure_mcp(
     allow_keep: bool = True,
 ) -> dict[str, object]:
     choices: list[tuple[str, str]] = [("create", "创建 HTTP Server"), ("import", "导入 .mcp.json")]
-    if paths.mcp.is_file() and allow_keep:
+    if paths.mcp.is_file() and allow_keep and _mcp_has_enabled_server(current):
         choices.insert(0, ("keep", "保留并重新验证现有配置"))
     action = ui.choose("MCP 配置方式", tuple(choices), default=choices[0][0])
     if action == "keep":
@@ -710,8 +716,18 @@ def _configure_mcp(
                     raise SetupValidationError("认证 Header 值不能为空")
                 server["headers"] = {header: secret}
             servers[server_id] = server
-            if not ui.confirm("继续添加 MCP Server？", default=False):
+            ui.success(f"已暂存 MCP Server：{server_id}")
+            next_action = ui.choose(
+                "下一步",
+                (
+                    ("finish", "完成 MCP 配置并继续"),
+                    ("add", "添加另一个 MCP Server"),
+                ),
+                default="finish",
+            )
+            if next_action == "finish":
                 break
+            ui.info("开始添加另一个 MCP Server；也可输入 :back 或 :quit。")
         document = {"mcpServers": servers}
     sanitized = sanitize_mcp_document(document, environment)
     for name in missing_mcp_environment(sanitized, environment):
@@ -720,6 +736,17 @@ def _configure_mcp(
             raise SetupValidationError(f"MCP 环境变量 {name} 不能为空")
         environment[name] = secret
     return sanitized
+
+
+def _mcp_has_enabled_server(document: dict[str, object]) -> bool:
+    servers = document.get("mcpServers")
+    return bool(
+        isinstance(servers, dict)
+        and any(
+            isinstance(server, dict) and not bool(server.get("disabled", False))
+            for server in servers.values()
+        )
+    )
 
 
 def _select_plugins(
@@ -912,7 +939,10 @@ def _ask_required_secret(ui: TerminalUI, label: str, existing: str) -> str:
         return value
     if configured:
         return existing
-    raise SetupValidationError(f"{label}不能为空")
+    raise SetupValidationError(
+        f"{label} 未填写。本地验证失败：启用此功能必须提供凭据；"
+        "向导不会联网判断 API Key 是否真实有效"
+    )
 
 
 def _ask_qq(ui: TerminalUI, *, default: str) -> str:

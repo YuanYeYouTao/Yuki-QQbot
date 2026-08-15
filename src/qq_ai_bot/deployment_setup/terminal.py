@@ -57,7 +57,7 @@ class TerminalUI:
         self._style = _Style()
 
     def navigation_hint(self) -> None:
-        self.disabled("输入 :back 返回上一页，输入 :quit 安全退出")
+        self.disabled("输入 :back 返回上一页，输入 :quit 安全退出（必须输入开头的英文冒号“:”）")
 
     def _paint(self, value: str, color: str) -> str:
         if not self.color:

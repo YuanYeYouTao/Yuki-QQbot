@@ -14,7 +14,9 @@ import qq_ai_bot.cli as administrative_cli
 import qq_ai_bot.deployment_setup.service as setup_service
 from qq_ai_bot.config import Settings
 from qq_ai_bot.deployment_setup.command import (
+    _ask_required_secret,
     _configure,
+    _configure_mcp,
     _load_current_configuration,
     _select_plugins,
 )
@@ -162,6 +164,40 @@ def test_terminal_navigation_commands_and_interrupts_are_control_flow() -> None:
         interrupted.confirm("continue")
 
 
+def test_missing_api_key_reports_local_validation_and_navigation() -> None:
+    ui, output = _scripted_ui([], secrets=[""])
+
+    with pytest.raises(SetupValidationError, match="Embedding API Key 未填写"):
+        _ask_required_secret(ui, "Embedding API Key", "")
+    assert "API Key" not in output.getvalue()
+
+
+def test_mcp_create_flow_names_finish_and_add_another_server(tmp_path: Path) -> None:
+    paths = _setup_paths(tmp_path)
+    paths.mcp.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    ui, output = _scripted_ui(
+        [
+            "",  # Empty existing config must default to create, not keep.
+            "search",
+            "https://mcp.example.invalid/search",
+            "n",
+            "add",
+            "calendar",
+            "https://mcp.example.invalid/calendar",
+            "n",
+            "",  # Default: finish and continue.
+        ]
+    )
+
+    document = _configure_mcp(ui, paths, {}, {"mcpServers": {}})
+
+    assert set(document["mcpServers"]) == {"search", "calendar"}  # type: ignore[arg-type]
+    rendered = output.getvalue()
+    assert "完成 MCP 配置并继续" in rendered
+    assert "添加另一个 MCP Server" in rendered
+    assert "已暂存 MCP Server：search" in rendered
+
+
 def test_first_run_generates_safe_all_disabled_configuration(tmp_path: Path) -> None:
     paths = _copy_deployment_templates(tmp_path)
     ui, output = _scripted_ui(
@@ -271,6 +307,8 @@ def test_page_back_revisits_previous_page_and_discards_failed_page_draft(
     assert environment.get("MEMORY_EMBEDDING_BASE_URL", "") != "not-a-url"
     assert "[profiles.flash]" in paths.model_profiles.read_text(encoding="utf-8")
     assert "输入 :back 返回上一页" in output.getvalue()
+    assert "必须输入开头的英文冒号" in output.getvalue()
+    assert "本页没有通过验证，尚未保存" in output.getvalue()
 
 
 def test_back_from_review_returns_to_last_logical_page(tmp_path: Path) -> None:
