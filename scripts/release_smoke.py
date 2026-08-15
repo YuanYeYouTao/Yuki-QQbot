@@ -48,7 +48,8 @@ class Compose:
             env=self.environment,
             check=True,
             capture_output=capture,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         return completed.stdout.strip() if capture else ""
 
@@ -172,7 +173,8 @@ def wait_healthy(compose: Compose, service: str, timeout_seconds: float = 120.0)
             ["docker", "inspect", "--format", "{{.State.Health.Status}}", container_id],
             check=True,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         ).stdout.strip()
         if status == "healthy":
             return container_id
@@ -204,7 +206,11 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
 def verify_guided_setup(deploy_directory: Path, version: str) -> None:
     command = ["docker", "run", "--rm"]
     if os.name != "nt":
-        command.extend(("--user", f"{os.getuid()}:{os.getgid()}"))
+        get_uid = getattr(os, "getuid", None)
+        get_gid = getattr(os, "getgid", None)
+        if not callable(get_uid) or not callable(get_gid):
+            raise SmokeError("POSIX user identity is unavailable")
+        command.extend(("--user", f"{get_uid()}:{get_gid()}"))
     command.extend(
         (
             "--entrypoint",
@@ -225,7 +231,8 @@ def verify_guided_setup(deploy_directory: Path, version: str) -> None:
         command,
         check=True,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if "配置通过本地严格验证" not in completed.stdout or "\033[" in completed.stdout:
         raise SmokeError("source-free Guided Setup validation failed")
@@ -259,7 +266,8 @@ def verify_napcat_mount_recreation(compose: Compose, deploy_directory: Path) -> 
                 ["docker", "inspect", "--format", "{{json .Mounts}}", container_id],
                 check=True,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
             ).stdout
         )
         login_mount = next(

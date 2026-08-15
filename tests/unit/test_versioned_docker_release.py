@@ -13,7 +13,7 @@ from scripts.build_release_bundle import (
     select_bundle_files,
     tracked_files,
 )
-from scripts.release_smoke import SmokeError, prepare_deployment
+from scripts.release_smoke import Compose, SmokeError, prepare_deployment
 from scripts.release_validate import (
     ReleaseValidationError,
     validate_release_identity,
@@ -155,6 +155,23 @@ def test_release_smoke_sentinels_are_idempotent_and_conflict_safe(tmp_path: Path
     conflicting.write_text("unexpected", encoding="utf-8")
     with pytest.raises(SmokeError, match="unexpected content"):
         prepare_deployment(tmp_path)
+
+
+def test_release_smoke_decodes_docker_output_as_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(args[0], 0, stdout="配置通过本地严格验证\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    output = Compose(tmp_path, "test-project", VERSION).run("config", capture=True)
+
+    assert output == "配置通过本地严格验证"
+    assert observed["encoding"] == "utf-8"
+    assert observed["errors"] == "replace"
 
 
 def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:
