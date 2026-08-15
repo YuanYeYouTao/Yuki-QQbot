@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -12,7 +13,11 @@ import pytest
 import qq_ai_bot.cli as administrative_cli
 import qq_ai_bot.deployment_setup.service as setup_service
 from qq_ai_bot.config import Settings
-from qq_ai_bot.deployment_setup.command import _configure
+from qq_ai_bot.deployment_setup.command import (
+    _configure,
+    _load_current_configuration,
+    _select_plugins,
+)
 from qq_ai_bot.deployment_setup.service import (
     EnvironmentDocument,
     SetupConfiguration,
@@ -26,7 +31,7 @@ from qq_ai_bot.deployment_setup.service import (
     sanitize_mcp_document,
     validate_configuration,
 )
-from qq_ai_bot.deployment_setup.terminal import TerminalUI
+from qq_ai_bot.deployment_setup.terminal import BackRequested, QuitRequested, TerminalUI
 from qq_ai_bot.model_runtime import ModelTask
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
@@ -139,6 +144,24 @@ def test_secret_input_is_never_written_to_terminal_output() -> None:
     assert "super-secret-value" not in output.getvalue()
 
 
+def test_terminal_navigation_commands_and_interrupts_are_control_flow() -> None:
+    back = TerminalUI(input_fn=lambda _prompt: ":back", output=io.StringIO(), is_tty=False)
+    with pytest.raises(BackRequested):
+        back.ask("value")
+
+    quit_ui = TerminalUI(secret_fn=lambda _prompt: ":quit", output=io.StringIO(), is_tty=False)
+    with pytest.raises(QuitRequested):
+        quit_ui.ask_secret("secret")
+
+    interrupted = TerminalUI(
+        input_fn=lambda _prompt: (_ for _ in ()).throw(KeyboardInterrupt),
+        output=io.StringIO(),
+        is_tty=False,
+    )
+    with pytest.raises(QuitRequested):
+        interrupted.confirm("continue")
+
+
 def test_first_run_generates_safe_all_disabled_configuration(tmp_path: Path) -> None:
     paths = _copy_deployment_templates(tmp_path)
     ui, output = _scripted_ui(
@@ -210,6 +233,139 @@ def test_cancelled_first_run_writes_nothing(tmp_path: Path) -> None:
     assert not paths.model_profiles.exists()
     assert not paths.mcp.exists()
     assert not paths.pending.exists()
+
+
+def test_page_back_revisits_previous_page_and_discards_failed_page_draft(
+    tmp_path: Path,
+) -> None:
+    paths = _copy_deployment_templates(tmp_path)
+    ui, output = _scripted_ui(
+        [
+            "12345678",
+            "",
+            "https://models.example.invalid/v1",
+            "test-main-model",
+            "n",  # Flash off.
+            "y",  # Embedding on, then fail validation.
+            "not-a-url",
+            "embedding-model",
+            ":back",  # Retry begins; return to Flash.
+            "y",
+            "y",
+            "flash-model",
+            "n",  # Embedding is back to its entry state, not the failed draft.
+            "",
+            "n",
+            "n",
+            "n",
+            "n",
+            "n",
+            "y",
+        ],
+        secrets=["test-main-key", "embedding-key"],
+    )
+
+    assert _configure(paths, ui) == 0
+    environment = EnvironmentDocument.load(paths).values()
+    assert environment["MEMORY_EMBEDDING_ENABLED"] == "false"
+    assert environment.get("MEMORY_EMBEDDING_BASE_URL", "") != "not-a-url"
+    assert "[profiles.flash]" in paths.model_profiles.read_text(encoding="utf-8")
+    assert "输入 :back 返回上一页" in output.getvalue()
+
+
+def test_back_from_review_returns_to_last_logical_page(tmp_path: Path) -> None:
+    paths = _copy_deployment_templates(tmp_path)
+    ui, _output = _scripted_ui(
+        [
+            "12345678",
+            "",
+            "https://models.example.invalid/v1",
+            "test-main-model",
+            "n",
+            "n",
+            "",
+            "n",
+            "n",
+            "n",
+            "n",
+            "n",
+            ":back",
+            "n",
+            "y",
+        ],
+        secrets=["test-main-key"],
+    )
+
+    assert _configure(paths, ui) == 0
+    assert EnvironmentDocument.load(paths).values()["SPEECH_ENABLED"] == "false"
+
+
+def test_rerun_with_no_selected_sections_is_a_noop(tmp_path: Path) -> None:
+    paths = _copy_deployment_templates(tmp_path)
+    first, _output = _scripted_ui(
+        [
+            "12345678",
+            "",
+            "https://models.example.invalid/v1",
+            "test-main-model",
+            "n",
+            "n",
+            "",
+            "n",
+            "n",
+            "n",
+            "n",
+            "n",
+            "y",
+        ],
+        secrets=["test-main-key"],
+    )
+    assert _configure(paths, first) == 0
+    before = {path: path.read_bytes() for path in (paths.env, paths.model_profiles, paths.mcp)}
+
+    rerun, output = _scripted_ui([""])
+    assert _configure(paths, rerun) == 2
+    assert {path: path.read_bytes() for path in before} == before
+    assert "默认不修改任何区块" in output.getvalue()
+
+
+def test_return_to_section_selector_discards_the_entire_uncommitted_session(
+    tmp_path: Path,
+) -> None:
+    paths = _copy_deployment_templates(tmp_path)
+    first, _output = _scripted_ui(
+        [
+            "12345678",
+            "",
+            "https://models.example.invalid/v1",
+            "test-main-model",
+            "n",
+            "n",
+            "",
+            "n",
+            "n",
+            "n",
+            "n",
+            "n",
+            "y",
+        ],
+        secrets=["test-main-key"],
+    )
+    assert _configure(paths, first) == 0
+    before = paths.env.read_bytes()
+
+    rerun, _output = _scripted_ui(
+        [
+            "automation",
+            "y",
+            "UTC",
+            ":back",  # Review -> Automation.
+            ":back",  # First selected page -> section selector.
+            "",  # No sections: exit without writing.
+        ]
+    )
+    assert _configure(paths, rerun) == 2
+    assert paths.env.read_bytes() == before
 
 
 def test_selective_rerun_preserves_unselected_files_and_unknown_env(tmp_path: Path) -> None:
@@ -439,6 +595,28 @@ def test_flash_native_web_and_http_mcp_validate_together(tmp_path: Path) -> None
     assert settings.web.mode.value == "native"
 
 
+def test_disabled_broken_mcp_can_be_preserved_and_validated(tmp_path: Path) -> None:
+    paths = _setup_paths(tmp_path)
+    environment = _base_environment()
+    paths.env.write_text(
+        EnvironmentDocument(paths.env_example.read_text(encoding="utf-8")).merge(environment),
+        encoding="utf-8",
+    )
+    paths.model_profiles.write_text(
+        build_model_profiles(main_protocol="chat_completions", flash_enabled=False),
+        encoding="utf-8",
+    )
+    broken = "{ definitely broken"
+    paths.mcp.write_text(broken, encoding="utf-8")
+    ui, _output = _scripted_ui(["", "", "y"])
+
+    assert _configure(paths, ui) == 0
+    assert paths.mcp.read_text(encoding="utf-8") == broken
+    configuration, _document = _load_current_configuration(paths)
+    assert configuration.mcp_document == {"mcpServers": {}}
+    assert not validate_configuration(paths, configuration).mcp_enabled
+
+
 def test_atomic_commit_backs_up_and_does_not_rewrite_unselected_files(tmp_path: Path) -> None:
     paths = _setup_paths(tmp_path)
     paths.env.write_text("# user comment\nUNKNOWN=preserve\nYUKI_VERSION=3.5.2\n", encoding="utf-8")
@@ -464,8 +642,106 @@ def test_atomic_commit_backs_up_and_does_not_rewrite_unselected_files(tmp_path: 
     assert "UNKNOWN=preserve" in paths.env.read_text(encoding="utf-8")
     assert paths.model_profiles.read_text(encoding="utf-8") == "original model profile\n"
     assert paths.mcp.read_text(encoding="utf-8") == '{"mcpServers": {}}\n'
+    assert paths.restart_required.read_text(encoding="utf-8") == "configuration-changed\n"
     if os.name != "nt":
         assert stat.S_IMODE(paths.env.stat().st_mode) == 0o600
+
+
+def test_commit_emits_speech_start_and_stop_actions(tmp_path: Path) -> None:
+    paths = _setup_paths(tmp_path)
+    paths.env.write_text("SPEECH_ENABLED=false\n", encoding="utf-8")
+    document = EnvironmentDocument.load(paths)
+    commit_configuration(
+        paths,
+        document,
+        SetupConfiguration(
+            environment={"SPEECH_ENABLED": "true"},
+            model_profiles="model\n",
+            mcp_document={"mcpServers": {}},
+            pending_plugins=None,
+        ),
+    )
+    assert paths.speech_action.read_text(encoding="utf-8") == "start\n"
+
+    commit_configuration(
+        paths,
+        EnvironmentDocument.load(paths),
+        SetupConfiguration(
+            environment={"SPEECH_ENABLED": "false"},
+            model_profiles="model\n",
+            mcp_document={"mcpServers": {}},
+            pending_plugins=None,
+        ),
+    )
+    assert paths.speech_action.read_text(encoding="utf-8") == "stop\n"
+
+
+def test_plugin_rerun_keeps_valid_approval_and_revokes_changed_permissions(
+    tmp_path: Path,
+) -> None:
+    paths = SetupPaths(tmp_path)
+    plugin = tmp_path / "plugins/example.guided"
+    plugin.mkdir(parents=True)
+    manifest = plugin / "plugin.toml"
+    manifest.write_text(
+        """id = "example.guided"
+name = "Guided Test"
+version = "1.0.0"
+description = "Manifest-only guided setup test."
+entrypoint = "plugin:Plugin"
+plugin_api = "1.1"
+yuki_requires = ">=3.5.3,<4"
+permissions = ["message.current.read"]
+""",
+        encoding="utf-8",
+    )
+    database_path = tmp_path / "data/test.db"
+    database_path.parent.mkdir(parents=True)
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    database = Database(database_url)
+    asyncio.run(database.create_schema())
+    asyncio.run(database.close())
+    settings = Settings.model_validate(
+        {
+            "database_url": database_url,
+            "plugin_directory": plugin.parent,
+            "llm_provider": "fake",
+            "llm_model": "fake",
+        }
+    )
+    paths.pending.parent.mkdir(parents=True, exist_ok=True)
+    paths.pending.write_text(
+        json.dumps({"schema_version": 1, "selected_plugins": ["example.guided"]}),
+        encoding="utf-8",
+    )
+    assert asyncio.run(apply_pending_plugins(paths, settings)) == 1
+
+    keep_ui, _output = _scripted_ui([""])
+    assert _select_plugins(
+        keep_ui,
+        paths,
+        {"DATABASE_URL": database_url},
+        initial=False,
+    ) == ("example.guided",)
+
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'permissions = ["message.current.read"]',
+            'permissions = ["message.current.read", "network.http.allowlisted"]',
+        ),
+        encoding="utf-8",
+    )
+    changed_ui, output = _scripted_ui([""])
+    assert (
+        _select_plugins(
+            changed_ui,
+            paths,
+            {"DATABASE_URL": database_url},
+            initial=False,
+        )
+        == ()
+    )
+    assert "旧批准不会沿用" in output.getvalue()
 
 
 def test_backup_rotation_keeps_five_snapshots(tmp_path: Path) -> None:

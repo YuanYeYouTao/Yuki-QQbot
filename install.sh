@@ -85,25 +85,39 @@ download() {
     fi
 }
 
+base="https://github.com/$REPOSITORY/releases/download/v$VERSION"
+archive="yuki-$VERSION-deploy.tar.gz"
+download "$base/$archive" "$temporary/$archive"
+download "$base/SHA256SUMS" "$temporary/SHA256SUMS"
+expected=$(awk -v name="$archive" '$2 == name {print $1}' "$temporary/SHA256SUMS")
+[ -n "$expected" ] || fail "release checksum does not list $archive"
+if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$temporary/$archive" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 "$temporary/$archive" | awk '{print $1}')
+else
+    fail "sha256sum or shasum is required"
+fi
+[ "$actual" = "$expected" ] || fail "release archive checksum mismatch"
+tar -xzf "$temporary/$archive" -C "$temporary"
+source="$temporary/yuki-$VERSION-deploy"
+[ -d "$source" ] || fail "release archive layout is invalid"
+
 if [ "$existing" = false ]; then
-    base="https://github.com/$REPOSITORY/releases/download/v$VERSION"
-    archive="yuki-$VERSION-deploy.tar.gz"
-    download "$base/$archive" "$temporary/$archive"
-    download "$base/SHA256SUMS" "$temporary/SHA256SUMS"
-    expected=$(awk -v name="$archive" '$2 == name {print $1}' "$temporary/SHA256SUMS")
-    [ -n "$expected" ] || fail "release checksum does not list $archive"
-    if command -v sha256sum >/dev/null 2>&1; then
-        actual=$(sha256sum "$temporary/$archive" | awk '{print $1}')
-    elif command -v shasum >/dev/null 2>&1; then
-        actual=$(shasum -a 256 "$temporary/$archive" | awk '{print $1}')
-    else
-        fail "sha256sum or shasum is required"
-    fi
-    [ "$actual" = "$expected" ] || fail "release archive checksum mismatch"
-    tar -xzf "$temporary/$archive" -C "$temporary"
-    source="$temporary/yuki-$VERSION-deploy"
-    [ -d "$source" ] || fail "release archive layout is invalid"
     cp -R "$source/." "$INSTALL_DIR/"
+else
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    managed_backup="$INSTALL_DIR/.yuki/backups/installer-$stamp"
+    for relative in docker-compose.yml .env.example install.sh install.ps1 "Yuki-$VERSION-Upgrade.md"; do
+        [ -f "$source/$relative" ] || fail "release bundle is missing $relative"
+        if [ -f "$INSTALL_DIR/$relative" ]; then
+            mkdir -p "$managed_backup/$(dirname "$relative")"
+            cp "$INSTALL_DIR/$relative" "$managed_backup/$relative"
+        fi
+        cp "$source/$relative" "$INSTALL_DIR/$relative.yuki-new"
+        mv -f "$INSTALL_DIR/$relative.yuki-new" "$INSTALL_DIR/$relative"
+    done
+    printf '%s\n' "Updated release-managed deployment files; mutable data and configuration were preserved."
 fi
 
 if [ "$existing" = false ] && command -v ss >/dev/null 2>&1 && \
@@ -126,6 +140,7 @@ docker run --rm -it \
 cd "$INSTALL_DIR"
 docker compose config --quiet
 docker compose pull
+old_bot=$(docker compose ps -q bot 2>/dev/null || true)
 docker compose up -d
 
 wait_for_bot() {
@@ -142,13 +157,47 @@ wait_for_bot() {
     return 1
 }
 
+wait_for_service() {
+    service=$1
+    deadline=$(( $(date +%s) + 180 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        container=$(docker compose --profile speech ps -q "$service" 2>/dev/null || true)
+        if [ -n "$container" ]; then
+            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container" 2>/dev/null || true)
+            [ "$status" = healthy ] && return 0
+            [ "$status" = exited ] && return 1
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 wait_for_bot || fail "Bot did not become healthy within 180 seconds"
+new_bot=$(docker compose ps -q bot 2>/dev/null || true)
+if [ -f "data/setup/restart-required" ] && [ "$old_bot" != "$new_bot" ]; then
+    rm -f "data/setup/restart-required"
+fi
+if [ -f "data/setup/speech-action" ]; then
+    speech_action=$(tr -d '\r\n' < "data/setup/speech-action")
+    case "$speech_action" in
+        start)
+            docker compose --profile speech up -d --no-deps genie-tts-worker
+            wait_for_service genie-tts-worker || fail "Speech Worker did not become healthy"
+            ;;
+        stop)
+            docker compose --profile speech stop genie-tts-worker
+            docker compose --profile speech rm -f genie-tts-worker
+            ;;
+        *) fail "unknown pending Speech action" ;;
+    esac
+    rm -f "data/setup/speech-action"
+fi
 if [ -f "data/setup/pending.json" ]; then
     docker compose exec -T bot qq-ai-bot-cli setup apply-pending --deployment-root /app --no-color
-    if [ -f "data/setup/restart-required" ]; then
-        rm -f "data/setup/restart-required"
-        docker compose restart bot
-        wait_for_bot || fail "Bot did not become healthy after applying plugin choices"
-    fi
+fi
+if [ -f "data/setup/restart-required" ]; then
+    docker compose restart bot
+    wait_for_bot || fail "Bot did not become healthy after applying configuration"
+    rm -f "data/setup/restart-required"
 fi
 docker compose exec -T bot qq-ai-bot-cli setup verify --deployment-root /app --no-color

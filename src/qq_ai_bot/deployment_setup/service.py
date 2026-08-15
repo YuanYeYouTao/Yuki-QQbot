@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from pydantic import AliasChoices, AliasPath, ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot import __version__
 from qq_ai_bot.config import Settings
@@ -86,6 +87,14 @@ class SetupPaths:
     def backups(self) -> Path:
         return self.root / ".yuki/backups"
 
+    @property
+    def restart_required(self) -> Path:
+        return self.root / "data/setup/restart-required"
+
+    @property
+    def speech_action(self) -> Path:
+        return self.root / "data/setup/speech-action"
+
 
 @dataclass(frozen=True, slots=True)
 class SetupConfiguration:
@@ -101,6 +110,12 @@ class SetupConfiguration:
 class SpeechProfileCandidate:
     profile_id: str
     display_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class PluginSetupState:
+    enabled: bool
+    approved_permissions: tuple[str, ...] | None
 
 
 class EnvironmentDocument:
@@ -384,8 +399,6 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
                 if missing:
                     raise SetupValidationError("MCP 缺少环境变量：" + ", ".join(missing))
                 load_mcp_config(mcp_path, environment=environment)
-            else:
-                MCPConfigFile.model_validate(configuration.mcp_document)
         except (ModelRuntimeConfigurationError, MCPConfigurationError, ValidationError) as exc:
             raise SetupValidationError(str(exc)) from exc
     return settings
@@ -396,6 +409,8 @@ def commit_configuration(
     document: EnvironmentDocument,
     configuration: SetupConfiguration,
 ) -> Path | None:
+    existing_deployment = paths.env.is_file()
+    old_environment = document.values()
     targets: dict[Path, bytes] = {
         paths.env: document.merge(configuration.environment).encode("utf-8"),
     }
@@ -418,9 +433,25 @@ def commit_configuration(
             + "\n"
         ).encode("utf-8")
     previous = {path: path.read_bytes() if path.is_file() else None for path in targets}
+    restart_sensitive = {paths.env, paths.model_profiles, paths.mcp}
+    configuration_changed = any(
+        path in restart_sensitive and previous[path] != content for path, content in targets.items()
+    )
+    old_speech = _truthy(old_environment.get("SPEECH_ENABLED", "false"))
+    new_speech = _truthy(configuration.environment.get("SPEECH_ENABLED", "false"))
+    if existing_deployment and configuration_changed:
+        targets[paths.restart_required] = b"configuration-changed\n"
+    if old_speech != new_speech:
+        targets[paths.speech_action] = b"start\n" if new_speech else b"stop\n"
+    for path in targets:
+        previous.setdefault(path, path.read_bytes() if path.is_file() else None)
     backup = _create_backup(
         paths,
-        tuple(path for path, value in previous.items() if value is not None),
+        tuple(
+            path
+            for path, value in previous.items()
+            if value is not None and path not in {paths.restart_required, paths.speech_action}
+        ),
     )
     try:
         for path, content in targets.items():
@@ -440,6 +471,10 @@ def commit_configuration(
     return backup
 
 
+def _truthy(value: str) -> bool:
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
 async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
     if not paths.pending.is_file():
         return 0
@@ -447,7 +482,10 @@ async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
         payload = json.loads(paths.pending.read_text(encoding="utf-8"))
         if payload.get("schema_version") != 1:
             raise ValueError
-        selected = frozenset(str(item) for item in payload.get("selected_plugins", []))
+        raw_selected = payload.get("selected_plugins", [])
+        if not isinstance(raw_selected, list):
+            raise ValueError
+        selected = frozenset(str(item) for item in raw_selected)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         raise SetupValidationError("待应用插件配置无效") from exc
     discovery = PluginDiscovery(
@@ -497,6 +535,50 @@ async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
         await database.close()
     paths.pending.unlink(missing_ok=True)
     return changed
+
+
+async def load_plugin_setup_states(
+    paths: SetupPaths,
+    *,
+    database_url: str,
+) -> dict[str, PluginSetupState]:
+    """Read current or pending plugin choices without importing plugin code."""
+
+    if paths.pending.is_file():
+        try:
+            payload = json.loads(paths.pending.read_text(encoding="utf-8"))
+            if payload.get("schema_version") != 1:
+                raise ValueError
+            raw_selected = payload.get("selected_plugins", [])
+            if not isinstance(raw_selected, list):
+                raise ValueError
+            return {
+                str(plugin_id): PluginSetupState(
+                    enabled=True,
+                    approved_permissions=None,
+                )
+                for plugin_id in raw_selected
+            }
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise SetupValidationError("待应用插件配置损坏；未执行任何插件状态变更") from exc
+
+    database: Database | None = None
+    try:
+        database = Database(database_url)
+        repository = PluginInstallationRepository(database)
+        records = await repository.list_all()
+    except (OSError, SQLAlchemyError, ValueError) as exc:
+        raise SetupValidationError("无法读取当前插件批准状态；未执行任何插件状态变更") from exc
+    finally:
+        if database is not None:
+            await database.close()
+    return {
+        record.plugin_id: PluginSetupState(
+            enabled=record.enabled,
+            approved_permissions=tuple(record.approved_permissions),
+        )
+        for record in records
+    }
 
 
 def verify_health(url: str, *, timeout_seconds: float = 180.0) -> dict[str, Any]:

@@ -10,6 +10,14 @@ from dataclasses import dataclass
 from typing import TextIO
 
 
+class BackRequested(Exception):
+    """Request navigation to the previous logical wizard page."""
+
+
+class QuitRequested(Exception):
+    """Request a safe wizard exit without persisting the draft."""
+
+
 @dataclass(frozen=True, slots=True)
 class _Style:
     cyan: str = "\033[36m"
@@ -48,6 +56,9 @@ class TerminalUI:
         self._output = output
         self._style = _Style()
 
+    def navigation_hint(self) -> None:
+        self.disabled("输入 :back 返回上一页，输入 :quit 安全退出")
+
     def _paint(self, value: str, color: str) -> str:
         if not self.color:
             return value
@@ -80,7 +91,7 @@ class TerminalUI:
     def ask(self, label: str, *, default: str = "", required: bool = False) -> str:
         suffix = f" [{default}]" if default else ""
         while True:
-            value = self._input(f"{label}{suffix}: ").strip()
+            value = self._read(self._input, f"{label}{suffix}: ")
             resolved = value or default
             if resolved or not required:
                 return resolved
@@ -88,12 +99,12 @@ class TerminalUI:
 
     def ask_secret(self, label: str, *, configured: bool = False) -> str:
         suffix = "（留空保留现有值）" if configured else ""
-        return self._secret(f"{label}{suffix}: ").strip()
+        return self._read(self._secret, f"{label}{suffix}: ")
 
     def confirm(self, label: str, *, default: bool = False) -> bool:
         prompt = "[Y/n]" if default else "[y/N]"
         while True:
-            value = self._input(f"{label} {prompt}: ").strip().casefold()
+            value = self._read(self._input, f"{label} {prompt}: ").casefold()
             if not value:
                 return default
             if value in {"y", "yes", "是"}:
@@ -112,11 +123,46 @@ class TerminalUI:
             by_number[str(index)] = value
             allowed.add(value)
         while True:
-            answer = self._input(f"请选择 [{default}]: ").strip()
+            answer = self._read(self._input, f"请选择 [{default}]: ")
             resolved = by_number.get(answer, answer or default)
             if resolved in allowed:
                 return resolved
             self.error("选择无效")
+
+    def choose_many(
+        self,
+        label: str,
+        choices: tuple[tuple[str, str], ...],
+    ) -> tuple[str, ...]:
+        by_number: dict[str, str] = {}
+        self.line(label)
+        for index, (value, description) in enumerate(choices, start=1):
+            self.line(f"  {index}. {description}")
+            by_number[str(index)] = value
+        self.line("  a. 全部区块")
+        while True:
+            answer = self._read(self._input, "请选择编号（逗号分隔，留空不修改）: ")
+            if not answer:
+                return ()
+            if answer.casefold() in {"a", "all", "全部"}:
+                return tuple(value for value, _description in choices)
+            tokens = tuple(item.strip() for item in answer.split(",") if item.strip())
+            selected = tuple(dict.fromkeys(by_number.get(item, item) for item in tokens))
+            if selected and all(item in {value for value, _ in choices} for item in selected):
+                return selected
+            self.error("选择无效，请输入页面中显示的编号")
+
+    def _read(self, reader: Callable[[str], str], prompt: str) -> str:
+        try:
+            value = reader(prompt).strip()
+        except (EOFError, KeyboardInterrupt) as exc:
+            raise QuitRequested from exc
+        command = value.casefold()
+        if command == ":back":
+            raise BackRequested
+        if command == ":quit":
+            raise QuitRequested
+        return value
 
     def _write(self, value: str) -> None:
         print(value, file=self._output, flush=True)

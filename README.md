@@ -449,6 +449,10 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 Flash、Embedding、Web、Vision、MCP、Plugin、Automation 与 Speech。关闭的功能不会追问
 密钥；API Key 不回显，最终摘要也不会显示任何密钥或 Token。
 
+任意输入框、选择框或确认框都可以输入 `:back` 返回上一逻辑页面，当前页尚未确认的修改会被
+丢弃；输入 `:quit`、按 `Ctrl+C` 或关闭输入流会安全退出且不写入草稿。已有部署先显示编号式
+区块多选，直接回车表示不修改任何区块；从所选区块的第一页返回会回到区块选择页。
+
 向导完成本地验证后，安装器固定执行：
 
 ```text
@@ -471,7 +475,8 @@ NapCat；WebUI Token 保存在部署目录的 `.env`，安装器不会直接打�
 
 在已有部署根目录再次运行同一安装器，会直接重开向导；你可以只修改选中的配置区块。数据库、
 QQ 登录态、插件文件和其他持久化目录不会被删除或覆盖。受影响配置会先备份到
-`.yuki/backups/`，最近保留 5 份。
+`.yuki/backups/`，最近保留 5 份。安装器每次都会校验对应版本部署包并只更新 Release 管理的
+Compose、环境模板、安装器和升级说明；`.env`、自定义配置及持久化目录保持原样。
 
 升级前先备份 `data/`，再把 `.env` 中的 `YUKI_VERSION` 修改为目标版本：
 

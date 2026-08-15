@@ -64,33 +64,51 @@ if (-not $Existing -and (Get-ChildItem -LiteralPath $InstallDir -Force | Select-
 $Temporary = Join-Path ([System.IO.Path]::GetTempPath()) ("yuki-install-" + [guid]::NewGuid())
 [System.IO.Directory]::CreateDirectory($Temporary) | Out-Null
 try {
+    $Base = "https://github.com/$Repository/releases/download/v$Version"
+    $ArchiveName = "yuki-$Version-deploy.zip"
+    $Archive = Join-Path $Temporary $ArchiveName
+    $Checksums = Join-Path $Temporary "SHA256SUMS"
+    Invoke-WebRequest -Uri "$Base/$ArchiveName" -OutFile $Archive
+    Invoke-WebRequest -Uri "$Base/SHA256SUMS" -OutFile $Checksums
+    $ChecksumLine = Get-Content -LiteralPath $Checksums | Where-Object {
+        $_ -match "^[0-9a-fA-F]{64}\s+$([regex]::Escape($ArchiveName))$"
+    } | Select-Object -First 1
+    if (-not $ChecksumLine) {
+        Fail "Release checksum does not list $ArchiveName."
+    }
+    $Expected = ($ChecksumLine -split '\s+')[0].ToLowerInvariant()
+    $Actual = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($Expected -ne $Actual) {
+        Fail "Release archive checksum mismatch."
+    }
+    Expand-Archive -LiteralPath $Archive -DestinationPath $Temporary
+    $Source = Join-Path $Temporary "yuki-$Version-deploy"
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+        Fail "Release archive layout is invalid."
+    }
     if (-not $Existing) {
-        $Base = "https://github.com/$Repository/releases/download/v$Version"
-        $ArchiveName = "yuki-$Version-deploy.zip"
-        $Archive = Join-Path $Temporary $ArchiveName
-        $Checksums = Join-Path $Temporary "SHA256SUMS"
-        Invoke-WebRequest -Uri "$Base/$ArchiveName" -OutFile $Archive
-        Invoke-WebRequest -Uri "$Base/SHA256SUMS" -OutFile $Checksums
-        $ChecksumLine = Get-Content -LiteralPath $Checksums | Where-Object {
-            $_ -match "^[0-9a-fA-F]{64}\s+$([regex]::Escape($ArchiveName))$"
-        } | Select-Object -First 1
-        if (-not $ChecksumLine) {
-            Fail "Release checksum does not list $ArchiveName."
-        }
-        $Expected = ($ChecksumLine -split '\s+')[0].ToLowerInvariant()
-        $Actual = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($Expected -ne $Actual) {
-            Fail "Release archive checksum mismatch."
-        }
-        Expand-Archive -LiteralPath $Archive -DestinationPath $Temporary
-        $Source = Join-Path $Temporary "yuki-$Version-deploy"
-        if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
-            Fail "Release archive layout is invalid."
-        }
         Copy-Item -Path (Join-Path $Source '*') -Destination $InstallDir -Recurse -Force
         Get-ChildItem -LiteralPath $Source -Force | Where-Object Name -Like '.*' | ForEach-Object {
             Copy-Item -LiteralPath $_.FullName -Destination $InstallDir -Recurse -Force
         }
+    } else {
+        $Stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
+        $ManagedBackup = Join-Path $InstallDir ".yuki\backups\installer-$Stamp"
+        foreach ($Relative in @('docker-compose.yml', '.env.example', 'install.sh', 'install.ps1', "Yuki-$Version-Upgrade.md")) {
+            $SourceFile = Join-Path $Source $Relative
+            if (-not (Test-Path -LiteralPath $SourceFile -PathType Leaf)) {
+                Fail "Release bundle is missing $Relative."
+            }
+            $TargetFile = Join-Path $InstallDir $Relative
+            if (Test-Path -LiteralPath $TargetFile -PathType Leaf) {
+                [System.IO.Directory]::CreateDirectory($ManagedBackup) | Out-Null
+                Copy-Item -LiteralPath $TargetFile -Destination (Join-Path $ManagedBackup $Relative) -Force
+            }
+            $TemporaryTarget = "$TargetFile.yuki-new"
+            Copy-Item -LiteralPath $SourceFile -Destination $TemporaryTarget -Force
+            Move-Item -LiteralPath $TemporaryTarget -Destination $TargetFile -Force
+        }
+        Write-Host "Updated release-managed deployment files; mutable data and configuration were preserved." -ForegroundColor Green
     }
 
     if (-not $Existing -and (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
@@ -139,6 +157,7 @@ try {
         if ($LASTEXITCODE -ne 0) { Fail "docker compose config failed." }
         & docker compose pull
         if ($LASTEXITCODE -ne 0) { Fail "docker compose pull failed." }
+        $OldBot = (& docker compose ps -q bot).Trim()
         & docker compose up -d
         if ($LASTEXITCODE -ne 0) { Fail "docker compose up failed." }
 
@@ -156,15 +175,51 @@ try {
             return $false
         }
 
+        function Wait-ForService([string]$Service) {
+            $Deadline = [DateTime]::UtcNow.AddSeconds(180)
+            while ([DateTime]::UtcNow -lt $Deadline) {
+                $Container = (& docker compose --profile speech ps -q $Service).Trim()
+                if ($Container) {
+                    $Status = (& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $Container).Trim()
+                    if ($Status -eq 'healthy') { return $true }
+                    if ($Status -eq 'exited') { return $false }
+                }
+                Start-Sleep -Seconds 2
+            }
+            return $false
+        }
+
         if (-not (Wait-ForBot)) { Fail "Bot did not become healthy within 180 seconds." }
+        $NewBot = (& docker compose ps -q bot).Trim()
+        if ((Test-Path -LiteralPath "data/setup/restart-required") -and ($OldBot -ne $NewBot)) {
+            Remove-Item -LiteralPath "data/setup/restart-required" -Force
+        }
+        $SpeechActionPath = "data/setup/speech-action"
+        if (Test-Path -LiteralPath $SpeechActionPath) {
+            $SpeechAction = (Get-Content -LiteralPath $SpeechActionPath -Raw).Trim()
+            if ($SpeechAction -eq 'start') {
+                & docker compose --profile speech up -d --no-deps genie-tts-worker
+                if ($LASTEXITCODE -ne 0) { Fail "Speech Worker could not be started." }
+                if (-not (Wait-ForService "genie-tts-worker")) { Fail "Speech Worker did not become healthy." }
+            } elseif ($SpeechAction -eq 'stop') {
+                & docker compose --profile speech stop genie-tts-worker
+                if ($LASTEXITCODE -ne 0) { Fail "Speech Worker could not be stopped." }
+                & docker compose --profile speech rm -f genie-tts-worker
+                if ($LASTEXITCODE -ne 0) { Fail "Speech Worker container could not be removed." }
+            } else {
+                Fail "Unknown pending Speech action."
+            }
+            Remove-Item -LiteralPath $SpeechActionPath -Force
+        }
         if (Test-Path -LiteralPath "data/setup/pending.json") {
             & docker compose exec -T bot qq-ai-bot-cli setup apply-pending --deployment-root /app --no-color
             if ($LASTEXITCODE -ne 0) { Fail "Plugin choices could not be applied." }
-            if (Test-Path -LiteralPath "data/setup/restart-required") {
-                Remove-Item -LiteralPath "data/setup/restart-required" -Force
-                & docker compose restart bot
-                if (-not (Wait-ForBot)) { Fail "Bot did not become healthy after plugin setup." }
-            }
+        }
+        if (Test-Path -LiteralPath "data/setup/restart-required") {
+            & docker compose restart bot
+            if ($LASTEXITCODE -ne 0) { Fail "Bot could not be restarted after configuration." }
+            if (-not (Wait-ForBot)) { Fail "Bot did not become healthy after configuration." }
+            Remove-Item -LiteralPath "data/setup/restart-required" -Force
         }
         & docker compose exec -T bot qq-ai-bot-cli setup verify --deployment-root /app --no-color
         if ($LASTEXITCODE -ne 0) { Fail "Final health verification failed." }

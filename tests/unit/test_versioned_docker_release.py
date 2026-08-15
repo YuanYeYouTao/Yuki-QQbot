@@ -277,8 +277,18 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
         assert "docker compose" in installer
         assert "apply-pending" in installer
         assert "setup verify" in installer
+        assert "restart-required" in installer
+        assert "speech-action" in installer
+        assert "Yuki-$VERSION-Upgrade.md" in installer or "Yuki-$Version-Upgrade.md" in installer
+        assert "Updated release-managed deployment files" in installer
     assert '--user "$(id -u):$(id -g)"' in shell
+    assert "wait_for_service genie-tts-worker" in shell
+    assert shell.index('download "$base/$archive"') < shell.index('if [ "$existing" = false ]')
     assert "icacls" in powershell
+    assert 'Wait-ForService "genie-tts-worker"' in powershell
+    assert powershell.index('Invoke-WebRequest -Uri "$Base/$ArchiveName"') < powershell.index(
+        "if (-not $Existing)"
+    )
 
 
 def _git(root: Path, *arguments: str) -> None:
