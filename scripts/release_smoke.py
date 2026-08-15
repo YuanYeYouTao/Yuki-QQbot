@@ -83,7 +83,9 @@ def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
         deploy_directory / "napcat-data/.release-smoke-login": "napcat-login",
         deploy_directory / "napcat-config/.release-smoke-config": "napcat-config",
         deploy_directory / "napcat-plugins/.release-smoke-plugin": "napcat-plugins",
-        deploy_directory / "data/speech/genie_data/.release-smoke": "offline-sentinel",
+        deploy_directory
+        / "data/speech/genie_data/chinese-hubert-base/.release-smoke": "offline-directory",
+        deploy_directory / "data/speech/genie_data/speaker_encoder.onnx": "offline-file-sentinel",
     }
     for path, value in sentinels.items():
         path.parent.mkdir(parents=True, exist_ok=True)
