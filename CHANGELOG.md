@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 3.5.2 - 2026-08-15
+
+### Versioned Docker Release
+
+- 正式发布 `linux/amd64` Bot 与 Genie-TTS Worker GHCR 镜像；两个镜像共享 Yuki `3.5.2`
+  标签和 OCI release metadata，Worker 内部组件版本保持 `1.9.0`。
+- 根 Compose 改用固定版本镜像并移除生产构建；新增开发 Compose 覆盖，源码开发仍可构建本地
+  `dev` 镜像。
+- Release workflow 校验 Tag、包版本、运行时版本、锁文件与 Memory Release Check，复用完整质量
+  门禁，并在推送不可变镜像前执行无源码 Smoke 与持久化检查。
+- GitHub Release 附带白名单生成的部署压缩包、生产 Compose、环境模板和升级说明；普通用户无需
+  安装 Python、uv 或克隆源码即可部署。
+
 ## 3.5.1 - 2026-08-15
 
 ### 自适应记忆生命周期

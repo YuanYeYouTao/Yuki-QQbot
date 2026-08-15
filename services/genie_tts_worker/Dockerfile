@@ -14,7 +14,14 @@ COPY src ./src
 RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim AS runtime
+ARG YUKI_VERSION=dev
+ARG VCS_REF=unknown
 ENV PATH="/worker/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+LABEL org.opencontainers.image.title="Yuki Genie TTS Worker" \
+      org.opencontainers.image.source="https://github.com/YuanYeYouTao/Yuki-QQbot" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${YUKI_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}"
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends libportaudio2 libsndfile1 \
     && rm -rf /var/lib/apt/lists/*

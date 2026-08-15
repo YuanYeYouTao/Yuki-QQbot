@@ -1,6 +1,13 @@
 name: Quality
 
 on:
+  workflow_call:
+    inputs:
+      force_docker:
+        description: Run Docker checks even when the change is documentation-only
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
   pull_request:
@@ -9,6 +16,47 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect runtime changes
+        id: filter
+        shell: bash
+        env:
+          FORCE_DOCKER: ${{ inputs.force_docker || false }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$FORCE_DOCKER" == "true" ]]; then
+            echo "docker=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$BASE_SHA"
+          else
+            base="$BEFORE_SHA"
+          fi
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            echo "docker=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          docker=false
+          while IFS= read -r path; do
+            case "$path" in
+              README.md|CHANGELOG.md|docs/*|img/*|*.md) ;;
+              *) docker=true; break ;;
+            esac
+          done < <(git diff --name-only "$base" "$HEAD_SHA")
+          echo "docker=$docker" >> "$GITHUB_OUTPUT"
+
   memory-quality:
     runs-on: ubuntu-latest
     steps:
@@ -70,15 +118,25 @@ jobs:
         run: uv run pytest -q tests/unit/test_memory_migration_matrix.py
 
   docker:
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve project version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n 1)"
+          test -n "$version"
+          echo "YUKI_VERSION=$version" >> "$GITHUB_ENV"
       - name: Validate Compose
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
       - name: Build runtime image
-        run: docker compose build bot
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml build bot
       - name: Build network-isolated speech worker image
-        run: docker compose --profile speech build genie-tts-worker
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile speech build genie-tts-worker
 
   speech-worker:
     runs-on: ubuntu-latest

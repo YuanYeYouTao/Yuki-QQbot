@@ -115,7 +115,7 @@ Manifest 哈希绑定批准状态。只要权限、入口、版本或其他 Mani
 Docker 部署默认把宿主的 `./plugins` 只读挂载到 `/app/plugins`：
 
 ```bash
-docker compose up -d --build --no-deps bot
+docker compose up -d --no-deps --force-recreate bot
 docker compose logs -f bot
 ```
 

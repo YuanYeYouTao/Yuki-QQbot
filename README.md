@@ -9,7 +9,7 @@
 <p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.5.1"><img src="https://img.shields.io/badge/Version-3.5.1-orange" alt="Version 3.5.1"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.5.2"><img src="https://img.shields.io/badge/Version-3.5.2-orange" alt="Version 3.5.2"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2 and OneBot v11">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -37,7 +37,7 @@ Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCatQQ �
 一次 Planner 决策、受控 Agent 工具循环、身份隔离的 Memory V2、持久化自动化和插件系统，
 让一个可自托管的 QQ 角色能够长期对话、记住人与共同经历，并安全地执行外部操作。
 
-项目主要通过 Codex 协作开发，当前稳定版本为 **3.5.1**。它适合愿意自行维护模型配置、QQ
+项目主要通过 Codex 协作开发，当前稳定版本为 **3.5.2**。它适合愿意自行维护模型配置、QQ
 登录态和本地数据的个人用户；不是面向多租户的托管机器人平台。
 
 ## 项目概览
@@ -419,14 +419,13 @@ MCP Client 支持 stdio 和 Streamable HTTP，包含动态发现、元数据缓�
 - Docker Engine / Docker Desktop 与 Docker Compose
 - 一个可登录 NapCatQQ 的 QQ 账号
 - 一个 OpenAI-compatible 模型接口；推荐为 Planner 配置低延迟 Flash 模型
-- 本地开发时需要 Python 3.12 与 [uv](https://docs.astral.sh/uv/)
+- 只有本地开发才需要 Python 3.12、[uv](https://docs.astral.sh/uv/) 和完整源码
 
-### 1. 获取代码
+### 1. 获取部署包
 
-```bash
-git clone https://github.com/YuanYeYouTao/Yuki-QQbot.git
-cd Yuki-QQbot
-```
+从 [Yuki 3.5.2 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.5.2)
+下载 `yuki-3.5.2-deploy.zip` 或 `yuki-3.5.2-deploy.tar.gz` 并解压。正式部署不需要克隆源码，
+也不会在用户机器上构建镜像。
 
 ### 2. 创建配置
 
@@ -461,7 +460,7 @@ LLM_MODEL=你的主模型名称
 ### 3. 启动
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 docker compose ps
 docker compose logs -f bot napcat
 ```
@@ -469,18 +468,27 @@ docker compose logs -f bot napcat
 Bot 容器启动时会自动生成 NapCat OneBot 配置并执行 `alembic upgrade head`。打开
 `http://127.0.0.1:6099` 登录 NapCat，确认反向 WebSocket 已连接后即可在 QQ 中测试。
 
-日常更新 Bot 而保留 NapCat 登录容器：
+升级前先备份 `data/`，再把 `.env` 中的 `YUKI_VERSION` 修改为目标版本：
 
 ```bash
-git pull --ff-only
-docker compose up -d --build --no-deps bot
-docker compose logs -f bot
+docker compose pull
+docker compose up -d
 ```
+
+版本镜像不可变；`docker compose pull` 只拉取 `.env` 当前指定的版本。不要用新部署包直接覆盖
+旧目录，保留现有 `config/`、`plugins/`、`data/` 和 `napcat-*`。完整步骤见
+[3.5.2 升级说明](docs/releases/v3.5.2.md)。
 
 停止全部服务：
 
 ```bash
 docker compose down
+```
+
+本地源码开发使用独立覆盖文件：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 ### 4. 可选 Pro / Flash 路由
@@ -614,7 +622,7 @@ GitHub Actions 还会验证 Docker Compose、运行时镜像、隔离的 Genie-T
 ## 文档
 
 - [完整使用帮助](docs/help.md)
-- [3.5.1 发布说明](docs/releases/v3.5.1.md)
+- [3.5.2 发布与升级说明](docs/releases/v3.5.2.md)
 - [Memory V2 架构](docs/architecture/memory-v2.md)
 - [记忆检索与混合 RAG](docs/architecture/memory-v2-retrieval.md)
 - [记忆冲突](docs/architecture/memory-v2-conflicts.md)
@@ -622,6 +630,7 @@ GitHub Actions 还会验证 Docker Compose、运行时镜像、隔离的 Genie-T
 - [记忆变更接口](docs/architecture/memory-change.md)
 - [自适应记忆生命周期](docs/architecture/Yuki_Adaptive_Memory_Lifecycle_Implementation_Plan.md)
 - [Memory 质量与运维](docs/operations/memory-quality.md)
+- [版本化 Docker 发布](docs/operations/versioned-docker-release.md)
 - [受控历史重建](docs/architecture/memory-v2-rebuild.md)
 - [Tool Kernel](docs/architecture/tool-kernel.md)
 - [Plugin 开发](docs/plugin-development/index.md)

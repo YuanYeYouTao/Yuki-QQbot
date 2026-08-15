@@ -4,7 +4,8 @@
 `SPEECH_DEFAULT_PROFILE=<id>`，再启动：
 
 ```bash
-docker compose --profile speech up -d --build
+docker compose --profile speech pull
+docker compose --profile speech up -d
 docker compose ps
 docker compose logs -f bot genie-tts-worker
 qq-ai-bot-cli speech status
