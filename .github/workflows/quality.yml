@@ -100,6 +100,23 @@ jobs:
         run: uv run ruff check .
       - name: Mypy
         run: uv run mypy src
+      - name: Installer syntax
+        shell: bash
+        run: |
+          bash -n install.sh
+          pwsh -NoProfile -Command '
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path "install.ps1"),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
+          '
       - name: Pytest
         run: uv run pytest -q
       - name: Prompt benchmark

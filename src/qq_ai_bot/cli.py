@@ -17,6 +17,7 @@ from alembic.config import Config
 from qq_ai_bot import __version__
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
+from qq_ai_bot.deployment_setup import add_setup_parser, run_setup_command
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
 from qq_ai_bot.memory.embedding.qwen import QwenDashScopeEmbeddingProvider
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
@@ -954,11 +955,14 @@ def main() -> None:
     subparsers.add_parser("init-db", help="运行 Alembic 数据库迁移")
     render = subparsers.add_parser("render-napcat-config", help="生成 NapCat OneBot 配置")
     render.add_argument("--output", type=Path, required=True)
+    add_setup_parser(subparsers)
     _add_plugin_parser(subparsers)
     _add_speech_parser(subparsers)
     _add_diagnostics_parsers(subparsers)
     _add_memory_parser(subparsers)
     args = parser.parse_args()
+    if args.command == "setup":
+        raise SystemExit(run_setup_command(args))
     settings = Settings()
     if args.command == "init-db":
         _init_database(settings)

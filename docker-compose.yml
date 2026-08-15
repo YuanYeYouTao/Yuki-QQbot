@@ -26,6 +26,7 @@ services:
       - ./napcat-config:/app/napcat-config
       - ./config:/app/config:ro
       - ./plugins:/app/plugins:ro
+      - ./.mcp.json:/app/.mcp.json:ro
     networks:
       - qq-ai-bot-network
     healthcheck:

@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 
 from scripts.release_validate import project_version
 
-_ROOT_FILES = frozenset({"docker-compose.yml", ".env.example"})
+_ROOT_FILES = frozenset({"docker-compose.yml", ".env.example", "install.sh", "install.ps1"})
 _CONFIG_FILES = frozenset(
     {
         "config/memory_contracts.toml",
@@ -42,6 +42,7 @@ _EMPTY_DIRECTORIES = (
 _FORBIDDEN_NAMES = frozenset(
     {
         ".env",
+        ".mcp.json",
         "model_profiles.toml",
         "system_prompt.md",
         "mcp.json",
@@ -128,10 +129,29 @@ def build_release_bundle(
     compose_asset = output_directory / "docker-compose.yml"
     env_asset = output_directory / ".env.example"
     upgrade_asset = output_directory / f"Yuki-{version}-Upgrade.md"
+    shell_installer = output_directory / "install.sh"
+    powershell_installer = output_directory / "install.ps1"
     shutil.copyfile(root / "docker-compose.yml", compose_asset)
     shutil.copyfile(root / ".env.example", env_asset)
     shutil.copyfile(root / f"docs/releases/v{version}.md", upgrade_asset)
-    return [zip_path, tar_path, compose_asset, env_asset, upgrade_asset]
+    shutil.copyfile(root / "install.sh", shell_installer)
+    shutil.copyfile(root / "install.ps1", powershell_installer)
+    shell_installer.chmod(0o755)
+    checksums = output_directory / "SHA256SUMS"
+    checksum_assets = (
+        zip_path,
+        tar_path,
+        compose_asset,
+        env_asset,
+        upgrade_asset,
+        shell_installer,
+        powershell_installer,
+    )
+    checksums.write_text(
+        "".join(f"{_sha256(path)}  {path.name}\n" for path in checksum_assets),
+        encoding="utf-8",
+    )
+    return [*checksum_assets, checksums]
 
 
 def _write_zip(archive_root: Path, destination: Path, epoch: int) -> None:
@@ -143,7 +163,12 @@ def _write_zip(archive_root: Path, destination: Path, epoch: int) -> None:
             name = f"{relative}/" if path.is_dir() else relative
             info = zipfile.ZipInfo(name, date_time=date_time)
             info.compress_type = zipfile.ZIP_DEFLATED
-            mode = (stat.S_IFDIR | 0o755) if path.is_dir() else (stat.S_IFREG | 0o644)
+            executable = path.name == "install.sh"
+            mode = (
+                (stat.S_IFDIR | 0o755)
+                if path.is_dir()
+                else (stat.S_IFREG | (0o755 if executable else 0o644))
+            )
             info.external_attr = mode << 16
             archive.writestr(info, b"" if path.is_dir() else path.read_bytes())
 
@@ -160,6 +185,8 @@ def _write_tar_gz(archive_root: Path, destination: Path, epoch: int) -> None:
                     info.uname = ""
                     info.gname = ""
                     info.mtime = epoch
+                    if path.name == "install.sh" and path.is_file():
+                        info.mode = 0o755
                     if path.is_dir():
                         archive.addfile(info)
                     else:
@@ -169,6 +196,16 @@ def _write_tar_gz(archive_root: Path, destination: Path, epoch: int) -> None:
 
 def _archive_paths(root: Path) -> list[Path]:
     return [root, *sorted(root.rglob("*"), key=lambda item: item.as_posix())]
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main() -> int:

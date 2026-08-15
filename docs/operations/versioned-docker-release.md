@@ -1,6 +1,6 @@
 # Versioned Docker Release 运维说明
 
-Yuki 3.5.2 的正式镜像只由 `.github/workflows/release.yml` 发布，目标平台为
+Yuki 3.5.3 的正式镜像只由 `.github/workflows/release.yml` 发布，目标平台为
 `linux/amd64`。本地开发镜像不属于发布合同。
 
 ## 首次 GHCR Bootstrap
@@ -13,7 +13,7 @@ Yuki 3.5.2 的正式镜像只由 `.github/workflows/release.yml` 发布，目标
 4. 在未登录 GHCR 的环境确认两个 bootstrap 镜像可拉取。
 
 公开 Package 才能让普通用户匿名执行 `docker compose pull`。Bootstrap 不创建正式 Release，
-也不发布 `3.5.2` 或 `latest`。
+也不发布正式版本标签或 `latest`。
 
 ## 正式发布
 

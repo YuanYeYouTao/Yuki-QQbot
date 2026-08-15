@@ -30,7 +30,7 @@ from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
 _ALEMBIC_HEAD = "0036"
-_EXPECTED_RELEASE_VERSION = "3.5.2"
+_EXPECTED_RELEASE_VERSION = "3.5.3"
 
 
 class MemoryReleaseCheck:

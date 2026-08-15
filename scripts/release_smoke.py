@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
-import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -15,6 +13,24 @@ from typing import Any
 
 class SmokeError(RuntimeError):
     """Raised when a release image or deployment contract fails smoke testing."""
+
+
+_MODEL_TASKS = (
+    "chat_agent",
+    "planner",
+    "memory_extraction",
+    "memory_self_reflection",
+    "memory_consolidation",
+    "memory_dream",
+    "memory_attribution",
+    "relationship_evaluation",
+    "emoji_replacement",
+    "automation_text_generation",
+    "automation_agent",
+    "plugin_agent_session",
+    "tool_selection",
+    "utility_structured",
+)
 
 
 class Compose:
@@ -31,7 +47,8 @@ class Compose:
             env=self.environment,
             check=True,
             capture_output=capture,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         return completed.stdout.strip() if capture else ""
 
@@ -75,7 +92,55 @@ def validate_production_compose(deploy_directory: Path, version: str, compose: C
 def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
     env_file = deploy_directory / ".env"
     if not env_file.exists():
-        shutil.copyfile(deploy_directory / ".env.example", env_file)
+        environment = (deploy_directory / ".env.example").read_text(encoding="utf-8")
+        replacements = {
+            "ONEBOT_ACCESS_TOKEN=replace-with-a-long-random-token": (
+                "ONEBOT_ACCESS_TOKEN=release-smoke-onebot-token"
+            ),
+            "NAPCAT_WEBUI_TOKEN=replace-with-a-long-random-webui-token": (
+                "NAPCAT_WEBUI_TOKEN=release-smoke-napcat-token"
+            ),
+            "SUPERUSERS=replace-with-superuser-qq": "SUPERUSERS=10000",
+            "LLM_PROVIDER=openai": "LLM_PROVIDER=openai_compatible",
+            "LLM_BASE_URL=https://replace-with-provider.example/v1": (
+                "LLM_BASE_URL=https://models.example.invalid/v1"
+            ),
+            "LLM_API_KEY=replace-with-api-key": "LLM_API_KEY=release-smoke-key",
+            "LLM_MODEL=replace-with-model-name": "LLM_MODEL=release-smoke-model",
+        }
+        for old, new in replacements.items():
+            environment = environment.replace(old, new)
+        env_file.write_text(environment, encoding="utf-8")
+    mcp_file = deploy_directory / ".mcp.json"
+    if not mcp_file.exists():
+        mcp_file.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    model_profiles = deploy_directory / "config/model_profiles.toml"
+    if not model_profiles.exists():
+        model_profiles.parent.mkdir(parents=True, exist_ok=True)
+        routes = "\n".join(f'{task} = "main"' for task in _MODEL_TASKS)
+        model_profiles.write_text(
+            """schema_version = 2
+
+[profiles.main]
+provider = "openai_compatible"
+protocol = "chat_completions"
+base_url_env = "LLM_BASE_URL"
+api_key_env = "LLM_API_KEY"
+model_env = "LLM_MODEL"
+timeout_seconds = 120.0
+max_retries = 0
+default_temperature = 0.0
+default_max_output_tokens = 512
+thinking_mode = "disabled"
+structured_output_mode = "function_tool"
+capabilities = ["tools", "structured_output", "long_context"]
+
+[routes]
+"""
+            + routes
+            + "\n",
+            encoding="utf-8",
+        )
     sentinels = {
         deploy_directory / "data/.release-smoke-data": "data",
         deploy_directory / "config/.release-smoke-config": "config",
@@ -102,19 +167,22 @@ def wait_healthy(compose: Compose, service: str, timeout_seconds: float = 120.0)
     if not container_id:
         raise SmokeError(f"{service} container was not created")
     deadline = time.monotonic() + timeout_seconds
+    last_status = "unknown"
     while time.monotonic() < deadline:
-        status = subprocess.run(
+        last_status = subprocess.run(
             ["docker", "inspect", "--format", "{{.State.Health.Status}}", container_id],
             check=True,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         ).stdout.strip()
-        if status == "healthy":
+        if last_status == "healthy":
             return container_id
-        if status == "unhealthy":
-            raise SmokeError(f"{service} became unhealthy")
         time.sleep(2)
-    raise SmokeError(f"{service} did not become healthy within {timeout_seconds:.0f}s")
+    raise SmokeError(
+        f"{service} did not become healthy within {timeout_seconds:.0f}s "
+        f"(last status: {last_status})"
+    )
 
 
 def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
@@ -129,11 +197,105 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     actual = {key: health.get(key) for key in expected}
     if actual != expected:
         raise SmokeError(f"unexpected /healthz response: {actual}")
-    database = deploy_directory / "data/qq_ai_bot.db"
-    with sqlite3.connect(database) as connection:
-        row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    if row != ("0036",):
-        raise SmokeError(f"unexpected Alembic version: {row}")
+    migration_command = (
+        "import sqlite3; "
+        "connection=sqlite3.connect('/app/data/qq_ai_bot.db'); "
+        "row=connection.execute('SELECT version_num FROM alembic_version').fetchone(); "
+        "connection.close(); print(row[0] if row else '')"
+    )
+    alembic_version = compose.run(
+        "exec", "-T", "bot", "python", "-c", migration_command, capture=True
+    )
+    if alembic_version != "0036":
+        raise SmokeError(f"unexpected Alembic version: {alembic_version!r}")
+
+
+def verify_guided_setup(deploy_directory: Path, version: str) -> None:
+    image = f"ghcr.io/yuanyeyoutao/yuki-qqbot:{version}"
+    command = ["docker", "run", "--rm"]
+    if os.name != "nt":
+        get_uid = getattr(os, "getuid", None)
+        get_gid = getattr(os, "getgid", None)
+        if not callable(get_uid) or not callable(get_gid):
+            raise SmokeError("POSIX user identity is unavailable")
+        command.extend(("--user", f"{get_uid()}:{get_gid()}"))
+    command.extend(
+        (
+            "--entrypoint",
+            "qq-ai-bot-cli",
+            "--volume",
+            f"{deploy_directory.resolve()}:/deploy",
+            "--workdir",
+            "/deploy",
+            image,
+            "setup",
+            "validate",
+            "--deployment-root",
+            "/deploy",
+            "--no-color",
+        )
+    )
+    completed = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if "配置通过本地严格验证" not in completed.stdout or "\033[" in completed.stdout:
+        raise SmokeError("source-free Guided Setup validation failed")
+
+    permission_script = (
+        "from pathlib import Path; "
+        "from qq_ai_bot.deployment_setup.service import _atomic_write; "
+        "root=Path('/deploy'); "
+        "profile=root/'config/model_profiles.toml'; "
+        "mcp=root/'.mcp.json'; "
+        "_atomic_write(profile, profile.read_bytes(), private=False); "
+        "_atomic_write(mcp, mcp.read_bytes(), private=False); "
+        "_atomic_write(root/'data/setup/pending.json', "
+        'b\'{"schema_version":1,"selected_plugins":[]}\\n\', private=False)'
+    )
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "python",
+            "--volume",
+            f"{deploy_directory.resolve()}:/deploy",
+            image,
+            "-c",
+            permission_script,
+        ],
+        check=True,
+    )
+    read_script = (
+        "from pathlib import Path; "
+        "root=Path('/deploy'); "
+        "assert (root/'config/model_profiles.toml').read_bytes(); "
+        "assert (root/'.mcp.json').read_bytes(); "
+        "assert (root/'data/setup/pending.json').read_bytes()"
+    )
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--user",
+            "10001:10001",
+            "--entrypoint",
+            "python",
+            "--volume",
+            f"{deploy_directory.resolve()}:/deploy:ro",
+            image,
+            "-c",
+            read_script,
+        ],
+        check=True,
+    )
+    (deploy_directory / "data/setup/pending.json").unlink()
 
 
 def verify_persistence(
@@ -164,7 +326,8 @@ def verify_napcat_mount_recreation(compose: Compose, deploy_directory: Path) -> 
                 ["docker", "inspect", "--format", "{{json .Mounts}}", container_id],
                 check=True,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
             ).stdout
         )
         login_mount = next(
@@ -188,6 +351,7 @@ def run_smoke(deploy_directory: Path, version: str, *, full: bool) -> None:
     sentinels = prepare_deployment(deploy_directory)
     try:
         validate_production_compose(deploy_directory, version, compose)
+        verify_guided_setup(deploy_directory, version)
         compose.run("up", "-d", "--no-deps", "bot")
         verify_bot(compose, deploy_directory, version)
         if full:

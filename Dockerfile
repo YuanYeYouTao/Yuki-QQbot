@@ -13,16 +13,9 @@ COPY src ./src
 RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim AS runtime
-ARG YUKI_VERSION=dev
-ARG VCS_REF=unknown
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
-LABEL org.opencontainers.image.title="Yuki QQ Bot" \
-      org.opencontainers.image.source="https://github.com/YuanYeYouTao/Yuki-QQbot" \
-      org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.version="${YUKI_VERSION}" \
-      org.opencontainers.image.revision="${VCS_REF}"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-wqy-microhei \
     && rm -rf /var/lib/apt/lists/* \
@@ -35,5 +28,12 @@ COPY --chown=bot:bot migrations ./migrations
 COPY --chown=bot:bot scripts ./scripts
 COPY --chown=bot:bot config/persona.md ./config/persona.md
 RUN chmod +x /app/scripts/start.sh && mkdir -p /app/data /app/napcat-config
+ARG YUKI_VERSION=dev
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.title="Yuki QQ Bot" \
+      org.opencontainers.image.source="https://github.com/YuanYeYouTao/Yuki-QQbot" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${YUKI_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}"
 EXPOSE 8080
 ENTRYPOINT ["/app/scripts/start.sh"]
