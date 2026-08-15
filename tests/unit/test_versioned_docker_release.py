@@ -144,6 +144,7 @@ def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:
     assert "Verify immutable public version images" in workflow
     assert "org.opencontainers.image.revision" in workflow
     assert "yuki-source-free-anonymous" in workflow
+    assert workflow.count('YUKI_VERSION="$VERSION" docker compose --profile speech pull') == 2
     assert "--require-main-ancestor" in workflow
     assert "--platform linux/amd64" in workflow
     assert '--deploy-dir "$deploy_dir" --version "$VERSION" --full' in workflow
