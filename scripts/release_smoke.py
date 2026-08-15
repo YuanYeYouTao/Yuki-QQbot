@@ -211,6 +211,7 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
 
 
 def verify_guided_setup(deploy_directory: Path, version: str) -> None:
+    image = f"ghcr.io/yuanyeyoutao/yuki-qqbot:{version}"
     command = ["docker", "run", "--rm"]
     if os.name != "nt":
         get_uid = getattr(os, "getuid", None)
@@ -226,7 +227,7 @@ def verify_guided_setup(deploy_directory: Path, version: str) -> None:
             f"{deploy_directory.resolve()}:/deploy",
             "--workdir",
             "/deploy",
-            f"ghcr.io/yuanyeyoutao/yuki-qqbot:{version}",
+            image,
             "setup",
             "validate",
             "--deployment-root",
@@ -243,6 +244,58 @@ def verify_guided_setup(deploy_directory: Path, version: str) -> None:
     )
     if "配置通过本地严格验证" not in completed.stdout or "\033[" in completed.stdout:
         raise SmokeError("source-free Guided Setup validation failed")
+
+    permission_script = (
+        "from pathlib import Path; "
+        "from qq_ai_bot.deployment_setup.service import _atomic_write; "
+        "root=Path('/deploy'); "
+        "profile=root/'config/model_profiles.toml'; "
+        "mcp=root/'.mcp.json'; "
+        "_atomic_write(profile, profile.read_bytes(), private=False); "
+        "_atomic_write(mcp, mcp.read_bytes(), private=False); "
+        "_atomic_write(root/'data/setup/pending.json', "
+        'b\'{"schema_version":1,"selected_plugins":[]}\\n\', private=False)'
+    )
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "python",
+            "--volume",
+            f"{deploy_directory.resolve()}:/deploy",
+            image,
+            "-c",
+            permission_script,
+        ],
+        check=True,
+    )
+    read_script = (
+        "from pathlib import Path; "
+        "root=Path('/deploy'); "
+        "assert (root/'config/model_profiles.toml').read_bytes(); "
+        "assert (root/'.mcp.json').read_bytes(); "
+        "assert (root/'data/setup/pending.json').read_bytes()"
+    )
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--user",
+            "10001:10001",
+            "--entrypoint",
+            "python",
+            "--volume",
+            f"{deploy_directory.resolve()}:/deploy:ro",
+            image,
+            "-c",
+            read_script,
+        ],
+        check=True,
+    )
+    (deploy_directory / "data/setup/pending.json").unlink()
 
 
 def verify_persistence(

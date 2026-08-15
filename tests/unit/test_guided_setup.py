@@ -669,7 +669,7 @@ def test_atomic_commit_backs_up_and_does_not_rewrite_unselected_files(tmp_path: 
             environment={**document.values(), "YUKI_VERSION": "3.5.3"},
             model_profiles="ignored replacement\n",
             mcp_document={"mcpServers": {"ignored": {}}},
-            pending_plugins=None,
+            pending_plugins=("example.guided",),
             write_model_profiles=False,
             write_mcp=False,
         ),
@@ -683,6 +683,9 @@ def test_atomic_commit_backs_up_and_does_not_rewrite_unselected_files(tmp_path: 
     assert paths.restart_required.read_text(encoding="utf-8") == "configuration-changed\n"
     if os.name != "nt":
         assert stat.S_IMODE(paths.env.stat().st_mode) == 0o600
+        assert stat.S_IMODE(paths.model_profiles.stat().st_mode) == 0o644
+        assert stat.S_IMODE(paths.mcp.stat().st_mode) == 0o644
+        assert stat.S_IMODE(paths.pending.stat().st_mode) == 0o644
 
 
 def test_commit_emits_speech_start_and_stop_actions(tmp_path: Path) -> None:

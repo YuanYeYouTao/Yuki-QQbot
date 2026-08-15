@@ -455,7 +455,7 @@ def commit_configuration(
     )
     try:
         for path, content in targets.items():
-            _atomic_write(path, content, private=path in {paths.env, paths.pending})
+            _atomic_write(path, content, private=path == paths.env)
     except OSError:
         for path, previous_content in previous.items():
             if previous_content is None:
@@ -464,7 +464,7 @@ def commit_configuration(
                 _atomic_write(
                     path,
                     previous_content,
-                    private=path in {paths.env, paths.pending},
+                    private=path == paths.env,
                 )
         raise
     _prune_backups(paths.backups, keep=5)
@@ -676,11 +676,11 @@ def _atomic_write(path: Path, content: bytes, *, private: bool) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        if private:
-            if os.name == "nt":
+        if os.name == "nt":
+            if private:
                 _restrict_windows_acl(temporary)
-            else:
-                temporary.chmod(0o600)
+        else:
+            temporary.chmod(0o600 if private else 0o644)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
