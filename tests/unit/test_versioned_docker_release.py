@@ -13,7 +13,7 @@ from scripts.build_release_bundle import (
     select_bundle_files,
     tracked_files,
 )
-from scripts.release_smoke import Compose, SmokeError, prepare_deployment
+from scripts.release_smoke import Compose, SmokeError, prepare_deployment, wait_healthy
 from scripts.release_validate import (
     ReleaseValidationError,
     validate_release_identity,
@@ -131,6 +131,20 @@ def test_production_and_development_compose_are_separated() -> None:
     assert development.count("build:") == 2
 
 
+@pytest.mark.parametrize(
+    "dockerfile", [ROOT / "Dockerfile", ROOT / "services/genie_tts_worker/Dockerfile"]
+)
+def test_oci_revision_label_does_not_invalidate_system_dependency_layers(
+    dockerfile: Path,
+) -> None:
+    content = dockerfile.read_text(encoding="utf-8")
+
+    assert content.index("RUN apt-get update") < content.index("ARG VCS_REF=unknown")
+    assert content.index("ARG VCS_REF=unknown") < content.index(
+        'org.opencontainers.image.revision="${VCS_REF}"'
+    )
+
+
 def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> None:
     (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.3\n", encoding="utf-8")
 
@@ -172,6 +186,22 @@ def test_release_smoke_decodes_docker_output_as_utf8(
     assert output == "配置通过本地严格验证"
     assert observed["encoding"] == "utf-8"
     assert observed["errors"] == "replace"
+
+
+def test_release_smoke_allows_transient_unhealthy_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    compose = Compose(tmp_path, "test-project", VERSION)
+    monkeypatch.setattr(compose, "run", lambda *args, **kwargs: "container-id")
+    statuses = iter(("unhealthy\n", "healthy\n"))
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args[0], 0, stdout=next(statuses))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("scripts.release_smoke.time.sleep", lambda _: None)
+
+    assert wait_healthy(compose, "bot", timeout_seconds=1) == "container-id"
 
 
 def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:

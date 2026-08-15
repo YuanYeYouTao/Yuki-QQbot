@@ -168,20 +168,22 @@ def wait_healthy(compose: Compose, service: str, timeout_seconds: float = 120.0)
     if not container_id:
         raise SmokeError(f"{service} container was not created")
     deadline = time.monotonic() + timeout_seconds
+    last_status = "unknown"
     while time.monotonic() < deadline:
-        status = subprocess.run(
+        last_status = subprocess.run(
             ["docker", "inspect", "--format", "{{.State.Health.Status}}", container_id],
             check=True,
             capture_output=True,
             encoding="utf-8",
             errors="replace",
         ).stdout.strip()
-        if status == "healthy":
+        if last_status == "healthy":
             return container_id
-        if status == "unhealthy":
-            raise SmokeError(f"{service} became unhealthy")
         time.sleep(2)
-    raise SmokeError(f"{service} did not become healthy within {timeout_seconds:.0f}s")
+    raise SmokeError(
+        f"{service} did not become healthy within {timeout_seconds:.0f}s "
+        f"(last status: {last_status})"
+    )
 
 
 def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
