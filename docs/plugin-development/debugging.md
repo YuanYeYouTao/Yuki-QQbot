@@ -31,9 +31,8 @@ uv run qq-ai-bot-cli plugin test plugins/com.example.plugin
 
 ```bash
 docker compose config
-docker compose up -d --build --no-deps bot
+docker compose up -d --no-deps --force-recreate bot
 docker compose logs -f bot
 ```
 
 确认 `./plugins:/app/plugins:ro` 已挂载，`.env` 中 `PLUGIN_DIRECTORY=plugins`。插件代码变化目前需要重启 Bot；1.6.0 不提供热更新。
-

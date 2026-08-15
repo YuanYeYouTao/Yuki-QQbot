@@ -2,9 +2,9 @@ name: qq-ai-bot
 
 services:
   bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/yuanyeyoutao/yuki-qqbot:${YUKI_VERSION:?missing}
+    platform: linux/amd64
+    pull_policy: missing
     init: true
     restart: unless-stopped
     env_file:
@@ -42,9 +42,9 @@ services:
 
   genie-tts-worker:
     profiles: ["speech"]
-    build:
-      context: services/genie_tts_worker
-      dockerfile: Dockerfile
+    image: ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:${YUKI_VERSION:?missing}
+    platform: linux/amd64
+    pull_policy: missing
     init: true
     restart: unless-stopped
     network_mode: none

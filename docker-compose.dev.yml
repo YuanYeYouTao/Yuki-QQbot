@@ -1,0 +1,20 @@
+services:
+  bot:
+    image: yuki-qqbot:dev
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        YUKI_VERSION: dev
+        VCS_REF: local
+
+  genie-tts-worker:
+    image: yuki-genie-tts-worker:dev
+    pull_policy: build
+    build:
+      context: services/genie_tts_worker
+      dockerfile: Dockerfile
+      args:
+        YUKI_VERSION: dev
+        VCS_REF: local

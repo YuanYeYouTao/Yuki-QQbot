@@ -19,6 +19,8 @@ _EXTERNAL_ENVIRONMENT_KEYS = {
     "NAPCAT_UID",
     "NAPCAT_WEBUI_TOKEN",
     "SPEECH_WORKER_IDLE_RECYCLE_SECONDS",
+    # Compose selects immutable Yuki image tags before application settings load.
+    "YUKI_VERSION",
 }
 _COMPOSE_MANAGED_SETTINGS = {
     "APP_HOST",

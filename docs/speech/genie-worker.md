@@ -9,7 +9,7 @@ load/reload/unload profile、synthesize、cancel、clear reference cache 和 shu
 合成先写临时文件，校验 WAV 参数后原子替换。Socket 权限默认 `0660`。
 
 ```bash
-docker compose --profile speech build genie-tts-worker
+docker compose --profile speech pull genie-tts-worker
 docker compose --profile speech up -d genie-tts-worker
 docker compose logs -f genie-tts-worker
 ```

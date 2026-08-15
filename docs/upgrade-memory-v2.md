@@ -14,7 +14,7 @@ Alembic `0020` 不提供 downgrade，也不迁移、导入或双写旧记忆。�
 2. 完整复制仓库的 `data/` 到仓库外或带时间戳的备份目录，并确认数据库文件已复制。
 3. 拉取代码后对照 `.env.example`；本次没有新增密钥。
 4. 执行 `uv run alembic upgrade head`，确认版本为 `0026`。
-5. 执行 `docker compose up -d --build bot`，只重建 bot 可保留 NapCat 登录状态。
+5. 执行 `docker compose up -d --no-deps --force-recreate bot`，只重建 bot 可保留 NapCat 登录状态。
 6. 检查 `/healthz`、bot 日志和一轮私聊/群聊；新记忆应从空库开始产生。
 
 ## 3.0.0b1 增量升级
@@ -37,7 +37,7 @@ docker compose stop bot
 # 先把 data/ 复制到带时间戳的备份目录
 uv run alembic upgrade head
 uv run alembic current
-docker compose up -d --build --no-deps bot
+docker compose up -d --no-deps --force-recreate bot
 ```
 
 升级后运行 `/ai memory doctor` 与 `/ai memory maintenance status`。没有 contested fact 时，
@@ -53,7 +53,7 @@ docker compose up -d --build --no-deps bot
 docker compose stop bot
 Copy-Item data data-backup-before-3.0.0rc1 -Recurse
 uv run alembic upgrade head
-docker compose up -d --build --no-deps bot
+docker compose up -d --no-deps --force-recreate bot
 ```
 
 默认 `MEMORY_REBUILD_ENABLED=false`。即使设为 true，也只表示管理员可以使用该功能：迁移、启动、
@@ -87,7 +87,7 @@ docker compose stop bot
 Copy-Item data data-backup-before-0025 -Recurse
 uv run alembic upgrade head
 uv run alembic current
-docker compose up -d --build --no-deps bot
+docker compose up -d --no-deps --force-recreate bot
 ```
 
 回执与事实写入处于同一事务。Embedding 调度发生在提交之后；调度失败不会回滚已提交事实，

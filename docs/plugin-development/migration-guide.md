@@ -36,7 +36,8 @@ Host 的 Alembic `0013` 非破坏性创建 Planner、插件安装/配置/KV/审�
 ```bash
 docker compose down
 cp -R data data.backup-1.6.0
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 首次升级可设置 `PLUGIN_SYSTEM_ENABLED=false`，先检查数据库和普通聊天，再逐项启用插件。Planner 是普通聊天的固定调度边界，不再提供旧流程回退开关。

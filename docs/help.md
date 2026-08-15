@@ -1,5 +1,9 @@
 # Yuki-QQbot
 
+> **3.5.2 正式版：**部署改用固定版本 GHCR 镜像和无源码 Release 部署包；生产 Compose 不再
+> 本地构建 Bot 或语音 Worker。升级时先修改 `.env` 中的 `YUKI_VERSION`，再执行
+> `docker compose pull` 和 `docker compose up -d`。本版本没有新增数据库迁移。
+>
 > **3.5.1 正式版：**新增自适应记忆生命周期。召回使用结构化意图、Activation 衰减与有界强化；
 > 自动召回、显式工具读取和记忆变更使用互斥路径，归因在发送后异步完成。记忆写入由独立
 > mutation 完成门约束，DeepSeek 请求不携带不受支持的 `tool_choice`。Alembic head 为 `0036`。
@@ -75,13 +79,13 @@
 > 只有当前真实 `SUPERUSERS` 发送者显式 plan/start、人工审阅并 commit 后才会写入事实。
 > 进程重启会暂停而不会自动恢复。操作前仍应备份 `data/`。
 
-Plugin API 仍为 `1.0`。第三方插件如果把 `yuki_requires` 上限写成 `<3.0`，需要在确认兼容后
-改为 `<4.0` 才能在 3.0.0a1 加载；插件代码和 manifest 的 `plugin_api` 无需因本次升级改版。
+当前 Plugin API 为 `1.1`，并兼容声明 `1.0` 的插件。第三方插件若把 `yuki_requires` 上限写成
+`<3.0`，需要在确认兼容后改为 `<4.0`；不要根据 Yuki 产品版本猜测 Plugin API 版本。
 
-已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
+从 GitHub Release 解压部署包，复制 `.env.example` 为 `.env` 并填写必要配置，然后执行：
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 docker compose ps
 docker compose logs -f bot napcat
 ```
@@ -95,7 +99,7 @@ docker compose up -d
 语音功能默认关闭，不影响原有纯文字启动。准备好本地 GenieData 和声线后，使用：
 
 ```bash
-docker compose --profile speech up -d --build
+docker compose --profile speech up -d
 ```
 
 停止服务：
@@ -108,7 +112,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.5.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 3.5.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -178,7 +182,7 @@ Memory V2 质量、合成大库性能基准与生产审计命令见
 1. 本机运行时复制 `.mcp.json.example` 为 `.mcp.json`；Docker 部署时复制为
    `config/mcp.json`，并在 `.env` 设置 `MCP_CONFIG_PATH=/app/config/mcp.json`。
 2. 在 `.env` 中设置 `MCP_ENABLED=true`；令牌、Cookie 等仅通过 `${ENV_NAME}` 引用。
-3. 重建 Bot：`docker compose up -d --build bot`。不要重建或退出 NapCat，可保留 QQ 登录状态。
+3. 重建 Bot：`docker compose up -d --no-deps --force-recreate bot`。不要重建或退出 NapCat，可保留 QQ 登录状态。
 4. 用 `/ai mcp list` 查看状态；超级管理员可执行 `/ai mcp doctor <server_id>`。
 
 `MCP_TOOL_SELECTION_MODE=hybrid` 会先做本地目录粗选，再由 `TOOL_SELECTION` 的 Flash
@@ -429,7 +433,7 @@ VISION_LOW_CONFIDENCE_RETRY_THRESHOLD=0.65
 然后重建 Bot 容器：
 
 ```bash
-docker compose up -d --build --no-deps bot
+docker compose up -d --no-deps --force-recreate bot
 docker compose logs -f bot
 ```
 
@@ -449,7 +453,7 @@ DEFAULT_TIMEZONE=Asia/Shanghai
 然后只重建 Bot：
 
 ```bash
-docker compose up -d --build --no-deps bot
+docker compose up -d --no-deps --force-recreate bot
 ```
 
 普通用户可以创建提醒、定时生成文本、给自己发私聊，以及在创建消息所在的当前群执行受限任务；只能查看、修改和运行本人任务。超级管理员可以额外委托已登记的管理员业务接口、运行时配置和 NapCat/OneBot 全部公开 action。引用、历史、记忆、网页、OCR 和模型自行生成的 QQ/群号不能扩大目标范围。
@@ -610,7 +614,7 @@ docker compose up -d --build
 `PLUGIN_SYSTEM_ENABLED=true`，批准插件并只重启 Bot：
 
 ```bash
-docker compose up -d --build --no-deps bot
+docker compose up -d --no-deps --force-recreate bot
 docker compose exec bot qq-ai-bot-cli plugin discover
 docker compose exec bot qq-ai-bot-cli plugin inspect io.github.yuanyeyoutao.netease-music-card
 docker compose exec bot qq-ai-bot-cli plugin approve io.github.yuanyeyoutao.netease-music-card
@@ -1066,7 +1070,7 @@ WEB_SEARCH_DEPTH=advanced
 然后只重建 Bot 容器：
 
 ```bash
-docker compose up -d --build --no-deps bot
+docker compose up -d --no-deps --force-recreate bot
 ```
 
 配置规则：
@@ -1458,9 +1462,14 @@ Docker 验证：
 
 ```bash
 docker compose config
-docker compose build bot
 docker compose up -d
 docker compose ps
+```
+
+源码开发构建验证：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml build bot
 ```
 
 健康检查不会请求 DeepSeek、Planner、Tavily、Qwen 或执行真实自动化，也不会暴露密钥；`planner_enabled/configured/active_requests`、`plugin_system_enabled/running_count`、`web_configured`、`vision_configured`、`automation_worker_running`、`active_automation_count`、`mcp_automation_tools` 和 `mcp_automation_missing_tools` 都只读取本地配置或运行状态：
@@ -1491,7 +1500,7 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 3. 对照最新 `.env.example`；本次没有新增密钥，Memory V2 沿用现有容量与批处理配置。
 4. 执行 `uv run alembic upgrade head` 到 `0020`。该操作会永久删除全部旧记忆、偏好和旧记忆
    任务，但保留人物、群、聊天事件、关系、自动化和插件数据。
-5. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 和 QQ 登录态不变。
+5. 执行 `docker compose up -d --no-deps --force-recreate bot`；只重建 Bot，NapCat 和 QQ 登录态不变。
 6. 检查 `docker compose ps`、`/healthz` 和日志，再验证私聊、群聊 @、记忆命令和插件。
 
 `0020` 不支持 downgrade，不会自动从 2.1.2 记忆或历史聊天重建事实。唯一回退方式是停止服务
@@ -1502,7 +1511,7 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 1. 停止 Bot 写入但保持 NapCat 登录态：`docker compose stop bot`。
 2. 备份 `data/` 后执行 `uv run alembic upgrade head`，升级到 `0021`。
 3. `0021` 会从现有 `memory_facts` 回填 FTS5；不会读取旧版记忆或扫描聊天历史。
-4. 执行 `docker compose up -d --build --no-deps bot`，再用 `/ai memory index status` 检查索引。
+4. 执行 `docker compose up -d --no-deps --force-recreate bot`，再用 `/ai memory index status` 检查索引。
 
 本次 downgrade 只会删除 FTS 表和触发器，不删除 Memory V2 facts 或 evidence。索引异常时使用
 `/ai memory index rebuild` 重建派生数据，不需要删除数据库。
@@ -1514,7 +1523,7 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 3. 若暂不使用语义检索，保持 `MEMORY_EMBEDDING_ENABLED=false` 即可；行为与 3.0.0a2 一致。
 4. 若要启用，在 `.env` 设置 `MEMORY_EMBEDDING_ENABLED=true`、DashScope 兼容端点和
    `MEMORY_EMBEDDING_API_KEY`。密钥只从环境读取，不会进入数据库或诊断输出。
-5. 执行 `docker compose up -d --build --no-deps bot`，再运行
+5. 执行 `docker compose up -d --no-deps --force-recreate bot`，再运行
    `/ai memory embedding status` 和 `/ai memory embedding doctor`。
 
 `0022` 不修改 Memory V2 事实、证据、FTS 或聊天账本。首次启用后由持久后台任务渐进补齐当前
@@ -1527,7 +1536,7 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 2. 完整备份 `data/`，然后执行 `uv run alembic upgrade head`，确认 head 为 `0023`。
 3. 对照 `.env.example` 补充 Memory consolidation、evidence 和 maintenance 配置；这些项目不含
    新密钥，默认路由到已有 Flash 模型档案。
-4. 执行 `docker compose up -d --build --no-deps bot`，检查 `/healthz`、
+4. 执行 `docker compose up -d --no-deps --force-recreate bot`，检查 `/healthz`、
    `/ai memory doctor` 和 `/ai memory maintenance status`。
 5. 分别验证本人修正、群内真实 @ 第三方事实、矛盾陈述、撤回与恢复；确认 NapCat 登录态不变。
 
@@ -1540,7 +1549,7 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 1. 只停止 Bot：`docker compose stop bot`，不要停止或重建 NapCat。
 2. 完整备份 `data/`，执行 `uv run alembic upgrade head`，确认 head 为 `0024`。
 3. 默认保持 `MEMORY_REBUILD_ENABLED=false`；这不会创建、启动或恢复任何重建任务。
-4. 需要重建时再设为 `true` 并只重建 Bot：`docker compose up -d --build --no-deps bot`。
+4. 需要重建时再设为 `true` 并只重建 Bot：`docker compose up -d --no-deps --force-recreate bot`。
 5. 由当前真实超级管理员先执行 plan，确认统计后 start；提取完成必须 review 并逐项批准或拒绝，
    pending 为 0 后才可 commit。
 
@@ -1561,7 +1570,7 @@ uv run qq-ai-bot-cli memory quality run --suite full
 uv run qq-ai-bot-cli memory quality compare
 uv run qq-ai-bot-cli memory quality performance
 uv run qq-ai-bot-cli memory release-check
-docker compose up -d --build --no-deps bot
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build --no-deps bot
 ```
 
 需要审计真实 SQLite 时必须显式传 `--database-url`；命令只读且不自动治理。完整结果见
