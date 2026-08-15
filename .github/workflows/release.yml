@@ -256,7 +256,7 @@ jobs:
           test ! -e "$anonymous_deploy_dir/pyproject.toml"
           (
             cd "$anonymous_deploy_dir"
-            docker compose --profile speech pull
+            YUKI_VERSION="$VERSION" docker compose --profile speech pull
           )
           python scripts/release_smoke.py --deploy-dir "$anonymous_deploy_dir" --version "$VERSION"
 
@@ -365,7 +365,7 @@ jobs:
           test ! -e "$deploy_dir/pyproject.toml"
           (
             cd "$deploy_dir"
-            docker compose --profile speech pull
+            YUKI_VERSION="$VERSION" docker compose --profile speech pull
           )
           python scripts/release_smoke.py --deploy-dir "$deploy_dir" --version "$VERSION"
 
