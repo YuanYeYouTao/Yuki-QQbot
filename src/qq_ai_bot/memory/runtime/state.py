@@ -30,6 +30,7 @@ from qq_ai_bot.memory.runtime.errors import (
     MemoryLocatorRetryExhaustedError,
     MemorySessionClosedError,
 )
+from qq_ai_bot.memory.runtime.finalizer import MutationFinalizationInput
 from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 
 
@@ -331,6 +332,7 @@ class MemorySessionState:
         "_closed",
         "_contract",
         "_last_mutation_receipt_id",
+        "_last_mutation_view",
         "_locator",
         "_mutation",
         "_recalls",
@@ -351,6 +353,7 @@ class MemorySessionState:
         )
         self._recalls = RecallLedger()
         self._last_mutation_receipt_id: str | None = None
+        self._last_mutation_view: MutationFinalizationInput | None = None
         self._transition_revision = 1
         self._closed = False
 
@@ -389,6 +392,14 @@ class MemorySessionState:
     @property
     def last_mutation_receipt_id(self) -> str | None:
         return self._last_mutation_receipt_id
+
+    @property
+    def last_mutation_view(self) -> MutationFinalizationInput | None:
+        return self._last_mutation_view
+
+    def remember_mutation_view(self, view: MutationFinalizationInput) -> None:
+        self._require_open()
+        self._last_mutation_view = view
 
     def recall_handles(self) -> tuple[RecallHandle, ...]:
         return self._recalls.snapshot()
