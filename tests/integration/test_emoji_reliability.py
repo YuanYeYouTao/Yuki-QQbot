@@ -39,7 +39,6 @@ from qq_ai_bot.planner import (
     PlannerDecision,
     PlannerObservability,
     PlannerReasonCode,
-    ToolMode,
     TurnPlan,
 )
 from qq_ai_bot.planner.service import PlannerService
@@ -259,7 +258,6 @@ async def test_optional_emoji_transport_failure_keeps_normal_text_reply(
         intent="普通文字回复可选附带表情",
         delivery_mode=DeliveryMode.SINGLE,
         desired_messages=1,
-        tool_mode=ToolMode.NONE,
         confidence=1,
         reason_code=PlannerReasonCode.DIRECT_REQUEST,
         emoji=EmojiReplyPlan(

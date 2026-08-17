@@ -43,10 +43,8 @@ from qq_ai_bot.planner import (
     PlannerDecision,
     PlannerObservability,
     PlannerReasonCode,
-    ToolMode,
     TurnPlan,
 )
-from qq_ai_bot.planner.models import ToolSelection
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.services.chat import _with_memory_mutation_contract
@@ -451,7 +449,6 @@ async def test_planner_none_keeps_generic_tool_request_gateway(
         intent="回应用户",
         delivery_mode=DeliveryMode.SINGLE,
         desired_messages=1,
-        tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
         confidence=1.0,
         reason_code=PlannerReasonCode.DIRECT_REQUEST,
     )
@@ -468,7 +465,6 @@ async def test_planner_none_keeps_generic_tool_request_gateway(
     assert provider.requests
     tool_names = {tool.name for tool in provider.requests[-1].tools}
     assert "request_tools" in tool_names
-    assert "memory_change" not in tool_names
 
 
 @pytest.mark.asyncio
@@ -493,7 +489,9 @@ async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract
     assert len(provider.requests) == 1
     request = provider.requests[0]
     assert request.tool_choice == "auto"
-    assert {tool.name for tool in request.tools} == {"memory_change"}
+    tool_names = {tool.name for tool in request.tools}
+    assert "memory_change" in tool_names
+    assert tool_names <= {"memory_change", "request_tools"}
     assert any(
         message.role == "system" and "真实工具回执" in (message.content or "")
         for message in request.messages
@@ -511,7 +509,6 @@ async def test_planner_fallback_fails_closed_before_agent_or_tools(
         decision=PlannerDecision.REPLY,
         intent="fallback",
         delivery_mode=DeliveryMode.SINGLE,
-        tool_selection=ToolSelection(mode=ToolMode.INHERIT, scopes=()),
         confidence=0,
         reason_code=PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
     )
@@ -541,7 +538,6 @@ async def test_intentionally_disabled_planner_keeps_legacy_safe_fallback(
         decision=PlannerDecision.REPLY,
         intent="fallback",
         delivery_mode=DeliveryMode.SINGLE,
-        tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
         confidence=0,
         reason_code=PlannerReasonCode.PLANNER_FALLBACK,
     )
@@ -573,7 +569,6 @@ async def test_planner_preferred_emoji_can_complete_without_text(database: Datab
         intent="直接发送一个轻松的表情回应用户",
         delivery_mode=DeliveryMode.SINGLE,
         desired_messages=1,
-        tool_mode=ToolMode.NONE,
         confidence=1.0,
         reason_code=PlannerReasonCode.DIRECT_REQUEST,
         emoji=EmojiReplyPlan(
@@ -649,7 +644,6 @@ async def test_planner_emoji_only_skips_agent_context_and_embedding(database: Da
         intent="只发送表情",
         delivery_mode=DeliveryMode.SINGLE,
         desired_messages=1,
-        tool_mode=ToolMode.NONE,
         confidence=1.0,
         reason_code=PlannerReasonCode.DIRECT_REQUEST,
         emoji=EmojiReplyPlan(

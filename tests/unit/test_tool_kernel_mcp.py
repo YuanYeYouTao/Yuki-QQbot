@@ -21,7 +21,6 @@ from qq_ai_bot.capabilities import (
     CapabilityRisk,
     CapabilityTrustSource,
     ChatToolCapabilityProvider,
-    FlashToolReranker,
     InProcessToolProvider,
     ToolBundleBudgetError,
     ToolCandidateSelector,
@@ -35,7 +34,7 @@ from qq_ai_bot.capabilities import (
 )
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext
 from qq_ai_bot.capabilities.results import normalize_legacy_result
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ChatTool, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import ChatTool, ToolCall, ToolFunction
 from qq_ai_bot.mcp.binding import MCPPolicyRuntime, MCPToolBinding
 from qq_ai_bot.mcp.config import MCPConfigurationError, load_mcp_config, redacted_server_config
 from qq_ai_bot.mcp.connection import SDKMCPConnection
@@ -45,9 +44,7 @@ from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.mcp.models import MCPServerConfig, MCPTransport
 from qq_ai_bot.mcp.provider import MCPToolProvider
 from qq_ai_bot.mcp.repository import MCPRepository, ToolArtifactRepository
-from qq_ai_bot.model_runtime.models import ModelTask, StructuredOutputMode
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.services.chat import _fit_artifact_page_result
 
 
@@ -141,9 +138,10 @@ def test_mutation_commit_resolution_uses_explicit_result_then_descriptor_effect(
         source=CapabilityTrustSource.CORE,
     ).descriptors()
     read, capability, artifact_reader = descriptors
-    assert capability.scope_id == "capability"
-    assert capability.exposure is CapabilityExposure.DIRECT_ALWAYS
-    assert artifact_reader.exposure is CapabilityExposure.DIRECT_ALWAYS
+    assert capability.namespace_id == "kernel.authority.read"
+    assert capability.exposure is CapabilityExposure.PLANNED
+    assert artifact_reader.namespace_id == "kernel.artifact.read"
+    assert artifact_reader.exposure is CapabilityExposure.PLANNED
     write = replace(
         read,
         effect=CapabilityEffect.WRITE_STATE,
@@ -181,28 +179,6 @@ class _StaticProvider:
         return None
 
 
-@dataclass(slots=True)
-class _FlashExecutor:
-    selected: tuple[str, ...]
-    requests: list[ChatRequest] = field(default_factory=list)
-
-    async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
-        assert task is ModelTask.TOOL_SELECTION
-        self.requests.append(request)
-        return ChatResponse(
-            content=json.dumps({"canonical_names": self.selected}),
-            latency_seconds=0,
-        )
-
-    def model_name(self, task: ModelTask) -> str:
-        assert task is ModelTask.TOOL_SELECTION
-        return "fake-flash"
-
-    def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
-        assert task is ModelTask.TOOL_SELECTION
-        return StructuredOutputMode.TEXT_JSON
-
-
 @pytest.mark.asyncio
 async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral() -> None:
     calls: list[tuple[str, str]] = []
@@ -226,14 +202,13 @@ async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral(
     catalog = registry.catalog(object())
     selected = ToolCandidateSelector().select(
         catalog,
-        scopes=("memory",),
         user_request="搜索刚才的聊天历史",
         limit=1,
+        minimum_score=1,
     )
     assert selected.entries[0].descriptor.model_name == "search_chat_history"
     budgeted = ToolSchemaBudgeter(selected_tool_limit=1, schema_token_budget=None).select(
         catalog,
-        scopes=("memory",),
         query="history",
     )
     assert len(budgeted.entries) == 1
@@ -245,28 +220,6 @@ async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral(
     )
     assert outcome.ok
     assert calls
-
-    flash = _FlashExecutor(
-        selected=(
-            selected.entries[0].descriptor.canonical_name,
-            "mcp:outside:not_in_catalog",
-        )
-    )
-    reranked = await FlashToolReranker(flash).rerank(
-        catalog.entries,
-        user_request="搜索聊天历史",
-        planner_intent="找到此前内容",
-        limit=None,
-    )
-    assert [item.descriptor.canonical_name for item in reranked] == [
-        selected.entries[0].descriptor.canonical_name
-    ]
-    flash_payload = flash.requests[0].messages[-1].content or ""
-    assert "input_schema" not in flash_payload and '"properties"' not in flash_payload
-    parsed_flash_payload = json.loads(flash_payload)
-    assert list(parsed_flash_payload) == ["candidates", "user_request", "planner_intent"]
-    candidate_names = [item["canonical_name"] for item in parsed_flash_payload["candidates"]]
-    assert candidate_names == sorted(candidate_names)
 
     original = catalog.entries[0].descriptor
     collision_registry = ToolProviderRegistry()
@@ -288,14 +241,14 @@ async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral(
 
 
 @pytest.mark.asyncio
-async def test_bundle_members_survive_candidate_flash_and_schema_limits() -> None:
+async def test_bundle_members_survive_candidate_and_schema_limits() -> None:
     async def execute(name: str, arguments: str, _context: object) -> object:
         del arguments
         return {"ok": True, "data": name}
 
     base = InProcessToolProvider(
         provider_id="bundle-test",
-        source=CapabilityTrustSource.CORE,
+        source=CapabilityTrustSource.PLUGIN,
         definitions=lambda _context: tuple(
             _tool(name, f"{name} description") for name in ("lookup", "detail", "commit")
         ),
@@ -322,20 +275,6 @@ async def test_bundle_members_survive_candidate_flash_and_schema_limits() -> Non
         limit=1,
     )
     assert {item.descriptor.model_name for item in candidates.entries} == {
-        "lookup",
-        "detail",
-        "commit",
-    }
-
-    flash = _FlashExecutor(selected=("core.lookup",))
-    reranked = await FlashToolReranker(flash).rerank(
-        candidates.entries,
-        user_request="complete order",
-        planner_intent="commit",
-        limit=1,
-        required_scope_ids=(bundle_scope,),
-    )
-    assert {item.descriptor.model_name for item in reranked} == {
         "lookup",
         "detail",
         "commit",
@@ -671,14 +610,26 @@ async def test_lazy_mcp_discovery_same_name_is_collision_free_and_calls_fake_tra
     )
     await manager.start()
     assert not any(connection.connected for connection in connections.values())
-    await manager.ensure_metadata("music")
-    await manager.ensure_metadata("mcd")
     provider = MCPToolProvider(manager, gateway_enabled=True, selection_mode="all")
+    bootstrap = provider.descriptors(SimpleNamespace(runtime_config=None))
+    synthetic = {item.model_name: item for item in bootstrap}
+    assert synthetic["mcp__music__discover"].provider_metadata == {"synthetic": True}
+    assert synthetic["mcp__mcd__discover"].provider_metadata == {"synthetic": True}
+    assert synthetic["mcp__music__discover"].namespace_id == "mcp.music"
+    await provider.prepare_scopes((), SimpleNamespace(runtime_config=None))
+    assert not any(connection.connected for connection in connections.values())
+    await provider.ensure_server_metadata("music", SimpleNamespace(runtime_config=None))
+    await manager.ensure_metadata("mcd")
     descriptors = provider.descriptors(SimpleNamespace(runtime_config=None))
     names = [item.model_name for item in descriptors]
     assert "mcp__music__search" in names
     assert "mcp__mcd__search" in names
+    assert "mcp__music__discover" not in names
     assert len(names) == len(set(names))
+    search = next(item for item in descriptors if item.model_name == "mcp__music__search")
+    assert search.effect is CapabilityEffect.WRITE_STATE
+    assert search.risk is CapabilityRisk.MUTATE
+    assert not (search.provider_metadata or {}).get("synthetic")
     outcome = await _call_mcp(manager, "music", "search", {"query": "Yuki"})
     assert outcome.ok and outcome.data == {"found": True}
     gateway = MCPGatewayBinding(manager)
@@ -747,7 +698,7 @@ async def test_lazy_mcp_discovery_same_name_is_collision_free_and_calls_fake_tra
 
 
 @pytest.mark.asyncio
-async def test_gateway_cannot_bypass_scope_selection_filters_or_read_only_policy(
+async def test_gateway_requires_describe_then_call_and_honors_read_only_policy(
     database: Database,
     tmp_path: Path,
 ) -> None:
@@ -815,18 +766,15 @@ async def test_gateway_cannot_bypass_scope_selection_filters_or_read_only_policy
     def context(
         key: str,
         *,
-        mode: ToolMode = ToolMode.INHERIT,
-        scopes: frozenset[str] = frozenset({"mcp.shop"}),
+        read_only: bool = False,
         trigger: str | None = None,
     ) -> ToolInvocationContext:
         runtime = SimpleNamespace(
-            tool_mode=mode,
-            tool_groups=scopes,
-            planner_scopes_explicit=True,
-            selected_tool_names=None,
             actor_user_id="1001",
             actor_is_superuser=False,
             origin=TurnOrigin.USER_MESSAGE,
+            read_only=read_only,
+            tools_closed=False,
         )
         return ToolInvocationContext(
             runtime=runtime,
@@ -851,16 +799,15 @@ async def test_gateway_cannot_bypass_scope_selection_filters_or_read_only_policy
     )
     assert excluded.error_code == "unknown_mcp_tool"
 
-    wrong_scope = await gateway.invoke(
+    namespace_is_not_permission = await gateway.invoke(
         {"operation": "describe", "server": "shop", "tool": "read"},
-        context("wrong-scope", scopes=frozenset({"mcp.other"})),
+        context("other-namespace"),
     )
-    assert wrong_scope.error_code == "mcp_scope_not_selected"
+    assert namespace_is_not_permission.ok
 
-    readonly_context = context("readonly", mode=ToolMode.READ_ONLY)
     described = await gateway.invoke(
         {"operation": "describe", "server": "shop", "tool": "create"},
-        readonly_context,
+        context("readonly"),
     )
     assert described.ok
     denied = await gateway.invoke(
@@ -870,7 +817,7 @@ async def test_gateway_cannot_bypass_scope_selection_filters_or_read_only_policy
             "tool": "create",
             "arguments": {},
         },
-        readonly_context,
+        context("readonly", read_only=True),
     )
     assert denied.error_code == "mcp_tool_policy_denied"
     next_turn = await gateway.invoke(

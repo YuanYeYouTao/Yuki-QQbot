@@ -38,8 +38,6 @@ from qq_ai_bot.planner.models import (
     PlannerDecision,
     PlannerInput,
     PlannerReasonCode,
-    ToolMode,
-    ToolSelection,
     TurnPlan,
 )
 from qq_ai_bot.planner.observability import PlannerObservability
@@ -89,20 +87,12 @@ class MemorySender:
 def _successful_test_plan(planner_input: PlannerInput) -> TurnPlan:
     """Represent one valid Planner response; provider failures are tested explicitly."""
 
-    available_scopes = (
-        tuple(scope.scope_id for scope in planner_input.available_tool_scopes)
-        or planner_input.available_tool_categories
-    )
     return TurnPlan(
         decision=PlannerDecision.REPLY,
         intent="回应当前真实发送者的消息",
         target_user_ids=(planner_input.current_sender_user_id,),
         delivery_mode=DeliveryMode.NATURAL_MULTI,
         desired_messages=3,
-        tool_selection=ToolSelection(
-            mode=(ToolMode.READ_ONLY if planner_input.visual_input_present else ToolMode.INHERIT),
-            scopes=available_scopes,
-        ),
         confidence=1,
         reason_code=PlannerReasonCode.DIRECT_REQUEST,
     )

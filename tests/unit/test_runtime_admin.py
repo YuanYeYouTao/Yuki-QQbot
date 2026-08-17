@@ -99,6 +99,25 @@ def inbound(
     )
 
 
+def _request_tools_response(query: str, *, call_id: str = "request-tools") -> ChatResponse:
+    return ChatResponse(
+        content="",
+        latency_seconds=0,
+        tool_calls=(
+            ToolCall(
+                id=call_id,
+                function=ToolFunction(
+                    name="request_tools",
+                    arguments=json.dumps(
+                        {"query": query, "max_results": 4},
+                        ensure_ascii=False,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
 def admin_stack(
     database: Database,
 ) -> tuple[RuntimeConfigService, AdminCapabilityService]:
@@ -689,8 +708,10 @@ async def test_natural_language_config_change_is_hot_and_group_scoped(
 ) -> None:
     calls = 0
 
-    def responder(_request: object) -> ChatResponse:
+    def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
+        if "admin_set_config" not in {tool.name for tool in request.tools}:
+            return _request_tools_response("admin_set_config")
         calls += 1
         if calls == 1:
             return ChatResponse(
@@ -741,8 +762,10 @@ async def test_natural_language_can_change_planner_message_target(
 ) -> None:
     calls = 0
 
-    def responder(_request: object) -> ChatResponse:
+    def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
+        if "admin_set_config" not in {tool.name for tool in request.tools}:
+            return _request_tools_response("admin_set_config")
         calls += 1
         if calls == 1:
             return ChatResponse(
@@ -819,12 +842,14 @@ async def test_single_chat_agent_keeps_persona_and_context_across_missing_target
 
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
-        calls += 1
         tool_names = {tool.name for tool in request.tools}
         assert any(
             message.role == "system" and "Yuki" in (message.content or "")
             for message in request.messages
         )
+        if "admin_execute_action" not in tool_names:
+            return _request_tools_response("admin_execute_action")
+        calls += 1
         if calls == 1:
             assert "admin_request_clarification" not in tool_names
             assert "admin_execute_action" in tool_names
@@ -907,8 +932,10 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
 
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
-        calls += 1
         tool_names = {tool.name for tool in request.tools}
+        if "admin_set_config" not in tool_names:
+            return _request_tools_response("admin_set_config")
+        calls += 1
         if calls == 1:
             assert "get_my_capabilities" in tool_names
             assert "admin_list_capabilities" not in tool_names
@@ -997,7 +1024,10 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
     harness.processor._chat.set_admin_tools(capabilities)
 
     sender = MemorySender()
-    message = inbound("max pending messages 改成30", message_id="repeat-capability-config")
+    message = inbound(
+        "我能改什么，max pending messages 改成30",
+        message_id="repeat-capability-config",
+    )
     result = await harness.processor.handle(message, sender)
 
     assert result.reason == "chat"
@@ -1021,8 +1051,10 @@ async def test_single_chat_agent_can_list_then_delete_memory_in_one_turn(
 
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
-        calls += 1
         tool_names = {tool.name for tool in request.tools}
+        if "admin_execute_action" not in tool_names:
+            return _request_tools_response("admin_execute_action")
+        calls += 1
         if calls == 1:
             return ChatResponse(
                 content="",
@@ -1231,6 +1263,8 @@ async def test_failed_automation_creation_cannot_be_reported_as_success(
 
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
+        if "automation_create" not in {tool.name for tool in request.tools}:
+            return _request_tools_response("automation_create")
         calls += 1
         if calls == 1:
             return ChatResponse(
@@ -1272,8 +1306,7 @@ async def test_failed_automation_creation_cannot_be_reported_as_success(
     )
 
     assert result.reason == "chat"
-    assert sender.messages[0].text.startswith("操作未完成：")
-    assert "创建成功" not in sender.messages[0].text
+    assert sender.messages[0].text == "这个定时任务还没有写入任务列表，不能算创建成功。"
     assert await automation.list_current("9000") == ()
 
 

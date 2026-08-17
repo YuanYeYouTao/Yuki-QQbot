@@ -53,7 +53,7 @@ async def test_add_persists_real_host_grant_and_nested_config(database: Database
         plugin_id=PLUGIN_ID,
         name="GitHub Monitor",
         version="1.0.0",
-        plugin_api="1.1",
+        plugin_api="2.0",
         yuki_requires=">=3.4",
         manifest_hash="a" * 64,
         entrypoint="github_monitor:GitHubMonitorPlugin",

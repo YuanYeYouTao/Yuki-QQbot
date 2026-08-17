@@ -18,7 +18,6 @@ from qq_ai_bot.planner.models import (
     DeliveryMode,
     PlannerDecision,
     PlannerReasonCode,
-    ToolMode,
     TurnPlan,
 )
 from qq_ai_bot.services.reply_sequence import (
@@ -37,7 +36,6 @@ def _plan(mode: DeliveryMode, messages: int = 1) -> TurnPlan:
         intent="test",
         delivery_mode=mode,
         desired_messages=messages,
-        tool_mode=ToolMode.NONE,
         confidence=1.0,
         reason_code=PlannerReasonCode.DIRECT_REQUEST,
     )

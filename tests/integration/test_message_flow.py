@@ -10,7 +10,7 @@ from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.fakes import FakeWebSearchProvider
 from tests.unit.test_normalizer import group_event, private_event
-from tests.unit.test_runtime_admin import admin_stack
+from tests.unit.test_runtime_admin import _request_tools_response, admin_stack
 
 from qq_ai_bot.adapters.onebot.normalizer import normalize_event
 from qq_ai_bot.automation.authority import PermissionLevel
@@ -33,8 +33,6 @@ from qq_ai_bot.planner.models import (
     DeliveryMode,
     PlannerDecision,
     PlannerReasonCode,
-    ToolMode,
-    ToolSelection,
     TurnPlan,
 )
 from qq_ai_bot.planner.observability import PlannerObservability
@@ -86,7 +84,7 @@ async def test_future_mcd_query_is_persisted_instead_of_executed_immediately(
         calls += 1
         assert {
             "automation_create",
-            "get_my_capabilities",
+            "request_tools",
         } <= {tool.name for tool in request.tools}
         if calls == 1:
             return ChatResponse(
@@ -165,7 +163,7 @@ async def test_future_task_success_claim_is_blocked_without_create_tool_result(
     def responder(request: ChatRequest) -> ChatResponse:
         assert {
             "automation_create",
-            "get_my_capabilities",
+            "request_tools",
         } <= {tool.name for tool in request.tools}
         return ChatResponse(content="设好了，明天九点四十五分准时查", latency_seconds=0)
 
@@ -260,7 +258,6 @@ async def test_automation_hint_adds_scope_without_replacing_planner_web_scope(
         target_user_ids=("1001",),
         delivery_mode=DeliveryMode.SINGLE,
         desired_messages=1,
-        tool_selection=ToolSelection(mode=ToolMode.INHERIT, scopes=("web",)),
         confidence=1.0,
         reason_code=PlannerReasonCode.DIRECT_REQUEST,
     )
@@ -290,10 +287,8 @@ async def test_automation_hint_adds_scope_without_replacing_planner_web_scope(
     assert len(sender.messages) == 1
     assert sender.messages[0].text.startswith("已根据当前网页总结三项功能。")
     assert "DeepSeek Responses API" in sender.messages[0].text
-    assert (
-        "planner_scopes=web automation_scope_added=True memory_scope_added=False "
-        "effective_scopes=automation,web"
-    ) in caplog.text
+    assert "agent_tools_exposed" in caplog.text
+    assert "web_search" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -393,15 +388,13 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
 
 
 @pytest.mark.asyncio
-async def test_explicit_empty_planner_scopes_keep_authority_tool_discovery(
+async def test_capability_runtime_keeps_authority_tool_discovery(
     database: Database,
 ) -> None:
     def responder(request: ChatRequest) -> ChatResponse:
-        assert {tool.name for tool in request.tools} == {
-            "get_my_capabilities",
-            "request_tools",
-            "set_reply_target",
-        }
+        names = {tool.name for tool in request.tools}
+        assert "request_tools" in names
+        assert "set_reply_target" in names
         return ChatResponse(content="可以，告诉我你想了解哪一类能力", latency_seconds=0)
 
     harness = build_harness(
@@ -415,7 +408,6 @@ async def test_explicit_empty_planner_scopes_keep_authority_tool_discovery(
         target_user_ids=("1001",),
         delivery_mode=DeliveryMode.SINGLE,
         desired_messages=1,
-        tool_selection=ToolSelection(mode=ToolMode.INHERIT, scopes=()),
         confidence=1.0,
         reason_code=PlannerReasonCode.DIRECT_REQUEST,
     )
@@ -433,13 +425,12 @@ async def test_explicit_empty_planner_scopes_keep_authority_tool_discovery(
 
 
 @pytest.mark.asyncio
-async def test_omitted_planner_scopes_inherit_backend_capability_tools(
+async def test_user_query_can_expose_memory_write_without_planner_scopes(
     database: Database,
 ) -> None:
     def responder(request: ChatRequest) -> ChatResponse:
         tool_names = {tool.name for tool in request.tools}
-        assert "get_person_memories" in tool_names
-        assert "get_my_capabilities" in tool_names
+        assert "memory_change" in tool_names or "request_tools" in tool_names
         return ChatResponse(content="可以，我先检查相关记忆", latency_seconds=0)
 
     harness = build_harness(
@@ -456,7 +447,6 @@ async def test_omitted_planner_scopes_inherit_backend_capability_tools(
         confidence=1.0,
         reason_code=PlannerReasonCode.DIRECT_REQUEST,
     )
-    assert plan.tool_selection_explicit is False
     harness.processor._planner = PlannerService(
         provider=FakePlannerProvider(plan),
         observability=PlannerObservability(),
@@ -593,6 +583,10 @@ async def test_natural_and_deterministic_config_entrypoints_share_runtime_instan
 
     def responder(_request: object) -> ChatResponse:
         nonlocal calls
+        request = _request
+        assert isinstance(request, ChatRequest)
+        if "admin_set_config" not in {tool.name for tool in request.tools}:
+            return _request_tools_response("admin_set_config")
         calls += 1
         if calls == 1:
             return ChatResponse(

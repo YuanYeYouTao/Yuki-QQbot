@@ -125,19 +125,6 @@ async def _seed(database) -> str:
             latency_seconds=0.4,
             error_category=None,
         )
-        await ModelInvocationRepository(database).record(
-            task=ModelTask.TOOL_SELECTION,
-            profile_id="flash",
-            provider="fake",
-            model="fake-flash",
-            success=True,
-            prompt_tokens=30,
-            completion_tokens=6,
-            total_tokens=36,
-            cached_prompt_tokens=None,
-            latency_seconds=0.05,
-            error_category=None,
-        )
         await MCPRepository(database).record_invocation(
             conversation_key=SECRET_CONVERSATION,
             provider_id="builtin",
@@ -203,7 +190,8 @@ async def test_export_joins_one_turn_and_stays_content_free(database, tmp_path: 
     assert document["planner"]["wait_then_second_call_ratio"] == 1.0
     assert document["models"]["planner_invocations"] == 1
     assert document["models"]["chat_agent_invocations"] == 1
-    assert document["models"]["tool_selection_invocations"] == 1
+    assert "tool_selection_invocations" not in document["models"]
+    assert "tool_selection_flash_ratio" not in document["models"]
     assert document["tools"]["invocations"] == 1
     assert document["memory"]["recall"]["automatic_like"] == 1
     assert document["turns"]["join_coverage"]["planner_runs"]["ratio"] == 1.0

@@ -50,7 +50,6 @@ from qq_ai_bot.planner import (
     PlannerSignal,
     ReplyNecessityFeatures,
     ReplyNecessityScorer,
-    ToolMode,
     TurnPlan,
     constrain_turn_plan,
 )
@@ -59,8 +58,6 @@ from qq_ai_bot.planner.models import (
     PlannerEmojiContext,
     PlannerModelOutput,
     PlannerSpeechContext,
-    PlannerToolOutput,
-    ToolScopeSummary,
 )
 from qq_ai_bot.planner.prompt import PLANNER_SYSTEM_PROMPT, planner_payload
 from qq_ai_bot.planner.service import PlannerService
@@ -230,6 +227,19 @@ def test_planner_schema_no_longer_owns_memory_context() -> None:
     assert "memory_context" not in schema.get("required", [])
 
 
+def test_planner_prompt_does_not_own_tool_selection() -> None:
+    assert "不要输出 tool_selection" in PLANNER_SYSTEM_PROMPT
+    assert "必须输出 tool_selection" not in PLANNER_SYSTEM_PROMPT
+
+
+def test_planner_schema_no_longer_owns_tool_selection() -> None:
+    schema = PlannerModelOutput.model_json_schema()
+
+    assert "tool_selection" not in schema.get("properties", {})
+    assert "tool_selection" not in schema.get("required", [])
+    assert "tool_mode" not in schema.get("properties", {})
+
+
 @pytest.mark.asyncio
 async def test_leftover_memory_context_is_ignored_without_failing_the_plan() -> None:
     payload = _valid_plan_payload()
@@ -268,15 +278,23 @@ async def test_intentionally_disabled_planner_uses_non_error_fallback_reason() -
     assert outcome.planned_turn.plan.reason_code is PlannerReasonCode.PLANNER_FALLBACK
 
 
-def test_planner_prompt_requires_explicit_scope_and_query_rewrite_for_tool_tasks() -> None:
-    assert "必须输出 tool_selection 并选最小 scopes" in PLANNER_SYSTEM_PROMPT
-    assert "仅 scope\n不明时省略" in PLANNER_SYSTEM_PROMPT
-    assert "intent 必须用一句短而规范化" in PLANNER_SYSTEM_PROMPT
-    assert "已有合适工具禁用它" in PLANNER_SYSTEM_PROMPT
-    assert "scopes 不是权限边界" in PLANNER_SYSTEM_PROMPT
-    description = PlannerToolOutput.model_fields["scopes"].description or ""
-    assert "capabilities.tool_scopes" in description
-    assert "available_tool_scopes" not in description
+@pytest.mark.asyncio
+async def test_leftover_tool_selection_is_ignored_without_failing_the_plan() -> None:
+    payload = _valid_plan_payload()
+    payload["tool_selection"] = {"mode": "inherit", "scopes": ["web"]}
+    payload["tool_mode"] = "none"
+    payload["scopes"] = ["automation"]
+    payload["groups"] = ["web"]
+    provider = LLMPlannerProvider(
+        FakeLLMProvider(lambda _request: json.dumps(payload)),
+        model="planner-model",
+    )
+
+    plan = await provider.plan(_planner_input(), runtime=_runtime())
+
+    assert plan.confidence == 0.9
+    assert not hasattr(plan, "tool_selection")
+    assert not hasattr(plan, "tool_mode")
 
 
 def _planner_input(
@@ -326,7 +344,6 @@ def _planner_input(
         visual_input_present=visual,
         current_time=datetime.now(UTC),
         necessity=necessity,
-        available_tool_categories=("history", "admin"),
     )
 
 
@@ -338,7 +355,6 @@ def _valid_plan_payload(**updates: object) -> dict[str, object]:
         "delivery_mode": "single",
         "desired_messages": 1,
         "reply_to_event_id": None,
-        "tool_selection": {"mode": "inherit", "scopes": []},
         "wait_seconds": 0,
         "confidence": 0.9,
         "reason_code": "direct_request",
@@ -352,22 +368,6 @@ def _valid_plan_payload(**updates: object) -> dict[str, object]:
 def test_planner_payload_is_compact_stable_and_excludes_backend_ids() -> None:
     planner_input = _planner_input().model_copy(
         update={
-            "available_tool_scopes": (
-                ToolScopeSummary(
-                    scope_id="web",
-                    display_name="Web",
-                    description="联网读取",
-                    tool_count=4,
-                    provider_ids=("internal",),
-                    tags=("network",),
-                ),
-                ToolScopeSummary(
-                    scope_id="automation",
-                    display_name="Automation",
-                    description="延后执行",
-                    tool_count=3,
-                ),
-            ),
             "plugin_signals": (
                 PlannerSignal(
                     source_plugin_id="z-plugin",
@@ -394,10 +394,7 @@ def test_planner_payload_is_compact_stable_and_excludes_backend_ids() -> None:
     ]
     capabilities = payload["capabilities"]
     assert isinstance(capabilities, dict)
-    assert capabilities["tool_scopes"] == [
-        {"scope_id": "automation", "description": "延后执行"},
-        {"scope_id": "web", "description": "联网读取"},
-    ]
+    assert "tool_scopes" not in capabilities
     conversation_state = payload["conversation_state"]
     assert isinstance(conversation_state, dict)
     signals = conversation_state["plugin_signals"]
@@ -589,8 +586,6 @@ async def test_standalone_emoji_uses_deterministic_planner_without_provider() ->
     assert outcome.planned_turn.planner_used is False
     assert outcome.planned_turn.plan.reason_code is PlannerReasonCode.DETERMINISTIC_EFFECT_REQUEST
     assert outcome.planned_turn.plan.emoji.mode is EmojiReplyMode.EMOJI_ONLY
-    assert outcome.planned_turn.plan.tool_mode is ToolMode.NONE
-    assert outcome.planned_turn.plan.tool_selection.scope_ids == ()
     snapshot = observability.snapshot()
     assert snapshot.deterministic_effects == 1
     assert snapshot.total_requests == 0
@@ -912,8 +907,6 @@ def test_planner_owns_emoji_effect_and_closes_tools_for_exclusive_delivery() -> 
     assert exclusive.emoji.mode is EmojiReplyMode.EMOJI_ONLY
     assert exclusive.emoji.placement is EmojiPlacement.ONLY
     assert exclusive.emoji.is_exclusive
-    assert exclusive.tool_selection.mode is ToolMode.NONE
-    assert exclusive.tool_selection.scope_ids == ()
     assert spontaneous_blocked.emoji.mode is EmojiReplyMode.NONE
 
 
@@ -1025,7 +1018,7 @@ def test_main_agent_plan_projection_excludes_planner_delivery_constraints() -> N
     assert isinstance(contribution.payload, dict)
     assert contribution.payload["decision"] == "reply"
     assert contribution.payload["intent"] == plan.intent
-    assert "tools" in contribution.payload
+    assert "tools" not in contribution.payload
     assert "delivery" not in contribution.payload
     assert "messages" not in contribution.payload
 
@@ -1133,73 +1126,31 @@ def test_reply_target_is_plain_by_default_but_preserves_intentional_quotes() -> 
     assert current_group.reply_to_event_id == 101
 
 
-def test_plan_parser_rejects_unknown_fields_and_permission_modes() -> None:
+def test_plan_parser_rejects_unknown_fields_and_strips_leftover_tool_selection() -> None:
     planner_input = _planner_input()
     with pytest.raises(PlannerResponseError):
         constrain_turn_plan(_valid_plan_payload(root=True), planner_input)
-    with pytest.raises(PlannerResponseError):
-        constrain_turn_plan(
-            _valid_plan_payload(tool_selection={"mode": "write_all"}),
-            planner_input,
-        )
-
-
-def test_dynamic_scopes_are_authoritative_and_legacy_groups_remain_compatible() -> None:
-    planner_input = _planner_input().model_copy(
-        update={
-            "available_tool_scopes": (
-                ToolScopeSummary(
-                    scope_id="mcp.music",
-                    parent="mcp",
-                    display_name="Music",
-                    description="music tools",
-                    tool_count=2,
-                    provider_ids=("mcp.music",),
-                ),
-                ToolScopeSummary(
-                    scope_id="automation",
-                    display_name="Automation",
-                    tool_count=3,
-                    provider_ids=("automation",),
-                ),
-            ),
-            "available_tool_categories": (),
-        }
+    plan = constrain_turn_plan(
+        _valid_plan_payload(tool_selection={"mode": "write_all"}),
+        planner_input,
     )
-    valid = constrain_turn_plan(
+    assert not hasattr(plan, "tool_selection")
+
+
+def test_constrain_turn_plan_strips_leftover_tool_fields() -> None:
+    plan = constrain_turn_plan(
         _valid_plan_payload(
-            tool_selection={
-                "mode": "inherit",
-                "scopes": ["mcp.music", "automation"],
-            }
+            tool_selection={"mode": "inherit", "scopes": ["mcp.unknown"]},
+            groups=["automation"],
+            scopes=["web"],
+            tool_mode="none",
         ),
-        planner_input,
+        _planner_input(),
     )
-    assert valid.tool_selection.scope_ids == ("mcp.music", "automation")
-
-    memory_scopes_ignored = constrain_turn_plan(
-        _valid_plan_payload(
-            tool_selection={
-                "mode": "inherit",
-                "scopes": ["memory", "memory.read", "memory_change", "mcp.music"],
-            }
-        ),
-        planner_input,
-    )
-    assert memory_scopes_ignored.tool_selection.scope_ids == ("mcp.music",)
-
-    with pytest.raises(PlannerResponseError, match="unknown tool scopes"):
-        constrain_turn_plan(
-            _valid_plan_payload(tool_selection={"mode": "inherit", "scopes": ["mcp.unknown"]}),
-            planner_input,
-        )
-
-    legacy = constrain_turn_plan(
-        _valid_plan_payload(tool_selection={"mode": "inherit", "groups": ["automation"]}),
-        planner_input,
-    )
-    assert legacy.tool_selection.scope_ids == ("automation",)
-    assert legacy.tool_selection.groups == ()
+    assert not hasattr(plan, "tool_selection")
+    assert not hasattr(plan, "tool_mode")
+    assert not hasattr(plan, "scopes")
+    assert not hasattr(plan, "groups")
 
 
 @pytest.mark.asyncio
@@ -1229,6 +1180,7 @@ async def test_llm_planner_uses_configured_bot_name_in_its_instruction() -> None
     instruction = llm.requests[0].messages[0].content or ""
     assert "长期记忆由后端 Memory Runtime 决定" in instruction
     assert "不要输出 memory_context" in instruction
+    assert "不要输出 tool_selection" in instruction
 
 
 @pytest.mark.asyncio
@@ -1256,9 +1208,7 @@ async def test_llm_planner_materializes_sparse_output_with_backend_defaults() ->
     assert plan.delivery_mode is DeliveryMode.SINGLE
     assert plan.desired_messages == 1
     assert plan.reply_to_event_id is None
-    assert plan.tool_mode is ToolMode.INHERIT
-    assert plan.tool_selection.scope_ids == ()
-    assert plan.tool_selection_explicit is False
+    assert not hasattr(plan, "tool_selection")
     assert plan.emoji.mode is EmojiReplyMode.NONE
     assert plan.voice.mode is VoiceMode.TEXT
 
@@ -1279,8 +1229,7 @@ async def test_llm_planner_materializes_mutation_access_without_memory_scope() -
     plan = await provider.plan(_planner_input(), runtime=_runtime())
 
     assert not hasattr(plan, "memory_context") or getattr(plan, "memory_context", None) is None
-    assert plan.tool_mode is ToolMode.NONE
-    assert plan.tool_selection.scope_ids == ()
+    assert not hasattr(plan, "tool_selection")
 
 
 def test_sparse_planner_schema_requires_all_non_inferable_decisions() -> None:
@@ -1331,7 +1280,7 @@ def test_sparse_planner_derives_secondary_effect_defaults() -> None:
     assert plan.voice.language is SpeechLanguageHint.AUTO
 
 
-def test_sparse_planner_preserves_explicit_empty_tool_selection() -> None:
+def test_sparse_planner_strips_leftover_tool_selection() -> None:
     output = PlannerModelOutput.model_validate(
         {
             "decision": "reply",
@@ -1347,8 +1296,7 @@ def test_sparse_planner_preserves_explicit_empty_tool_selection() -> None:
 
     plan = output.materialize()
 
-    assert plan.tool_selection.scope_ids == ()
-    assert plan.tool_selection_explicit is True
+    assert not hasattr(plan, "tool_selection")
 
 
 @pytest.mark.asyncio
@@ -1411,8 +1359,6 @@ async def test_planner_provider_failure_falls_back_without_tools() -> None:
     plan = await provider.plan(_planner_input(), runtime=_runtime())
     assert len(llm.requests) == 1
     assert plan.reason_code is PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK
-    assert plan.tool_mode is ToolMode.NONE
-    assert plan.tool_selection.scope_ids == ()
     assert plan.desired_messages == 1
 
 
@@ -1429,8 +1375,6 @@ async def test_planner_timeout_has_distinct_narrow_fallback() -> None:
     )
     plan = await provider.plan(_planner_input(), runtime=runtime)
     assert plan.reason_code is PlannerReasonCode.PLANNER_TIMEOUT_FALLBACK
-    assert plan.tool_mode is ToolMode.NONE
-    assert plan.tool_selection.scope_ids == ()
     assert plan.desired_messages == 1
 
 
@@ -1450,8 +1394,6 @@ async def test_admitted_autonomous_group_failure_falls_back_to_reply() -> None:
     )
     plan = await provider.plan(planner_input, runtime=_runtime())
     assert plan.decision is PlannerDecision.REPLY
-    assert plan.tool_mode is ToolMode.NONE
-    assert plan.tool_selection.scope_ids == ()
 
 
 @pytest.mark.asyncio
@@ -1499,7 +1441,6 @@ def test_observability_tracks_active_fallback_and_hashes_identifiers() -> None:
             intent="reply",
             delivery_mode=DeliveryMode.SINGLE,
             desired_messages=1,
-            tool_mode=ToolMode.NONE,
             wait_seconds=0.0,
             confidence=0.0,
             reason_code=PlannerReasonCode.PLANNER_FALLBACK,
@@ -1514,14 +1455,12 @@ def test_observability_tracks_active_fallback_and_hashes_identifiers() -> None:
     assert snapshot.successful_plans == 1
     assert snapshot.fallback_plans == 1
     assert snapshot.last_decision is PlannerDecision.REPLY
-    assert "tool_mode=none" in rendered_logs
-    assert "planner_scope_source=explicit" in rendered_logs
-    assert "planner_scopes=none" in rendered_logs
+    assert "planner_scopes=" not in rendered_logs
     assert "private:1001" not in rendered_logs
     assert "sender_user_id=1001" not in rendered_logs
 
 
-def test_observability_records_inherited_tool_scopes() -> None:
+def test_observability_does_not_log_planner_tool_scopes() -> None:
     metrics = PlannerObservability()
     with patch("qq_ai_bot.planner.observability.logger.info") as log_info:
         token = metrics.request_started(
@@ -1542,6 +1481,6 @@ def test_observability_records_inherited_tool_scopes() -> None:
         str(call.args[0]) % tuple(call.args[1:]) for call in log_info.call_args_list
     )
 
-    assert "planner_scope_source=inherited" in rendered_logs
-    assert "planner_scopes=backend_authorized" in rendered_logs
+    assert "planner_scope_source=" not in rendered_logs
+    assert "planner_scopes=" not in rendered_logs
     assert "private:1001" not in rendered_logs

@@ -283,7 +283,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.emoji_selector_score_gap == 0.75
     assert settings.emoji_selector_timeout_seconds == 2
     assert not settings.plugin_system_enabled
-    assert settings.plugin_api_version == "1.1"
+    assert settings.plugin_api_version == "2.0"
     assert settings.plugin_ai_session_max_history_messages == 200
 
     assert Settings.model_validate({"planner_reply_necessity_threshold": 101})

@@ -64,7 +64,10 @@ def _write_config(path: Path) -> None:
                                 "enabled": True,
                                 "permission": "superuser",
                                 "includeTools": ["campaign-calendar", "auto-bind-coupons"],
-                            }
+                            },
+                            "toolAnnotations": {
+                                "campaign-calendar": {"readOnlyHint": True},
+                            },
                         },
                     }
                 }

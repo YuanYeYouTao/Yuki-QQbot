@@ -33,11 +33,7 @@ SRC_ROOT = Path(__file__).parents[2] / "src" / "qq_ai_bot"
 
 # file (posix, relative to src/qq_ai_bot) -> forbidden prefixes it may still
 # use.  Only remove entries; never add one without a plan-document deviation.
-ALLOWED_LEGACY_IMPORTS: dict[str, frozenset[str]] = {
-    # Pre-R1 tool-selection policy still consumes Planner ToolMode/ToolSelection;
-    # R3 replaces it with the namespace exposure planner, R5 deletes it.
-    "capabilities/policy.py": frozenset({"qq_ai_bot.planner"}),
-}
+ALLOWED_LEGACY_IMPORTS: dict[str, frozenset[str]] = {}
 
 
 @dataclass(frozen=True)
@@ -264,9 +260,7 @@ def test_runtime_package_init_exports_nothing() -> None:
     """The runtime __init__ intentionally re-exports nothing (R1 commit 1)."""
 
     tree = ast.parse((SRC_ROOT / "runtime" / "__init__.py").read_text(encoding="utf-8"))
-    imports = [
-        node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
-    ]
+    imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
     assert imports == [], "runtime/__init__.py must stay import-free to prevent cycles"
 
 

@@ -50,7 +50,6 @@ from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.planner.models import ToolGroup, ToolMode, ToolSelection
 from qq_ai_bot.prompting import (
     PromptChannel,
     PromptCompiler,
@@ -578,7 +577,8 @@ def _descriptor(name: str, effect: CapabilityEffect) -> CapabilityDescriptor:
     return CapabilityDescriptor(
         canonical_name=f"test.{name}",
         model_name=name,
-        group=ToolGroup.MEMORY.value,
+        group="memory",
+        namespace="memory.test",
         input_schema={"type": "object"},
         output_schema={"type": "object"},
         effect=effect,
@@ -602,10 +602,7 @@ def test_capability_policy_uses_effect_metadata_not_tool_name() -> None:
         CapabilityPolicyContext(
             authority=AuthorityContext(actor_user_id="1", is_superuser=False),
             origin=TurnOrigin.USER_MESSAGE,
-            tool_selection=ToolSelection(
-                mode=ToolMode.READ_ONLY,
-                groups=(ToolGroup.MEMORY,),
-            ),
+            read_only=True,
         ),
     )
     assert visible == (renamed_read,)

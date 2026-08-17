@@ -730,7 +730,7 @@ name = "Guided Test"
 version = "1.0.0"
 description = "Manifest-only guided setup test."
 entrypoint = "plugin:Plugin"
-plugin_api = "1.1"
+plugin_api = "2.0"
 yuki_requires = ">=3.5.3,<4"
 permissions = ["message.current.read"]
 """,
@@ -746,6 +746,7 @@ permissions = ["message.current.read"]
         {
             "database_url": database_url,
             "plugin_directory": plugin.parent,
+            "plugin_api_version": "2.0",
             "llm_provider": "fake",
             "llm_model": "fake",
         }
@@ -899,7 +900,7 @@ name = "Guided Test"
 version = "1.0.0"
 description = "Manifest-only guided setup test."
 entrypoint = "plugin:Plugin"
-plugin_api = "1.1"
+plugin_api = "2.0"
 yuki_requires = ">=3.5.3,<4"
 permissions = ["message.current.read"]
 """,
@@ -915,6 +916,7 @@ permissions = ["message.current.read"]
         {
             "database_url": database_url,
             "plugin_directory": plugin.parent,
+            "plugin_api_version": "2.0",
             "llm_provider": "fake",
             "llm_model": "fake",
         }

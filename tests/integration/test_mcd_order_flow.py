@@ -24,8 +24,6 @@ from qq_ai_bot.planner.models import (
     DeliveryMode,
     PlannerDecision,
     PlannerReasonCode,
-    ToolMode,
-    ToolSelection,
     TurnPlan,
 )
 from qq_ai_bot.planner.observability import PlannerObservability
@@ -41,10 +39,17 @@ _REMOTE_SEQUENCE = (
 
 
 def _remote_tool(name: str) -> SimpleNamespace:
+    properties: dict[str, object] = {}
+    if name == "query-meal-detail":
+        properties = {"mealCode": {"type": "string"}}
     return SimpleNamespace(
         name=name,
         description=f"offline {name}",
-        inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+        inputSchema={
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": False,
+        },
         outputSchema={"type": "object"},
         annotations=None,
     )
@@ -351,7 +356,7 @@ async def test_bundled_mcd_order_flow_commits_once_and_preserves_payment_url(
         mcp_config_path=config_path,
         mcp_gateway_enabled=True,
         mcp_tool_selection_mode="catalog",
-        tooling_selected_tool_limit=1,
+        tooling_selected_tool_limit=32,
         agent_max_tool_calls=10,
         agent_max_model_requests=10,
         agent_tool_result_max_characters=8000,
@@ -371,10 +376,6 @@ async def test_bundled_mcd_order_flow_commits_once_and_preserves_payment_url(
         target_user_ids=("1001",),
         delivery_mode=DeliveryMode.SINGLE,
         desired_messages=1,
-        tool_selection=ToolSelection(
-            mode=ToolMode.INHERIT,
-            scopes=("mcp.mcd.order",),
-        ),
         confidence=1.0,
         reason_code=PlannerReasonCode.DIRECT_REQUEST,
     )

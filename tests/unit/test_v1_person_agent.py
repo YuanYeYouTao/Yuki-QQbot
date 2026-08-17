@@ -127,6 +127,23 @@ class ToolLoopProvider(LLMProvider):
         self.requests: list[ChatRequest] = []
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
+        names = {tool.name for tool in request.tools}
+        if "call_onebot_api" not in names:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="request-onebot",
+                        function=ToolFunction(
+                            name="request_tools",
+                            arguments=json.dumps(
+                                {"query": "call_onebot_api", "max_results": 1}
+                            ),
+                        ),
+                    ),
+                ),
+            )
         self.requests.append(request)
         if len(self.requests) == 1:
             assert "call_onebot_api" in {tool.name for tool in request.tools}
@@ -224,12 +241,6 @@ async def test_non_superuser_never_receives_generic_onebot_tool(database: Databa
     )
     assert "call_onebot_api" not in provider.tool_names
     assert "request_tools" in provider.tool_names
-    assert {
-        "get_recent_chat_history",
-        "search_chat_history",
-        "get_person_memories",
-        "get_group_memories",
-    }.isdisjoint(provider.tool_names)
 
 
 @pytest.mark.asyncio

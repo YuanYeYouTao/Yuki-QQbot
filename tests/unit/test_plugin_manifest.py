@@ -18,7 +18,7 @@ name = "Echo"
 version = "0.1.0"
 description = "Echo test plugin"
 entrypoint = "echo_plugin:EchoPlugin"
-plugin_api = "1.0"
+plugin_api = "2.0"
 yuki_requires = ">=1.6.0,<2.0"
 permissions = ["tool.register", "network.http.allowlisted"]
 
@@ -38,6 +38,18 @@ def _plugin_dir(tmp_path: Path, plugin_id: str = "com.example.echo") -> Path:
     root.mkdir()
     (root / "plugin.toml").write_text(_manifest_text(plugin_id), encoding="utf-8")
     return root
+
+
+def test_manifest_rejects_plugin_api_1x(tmp_path: Path) -> None:
+    root = _plugin_dir(tmp_path)
+    text = (root / "plugin.toml").read_text(encoding="utf-8")
+    (root / "plugin.toml").write_text(
+        text.replace('plugin_api = "2.0"', 'plugin_api = "1.1"'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ManifestValidationError, match="incompatible"):
+        load_manifest(root, yuki_version="1.6.0")
 
 
 def test_manifest_is_strict_compatible_and_hash_stable(tmp_path: Path) -> None:

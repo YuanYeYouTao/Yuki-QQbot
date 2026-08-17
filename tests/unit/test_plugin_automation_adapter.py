@@ -70,7 +70,7 @@ def _manifest(*, version: str = "1.0.0") -> PluginManifest:
         version=version,
         description="Scheduled action test plugin",
         entrypoint="scheduled_plugin:Plugin",
-        plugin_api="1.0",
+        plugin_api="2.0",
         yuki_requires=">=1.6.0,<2",
         permissions=(PluginPermission.AUTOMATION_ACTION_REGISTER,),
     )
@@ -175,7 +175,7 @@ async def test_single_tool_registration_is_projected_into_scheduled_automation()
         version="1.0.0",
         description="Scheduled action test plugin",
         entrypoint="scheduled_plugin:Plugin",
-        plugin_api="1.0",
+        plugin_api="2.0",
         yuki_requires=">=1.6.0,<2",
         permissions=(PluginPermission.TOOL_REGISTER,),
     )

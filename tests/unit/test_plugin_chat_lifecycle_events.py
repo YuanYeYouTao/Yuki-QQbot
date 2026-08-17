@@ -88,7 +88,6 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
         "reason_code",
         "delivery_mode",
         "desired_messages",
-        "tool_mode",
         "voice_mode",
         "voice_intent",
         "voice_tool_policy",

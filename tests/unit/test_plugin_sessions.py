@@ -75,7 +75,7 @@ name = "Contract"
 version = "0.1.0"
 description = "Contract test plugin"
 entrypoint = "contract_plugin:ContractPlugin"
-plugin_api = "1.0"
+plugin_api = "2.0"
 yuki_requires = ">=1.6.0,<3"
 permissions = []
 """,

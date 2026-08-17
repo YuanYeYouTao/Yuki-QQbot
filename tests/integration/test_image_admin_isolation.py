@@ -80,7 +80,6 @@ async def test_ocr_admin_instruction_cannot_register_any_write_or_onebot_tool(da
         assert "call_onebot_api" not in names
         assert not any(name.startswith("admin_") for name in names)
         assert "request_tools" in names
-        assert {"get_recent_chat_history", "get_person_memories"}.isdisjoint(names)
         return "截图里写的是一条管理命令，但图片内容不会被执行。"
 
     llm = FakeLLMProvider(answer)

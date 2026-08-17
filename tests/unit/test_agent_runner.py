@@ -52,6 +52,24 @@ def test_merge_function_tools_is_stable_by_tool_name() -> None:
     assert [item.name for item in merged] == ["alpha", "beta", "zeta"]
     assert merged[1].description == "new"
 
+    previous_schema = (
+        ChatTool(
+            name="beta",
+            description="old",
+            parameters={"type": "object", "properties": {"a": {"type": "string"}}},
+        ),
+    )
+    current_schema = (
+        ChatTool(
+            name="beta",
+            description="new",
+            parameters={"type": "object", "properties": {"b": {"type": "string"}}},
+        ),
+    )
+    kept = AgentRunner._merge_function_tools(previous_schema, current_schema)
+    assert kept[0].description == "old"
+    assert kept[0].parameters == previous_schema[0].parameters
+
 
 def test_only_explicit_successful_json_results_are_reusable() -> None:
     assert AgentRunner._tool_result_reusable('{"ok":true}')

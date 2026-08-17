@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
@@ -68,7 +67,17 @@ def test_tool_registration_has_canonical_and_model_names() -> None:
     assert item.model_name == "plugin__com_example_echo__echo"
 
 
-def test_running_plugin_tools_contribute_compact_planner_scope_descriptions() -> None:
+def _turn_runtime(*, tools_closed: bool = False, read_only: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_is_superuser=False,
+        tools_closed=tools_closed,
+        read_only=read_only,
+        inbound=SimpleNamespace(attachments=(), reply_attachments=()),
+    )
+
+
+def test_plugin_tools_expose_namespace_and_schema_metadata() -> None:
     registry = ExtensionRegistry()
     registry.registrar("com.example.echo", (PluginPermission.TOOL_REGISTER,)).register_tool(_tool())
     adapter = PluginCapabilityAdapter(
@@ -77,7 +86,32 @@ def test_running_plugin_tools_contribute_compact_planner_scope_descriptions() ->
         is_running=lambda plugin_id: plugin_id == "com.example.echo",
     )
 
-    assert adapter.planner_scope_descriptions() == ("echo: Echo input",)
+    tools = adapter.definitions(_turn_runtime(), web_was_used=False)  # type: ignore[arg-type]
+    assert len(tools) == 1
+    assert tools[0].namespace == "plugin.com.example.echo"
+    assert tools[0].aliases == ()
+    assert tools[0].use_when == ()
+    assert tools[0].tags == ()
+    assert tools[0].schema_version == "1"
+
+
+def test_tools_closed_and_read_only_filter_plugin_tools() -> None:
+    registry = ExtensionRegistry()
+    registry.registrar("com.example.echo", (PluginPermission.TOOL_REGISTER,)).register_tool(_tool())
+    adapter = PluginCapabilityAdapter(
+        registry=registry,
+        installations=None,  # type: ignore[arg-type]
+        is_running=lambda plugin_id: plugin_id == "com.example.echo",
+    )
+
+    assert adapter.definitions(_turn_runtime(tools_closed=True), web_was_used=False) == ()  # type: ignore[arg-type]
+    allowed = adapter.definitions(_turn_runtime(read_only=True), web_was_used=False)  # type: ignore[arg-type]
+    assert len(allowed) == 1
+
+
+def test_plugin_tool_namespace_rejects_reserved_prefixes() -> None:
+    with pytest.raises(ValueError, match="reserved namespace"):
+        ToolMetadata(name="echo", description="Echo input", namespace="memory.plugin")
 
 
 @pytest.mark.asyncio
@@ -92,7 +126,7 @@ async def test_execution_uses_current_host_lifecycle_when_persisted_status_is_st
         plugin_id=plugin_id,
         name="Echo",
         version="1.0.0",
-        plugin_api="1.0",
+        plugin_api="2.0",
         yuki_requires=">=2.1.1,<3.0",
         manifest_hash="a" * 64,
         entrypoint="echo:Plugin",
@@ -110,12 +144,7 @@ async def test_execution_uses_current_host_lifecycle_when_persisted_status_is_st
     )
     item = registry.list(kind=ExtensionKind.TOOL)[0]
     assert item.model_name is not None
-    runtime = SimpleNamespace(
-        origin=TurnOrigin.USER_MESSAGE,
-        actor_is_superuser=False,
-        tool_mode=ToolMode.INHERIT,
-        inbound=SimpleNamespace(attachments=(), reply_attachments=()),
-    )
+    runtime = _turn_runtime()
 
     result = json.loads(
         await adapter.execute(
