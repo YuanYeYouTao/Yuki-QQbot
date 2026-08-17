@@ -353,6 +353,96 @@ def test_short_unrelated_query_does_not_rank_fat_mcp_menus() -> None:
     assert exact and exact[0].capability_id == "mcp__mcd__create-order"
 
 
+def test_first_round_wait_query_does_not_expose_mcdonalds_bundle() -> None:
+    from qq_ai_bot.automation.models import TurnOrigin
+    from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalogEntry
+    from qq_ai_bot.capabilities.exposure import AuthorityFirstExposurePlanner
+    from qq_ai_bot.capabilities.models import (
+        CapabilityDescriptor,
+        CapabilityEffect,
+        CapabilityIdempotency,
+        CapabilityRisk,
+    )
+    from qq_ai_bot.capabilities.request import request_tools_definition
+    from qq_ai_bot.capabilities.search_index import CapabilitySearchHit
+
+    members = []
+    for name in (
+        "query_meals",
+        "calculate_price",
+        "create_order",
+        "query_order",
+        "query_my_coupons",
+        "now_time_info",
+        "mall_order_detail",
+        "query_nearby_stores",
+    ):
+        descriptor = CapabilityDescriptor(
+            canonical_name=name,
+            model_name=name,
+            group="food.mcdonalds",
+            namespace="food.mcdonalds",
+            input_schema={"type": "object", "properties": {}},
+            output_schema={"type": "object"},
+            effect=CapabilityEffect.READ_STATE,
+            risk=CapabilityRisk.READ,
+            trust_source=CapabilityTrustSource.MCP,
+            allowed_origins=frozenset(TurnOrigin),
+            required_permissions=frozenset(),
+            uses_external_data=True,
+            cancellable=True,
+            idempotency=CapabilityIdempotency.IDEMPOTENT,
+            provider_id="mcp.mcd",
+            bundle_scopes=("food.mcdonalds.order",) if name != "now_time_info" else (),
+        )
+        members.append(
+            UnifiedToolCatalogEntry(
+                descriptor=descriptor,
+                provider_id="mcp.mcd",
+                scope_ids=descriptor.scope_ids,
+                compact_description=name,
+                tags=(),
+                searchable_text=name,
+                estimated_schema_tokens=8,
+                available=True,
+                revision="1",
+                bundle_scope_ids=descriptor.bundle_scopes,
+            )
+        )
+    catalog = UnifiedToolCatalog(entries=tuple(members), scopes=(), revision="abcd1234")
+    plan = AuthorityFirstExposurePlanner().plan_initial(
+        catalog=catalog,
+        requestable_ids=frozenset(entry.descriptor.model_name for entry in members),
+        hits=(),
+        memory_view=None,
+        kernel_tools=(request_tools_definition(),),
+        query="等待",
+        artifact_available=False,
+        reply_target_available=False,
+    )
+    assert plan.entries == ()
+
+    selected = AuthorityFirstExposurePlanner().plan_initial(
+        catalog=catalog,
+        requestable_ids=frozenset(entry.descriptor.model_name for entry in members),
+        hits=(
+            CapabilitySearchHit(
+                capability_id="create_order",
+                namespace_id="food.mcdonalds.order",
+                score=12.0,
+            ),
+        ),
+        memory_view=None,
+        kernel_tools=(request_tools_definition(),),
+        query="帮我点麦当劳创建订单",
+        artifact_available=False,
+        reply_target_available=False,
+    )
+    names = {entry.descriptor.model_name for entry in selected.entries}
+    assert "create_order" in names
+    assert "now_time_info" not in names
+
+
 def test_long_chinese_order_query_hits_mcp_bundle_summary() -> None:
     query = "帮我点麦辣鸡腿堡，到店取餐，创建待支付订单，把链接发给我。"
     terms = _query_terms(query)
