@@ -1,4 +1,4 @@
-"""Public exception hierarchy for Plugin API v1."""
+"""Public exception hierarchy for Plugin API v2."""
 
 from __future__ import annotations
 

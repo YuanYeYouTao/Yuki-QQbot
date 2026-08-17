@@ -12,7 +12,6 @@ from qq_ai_bot.capabilities.results import ToolExecutionResult, resolve_mutation
 from qq_ai_bot.mcp.descriptors import descriptor_from_mcp_tool
 from qq_ai_bot.mcp.errors import classify_mcp_exception
 from qq_ai_bot.mcp.manager import MCPManager
-from qq_ai_bot.planner.models import ToolMode, ToolSelection
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,9 +21,27 @@ class MCPPolicyRuntime:
     origin: TurnOrigin
     actor_user_id: str
     actor_is_superuser: bool
-    tool_mode: ToolMode = ToolMode.INHERIT
-    tool_groups: frozenset[str] = frozenset()
-    planner_scopes_explicit: bool = False
+    tools_closed: bool = False
+    read_only: bool = False
+
+
+def mcp_policy_context(context: ToolInvocationContext) -> CapabilityPolicyContext:
+    """Build the current Host policy context; Planner tool selection is not read."""
+
+    runtime = context.runtime
+    metadata = context.provider_metadata or {}
+    return CapabilityPolicyContext(
+        authority=AuthorityContext(
+            actor_user_id=(getattr(runtime, "actor_user_id", "") or context.actor_user_id),
+            is_superuser=bool(getattr(runtime, "actor_is_superuser", False)),
+        ),
+        origin=getattr(runtime, "origin", TurnOrigin.USER_MESSAGE),
+        contains_images=bool(metadata.get("contains_images", False)),
+        web_was_used=bool(metadata.get("web_was_used", False)),
+        tools_closed=bool(getattr(runtime, "tools_closed", False)),
+        read_only=bool(getattr(runtime, "read_only", False)),
+        memory_view=getattr(runtime, "memory_view", None),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,34 +77,7 @@ class MCPToolBinding:
                 provider_id=f"mcp.{self.server_id}",
                 tool_name=self.remote_tool_name,
             )
-        runtime = context.runtime
-        scopes = tuple(getattr(runtime, "tool_groups", ()))
-        if not scopes:
-            if bool(getattr(runtime, "planner_scopes_explicit", False)):
-                return _denied_result(
-                    self.server_id,
-                    self.remote_tool_name,
-                    error_code="mcp_scope_not_selected",
-                    public_message="当前轮次没有选择该 MCP 工具作用域",
-                )
-            scopes = descriptor.scope_ids
-        metadata_context = context.provider_metadata or {}
-        visible = CapabilityPolicyEngine().visible(
-            (descriptor,),
-            CapabilityPolicyContext(
-                authority=AuthorityContext(
-                    actor_user_id=(getattr(runtime, "actor_user_id", "") or context.actor_user_id),
-                    is_superuser=bool(getattr(runtime, "actor_is_superuser", False)),
-                ),
-                origin=getattr(runtime, "origin", TurnOrigin.USER_MESSAGE),
-                tool_selection=ToolSelection(
-                    mode=getattr(runtime, "tool_mode", ToolMode.INHERIT),
-                    scopes=scopes,
-                ),
-                contains_images=bool(metadata_context.get("contains_images", False)),
-                web_was_used=bool(metadata_context.get("web_was_used", False)),
-            ),
-        )
+        visible = CapabilityPolicyEngine().visible((descriptor,), mcp_policy_context(context))
         if not visible:
             return _denied_result(
                 self.server_id,

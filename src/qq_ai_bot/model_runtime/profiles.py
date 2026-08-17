@@ -78,7 +78,6 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
     ModelTask.AUTOMATION_TEXT_GENERATION: frozenset(),
     ModelTask.AUTOMATION_AGENT: frozenset({ModelCapability.TOOLS}),
     ModelTask.PLUGIN_AGENT_SESSION: frozenset({ModelCapability.TOOLS}),
-    ModelTask.TOOL_SELECTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.UTILITY_STRUCTURED: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
 }
 
@@ -147,12 +146,8 @@ def load_model_profile_catalog(
             for profile_id, payload in document.profiles.items()
         }
         raw_routes = dict(document.routes)
-        if (
-            ModelTask.TOOL_SELECTION.value not in raw_routes
-            and ModelTask.PLANNER.value in raw_routes
-        ):
-            logger.warning("model_route_compatibility task=tool_selection source=planner")
-            raw_routes[ModelTask.TOOL_SELECTION.value] = raw_routes[ModelTask.PLANNER.value]
+        if raw_routes.pop("tool_selection", None) is not None:
+            logger.warning("model_route_ignored task=tool_selection")
         if (
             ModelTask.MEMORY_SELF_REFLECTION.value not in raw_routes
             and ModelTask.MEMORY_EXTRACTION.value in raw_routes

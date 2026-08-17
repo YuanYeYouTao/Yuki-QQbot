@@ -53,71 +53,24 @@ class DeliveryMode(StrEnum):
     DETAILED = "detailed"
 
 
-class ToolMode(StrEnum):
-    """A monotonic restriction over capabilities granted by the backend."""
-
-    INHERIT = "inherit"
-    NONE = "none"
-    READ_ONLY = "read_only"
-
-
-class ToolGroup(StrEnum):
-    """Coarse capability groups that Planner may retain for this turn."""
-
-    WEB = "web"
-    MEMORY = "memory"
-    RELATIONSHIP = "relationship"
-    ADMIN = "admin"
-    CONFIG = "config"
-    AUTOMATION = "automation"
-    ONEBOT = "onebot"
-    EMOJI = "emoji"
-    SPEECH = "speech"
-    PLUGIN = "plugin"
-    CAPABILITY = "capability"
+_LEFTOVER_LLM_FIELDS = (
+    "memory_context",
+    "tool_selection",
+    "tool_mode",
+    "scopes",
+    "groups",
+)
 
 
-class ToolSelection(_StrictPlannerModel):
-    """A monotonic tool mode plus dynamic backend-advertised scopes.
+def _discard_leftover_llm_fields(value: Any) -> Any:
+    """Drop retired Planner-owned fields that older models may still emit."""
 
-    ``groups`` remains an accepted legacy spelling for 2.0 Planner responses.
-    New providers should emit ``scopes``.
-    """
-
-    mode: ToolMode = ToolMode.INHERIT
-    scopes: tuple[str, ...] = ()
-    groups: tuple[ToolGroup, ...] = ()
-
-    @model_validator(mode="before")
-    @classmethod
-    def _merge_legacy_groups(cls, value: Any) -> Any:
-        if not isinstance(value, dict) or not value.get("groups"):
-            return value
-        normalized = dict(value)
-        scopes = [str(item) for item in normalized.get("scopes", ())]
-        for group in normalized.get("groups", ()):
-            group_id = group.value if isinstance(group, ToolGroup) else str(group)
-            if group_id not in scopes:
-                scopes.append(group_id)
-        normalized["scopes"] = scopes
-        normalized["groups"] = []
-        return normalized
-
-    @property
-    def scope_ids(self) -> tuple[str, ...]:
-        return self.scopes
-
-
-class ToolScopeSummary(_StrictPlannerModel):
-    """Compact Planner-visible scope metadata; never contains JSON Schemas."""
-
-    scope_id: str = Field(min_length=1, max_length=128)
-    parent: str | None = Field(default=None, max_length=128)
-    display_name: str = Field(default="", max_length=128)
-    description: str = Field(default="", max_length=300)
-    tool_count: int = Field(ge=0, strict=True)
-    provider_ids: tuple[str, ...] = ()
-    tags: tuple[str, ...] = ()
+    if not isinstance(value, dict):
+        return value
+    normalized = dict(value)
+    for field in _LEFTOVER_LLM_FIELDS:
+        normalized.pop(field, None)
+    return normalized
 
 
 class PlannerReasonCode(StrEnum):
@@ -240,8 +193,6 @@ class PlannerInput(_StrictPlannerModel):
     relationship_stage: RelationshipStage | None = None
     current_time: datetime
     necessity: ReplyNecessitySnapshot
-    available_tool_categories: tuple[str, ...] = ()
-    available_tool_scopes: tuple[ToolScopeSummary, ...] = ()
     plugin_signals: tuple[PlannerSignal, ...] = ()
     emoji: PlannerEmojiContext = PlannerEmojiContext()
     speech: PlannerSpeechContext = PlannerSpeechContext()
@@ -300,7 +251,6 @@ class TurnPlan(_StrictPlannerModel):
             "才填写该事件信封中的 #EventRecord.id；普通顺接无需使用。"
         ),
     )
-    tool_selection: ToolSelection = ToolSelection()
     wait_seconds: float = Field(default=0, ge=0, le=300, strict=True)
     confidence: float = Field(ge=0, le=1, strict=True)
     reason_code: PlannerReasonCode
@@ -310,57 +260,8 @@ class TurnPlan(_StrictPlannerModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _accept_legacy_tool_mode(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        normalized = dict(value)
-        normalized.pop("memory_context", None)
-        if "tool_mode" not in normalized:
-            return normalized
-        legacy = normalized.pop("tool_mode")
-        if "tool_selection" not in normalized:
-            normalized["tool_selection"] = {
-                "mode": legacy,
-                # An empty scope list means all backend-approved scopes.  This
-                # preserves the 2.0 ``tool_mode`` contract without fabricating
-                # names that may not exist in a dynamic provider catalog.
-                "scopes": [],
-            }
-        return normalized
-
-    @property
-    def tool_mode(self) -> ToolMode:
-        """Source-compatible projection for 1.8 integrations."""
-
-        return self.tool_selection.mode
-
-    @property
-    def tool_selection_explicit(self) -> bool:
-        """Whether the provider explicitly narrowed tool scopes for this turn."""
-
-        return "tool_selection" in self.model_fields_set
-
-
-class PlannerToolOutput(_StrictPlannerModel):
-    """Sparse model-facing tool choice that must be stated explicitly."""
-
-    mode: ToolMode = Field(
-        description=(
-            "当前请求需要调用任何工具时使用 inherit，明确只允许读取时使用 read_only；"
-            "只有完全不需要工具时才使用 none。"
-        )
-    )
-    scopes: tuple[str, ...] = Field(
-        description=(
-            "从 capabilities.tool_scopes 中选择完成当前请求所需的最小 scope 集合；"
-            "明确需要工具时不得遗漏所需 scope。"
-        )
-    )
-
-    def materialize(self) -> ToolSelection:
-        """Convert the compact provider response into the domain type."""
-
-        return ToolSelection(mode=self.mode, scopes=self.scopes)
+    def _discard_leftover_tool_fields(cls, value: Any) -> Any:
+        return _discard_leftover_llm_fields(value)
 
 
 class PlannerEmojiOutput(_StrictPlannerModel):
@@ -434,9 +335,9 @@ class PlannerModelOutput(_StrictPlannerModel):
     """Sparse provider response materialized into one strict :class:`TurnPlan`.
 
     The model must still classify behavior that cannot be inferred safely by
-    the backend: delivery, emoji, and voice. Tool selection is
-    optional only because omission preserves the existing capability-kernel
-    ``inherit`` behavior. Secondary details use backend defaults, keeping
+    the backend: delivery, emoji, and voice. Capability Runtime owns tool
+    exposure, so leftover ``tool_selection`` / ``tool_mode`` fields are dropped
+    before validation. Secondary details use backend defaults, keeping
     completions small without spreading nullable values through the domain.
     """
 
@@ -448,7 +349,6 @@ class PlannerModelOutput(_StrictPlannerModel):
         description="选择正文发送形态；用户要求多条或自然聊天适合拆分时使用 natural_multi。"
     )
     reply_to_event_id: int | None = Field(default=None, gt=0, strict=True)
-    tool_selection: PlannerToolOutput | None = None
     wait_seconds: float = Field(default=0, ge=0, le=300, strict=True)
     emoji: PlannerEmojiOutput
     voice: PlannerVoiceOutput
@@ -456,18 +356,17 @@ class PlannerModelOutput(_StrictPlannerModel):
     @model_validator(mode="before")
     @classmethod
     def _discard_legacy_derived_fields(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        normalized = dict(value)
+        normalized = _discard_leftover_llm_fields(value)
+        if not isinstance(normalized, dict):
+            return normalized
         normalized.pop("target_user_ids", None)
         normalized.pop("desired_messages", None)
-        normalized.pop("memory_context", None)
         return normalized
 
     def materialize(self) -> TurnPlan:
         """Fill omitted provider fields from trusted backend defaults."""
 
-        plan = TurnPlan(
+        return TurnPlan(
             decision=self.decision,
             intent=self.intent,
             delivery_mode=self.delivery_mode,
@@ -477,11 +376,6 @@ class PlannerModelOutput(_StrictPlannerModel):
             reason_code=self.reason_code,
             emoji=self.emoji.materialize(),
             voice=self.voice.materialize(),
-        )
-        if self.tool_selection is None:
-            return plan
-        return plan.model_copy(
-            update={"tool_selection": self.tool_selection.materialize()},
         )
 
 

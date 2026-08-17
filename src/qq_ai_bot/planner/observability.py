@@ -145,28 +145,16 @@ class PlannerObservability:
                 self._provider_error_fallbacks += 1
             if fallback and plan.decision is PlannerDecision.REPLY and not plan.emoji.is_exclusive:
                 self._fallback_agent_requests += 1
-            if fallback and (
-                plan.tool_selection.mode.value != "none" or plan.tool_selection.scope_ids
-            ):
-                self._fallback_tool_calls += 1
             self._last_latency_seconds = max(0.0, latency_seconds)
             self._last_decision = plan.decision
             self._last_planned_at = now
         logger.info(
             "planner_planned conversation_hash=%s decision=%s reason=%s delivery=%s "
-            "tool_mode=%s planner_scope_source=%s planner_scopes=%s "
             "fallback=%s latency_seconds=%.4f",
             token.conversation_key_hash,
             plan.decision.value,
             plan.reason_code.value,
             plan.delivery_mode.value,
-            plan.tool_selection.mode.value,
-            "explicit" if plan.tool_selection_explicit else "inherited",
-            (
-                ",".join(sorted(plan.tool_selection.scope_ids)) or "none"
-                if plan.tool_selection_explicit
-                else "backend_authorized"
-            ),
             fallback,
             max(0.0, latency_seconds),
         )

@@ -6,13 +6,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalogEntry
 from qq_ai_bot.capabilities.models import CapabilityExposure
-from qq_ai_bot.model_runtime.executor import ModelExecutor
-from qq_ai_bot.model_runtime.models import ModelTask
-from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 
 
 class ToolSelectionMode(StrEnum):
@@ -95,69 +90,6 @@ class ToolCandidateSelector:
             entries=tuple(item[1] for item in ranked),
             scores=tuple((item.descriptor.model_name, score) for score, item in ranked),
         )
-
-
-class _FlashSelectionOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    canonical_names: tuple[str, ...] = Field(default=())
-
-
-class FlashToolReranker:
-    """Optionally rerank compact candidates with the TOOL_SELECTION profile."""
-
-    def __init__(self, models: ModelExecutor) -> None:
-        self._structured = StructuredTaskRunner(models)
-
-    async def rerank(
-        self,
-        candidates: tuple[UnifiedToolCatalogEntry, ...],
-        *,
-        user_request: str,
-        planner_intent: str,
-        limit: int | None,
-        required_scope_ids: tuple[str, ...] = (),
-    ) -> tuple[UnifiedToolCatalogEntry, ...]:
-        if not candidates:
-            return ()
-        ordered_candidates = tuple(
-            sorted(candidates, key=lambda item: item.descriptor.canonical_name)
-        )
-        payload = {
-            "candidates": [
-                {
-                    "canonical_name": item.descriptor.canonical_name,
-                    "tool_name": item.descriptor.model_name,
-                    "description": item.compact_description,
-                    "tags": list(item.tags),
-                    "provider_id": item.provider_id,
-                }
-                for item in ordered_candidates
-            ],
-            "user_request": user_request,
-            "planner_intent": planner_intent,
-        }
-        try:
-            selected = await self._structured.run(
-                task=ModelTask.TOOL_SELECTION,
-                instruction=(
-                    "从候选目录中选择完成请求真正需要的工具，按优先级返回 canonical_names。"
-                    "只能返回目录内名称，不得虚构工具。输入不含工具参数 Schema。"
-                ),
-                structured_input=payload,
-                output_model=_FlashSelectionOutput,
-                temperature=0,
-                allow_text_json=True,
-            )
-        except (StructuredTaskError, ValueError, TimeoutError):
-            return _retain_required(candidates, candidates, required_scope_ids, limit)
-        by_name = {item.descriptor.canonical_name: item for item in candidates}
-        validated = tuple(
-            by_name[name] for name in dict.fromkeys(selected.canonical_names) if name in by_name
-        )
-        if not validated:
-            return _retain_required(candidates, candidates, required_scope_ids, limit)
-        return _retain_required(validated, candidates, required_scope_ids, limit)
 
 
 class ToolSchemaBudgeter:
@@ -247,23 +179,8 @@ def _required_entries(
         item
         for item in entries
         if item.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
-        or bool(selected_scopes.intersection(item.bundle_scope_ids))
+            or bool(selected_scopes.intersection(item.bundle_scope_ids))
     )
-
-
-def _retain_required(
-    selected: tuple[UnifiedToolCatalogEntry, ...],
-    available: tuple[UnifiedToolCatalogEntry, ...],
-    scopes: tuple[str, ...],
-    limit: int | None,
-) -> tuple[UnifiedToolCatalogEntry, ...]:
-    retained = list(selected if limit is None else selected[:limit])
-    names = {item.descriptor.model_name for item in retained}
-    for item in _required_entries(available, scopes=scopes):
-        if item.descriptor.model_name not in names:
-            retained.append(item)
-            names.add(item.descriptor.model_name)
-    return tuple(retained)
 
 
 def _query_terms(value: str) -> tuple[str, ...]:

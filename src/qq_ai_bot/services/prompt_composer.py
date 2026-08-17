@@ -320,7 +320,6 @@ class PromptComposer:
         payload: dict[str, object] = {
             "decision": plan.decision.value,
             "intent": plan.intent,
-            "tools": plan.tool_selection.model_dump(mode="json", exclude_defaults=True),
         }
         if plan.reply_to_event_id is not None:
             payload["reply_to_event_id"] = plan.reply_to_event_id

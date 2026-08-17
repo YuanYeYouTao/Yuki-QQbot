@@ -15,8 +15,6 @@ from qq_ai_bot.planner.models import (
     PlannerDecision,
     PlannerInput,
     PlannerReasonCode,
-    ToolMode,
-    ToolSelection,
     TurnPlan,
 )
 from qq_ai_bot.planner.observability import PlannerObservability
@@ -179,7 +177,6 @@ class PlannerService:
                 "reason_code": plan.reason_code.value,
                 "delivery_mode": plan.delivery_mode.value,
                 "desired_messages": plan.desired_messages,
-                "tool_mode": plan.tool_mode.value,
                 "voice_mode": plan.voice.mode.value,
                 "voice_intent": plan.voice.intent.value,
                 "voice_tool_policy": plan.voice.agent_tool.value,
@@ -199,7 +196,6 @@ class PlannerService:
             intent="回复必要性不足，本轮不打扰群聊",
             delivery_mode=DeliveryMode.CONCISE,
             desired_messages=1,
-            tool_selection=ToolSelection(mode=ToolMode.NONE),
             confidence=1.0,
             reason_code=PlannerReasonCode.LOW_RELEVANCE,
         )
@@ -242,7 +238,6 @@ class PlannerService:
             updates.update(
                 delivery_mode=DeliveryMode.CONCISE,
                 desired_messages=1,
-                tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
             )
         emoji_plan = plan.emoji
         if not planner_input.emoji.available:
@@ -280,9 +275,6 @@ class PlannerService:
                     "placement": EmojiPlacement.ONLY,
                 }
             )
-            # An effect-only reply is fully executable by the delivery layer.
-            # No Agent tool scope or memory context may be attached to the same turn.
-            updates["tool_selection"] = ToolSelection(mode=ToolMode.NONE)
         updates["emoji"] = emoji_plan
         speech_allowed = (
             runtime.speech.enabled
@@ -445,7 +437,7 @@ class PlannerService:
             reason_code=plan.reason_code.value,
             delivery_mode=plan.delivery_mode.value,
             desired_messages=plan.desired_messages,
-            tool_mode=plan.tool_mode.value,
+            tool_mode=None,
             voice_mode=plan.voice.mode.value,
             voice_intent=plan.voice.intent.value,
             voice_tool_policy=plan.voice.agent_tool.value,

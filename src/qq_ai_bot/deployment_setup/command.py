@@ -756,7 +756,7 @@ def _select_plugins(
     *,
     initial: bool,
 ) -> tuple[str, ...]:
-    discovery = PluginDiscovery(paths.root / "plugins", yuki_version=__version__, plugin_api="1.1")
+    discovery = PluginDiscovery(paths.root / "plugins", yuki_version=__version__, plugin_api="2.0")
     selected: list[str] = []
     found = discovery.discover()
     valid = tuple(item.manifest for item in found if item.manifest is not None)

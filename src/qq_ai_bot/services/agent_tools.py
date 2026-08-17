@@ -64,7 +64,6 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
-from qq_ai_bot.planner.models import ToolGroup, ToolMode
 from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
@@ -135,17 +134,13 @@ class ToolRuntime:
     mentioned_user_ids: tuple[str, ...] = ()
     runtime_config: RuntimeConfigSnapshot | None = None
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
-    tool_mode: ToolMode = ToolMode.INHERIT
-    tool_groups: frozenset[str] = frozenset(group.value for group in ToolGroup)
+    tools_closed: bool = False
+    read_only: bool = False
     turn_token: TurnToken | None = None
     reply_effects: list[ReplyEffect] | None = None
     reply_target_control: ReplyTargetControl | None = None
     voice_tool_authorized: bool = False
-    planner_scopes_explicit: bool = False
-    planner_tool_groups: frozenset[str] | None = None
     selection_query: str = ""
-    planner_intent: str = ""
-    selected_tool_names: frozenset[str] | None = None
     scheduled_automation_intent: bool = False
     max_model_requests_override: int | None = None
     native_web_fallback: bool = False
@@ -699,10 +694,9 @@ class AgentToolService:
                 ChatTool(
                     name="send_voice",
                     description=(
-                        "Planner 已确认当前用户在本轮明确索要语音。调用此工具为本轮最终回复"
-                        "选择可选的语气和语言，因此本轮必须调用一次；是否发送文字、语音"
-                        "或二者由 Planner 决定，"
-                        "本工具不能覆盖。不能指定 profile、模型、参考音频、文件或路径。"
+                        "为本轮最终回复生成语音。mode 由调用方选择只发语音或文字加语音；"
+                        "是否发送由后端校验功能、音色和发送回执后决定。"
+                        "不能指定 profile、模型、参考音频、文件或路径。"
                     ),
                     parameters=_object_schema(
                         {

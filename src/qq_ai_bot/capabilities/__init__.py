@@ -40,7 +40,6 @@ from qq_ai_bot.capabilities.results import (
     resolve_mutation_commit,
 )
 from qq_ai_bot.capabilities.selection import (
-    FlashToolReranker,
     ToolBundleBudgetError,
     ToolCandidateResult,
     ToolCandidateSelector,
@@ -64,7 +63,6 @@ __all__ = [
     "CapabilityTrustSource",
     "ChatToolCapabilityProvider",
     "CoordinatedToolResult",
-    "FlashToolReranker",
     "InProcessToolBinding",
     "InProcessToolProvider",
     "ToolArtifactWriter",

@@ -408,7 +408,7 @@ class ApplicationContainer:
         self.plugin_tools = plugins.tools
         self.plugin_direct_commands = plugins.direct_commands
         self.plugin_commands = plugins.commands
-        self.plugin_planner_signals = plugins.planner_signals
+        self.plugin_admission_signals = plugins.admission_signals
         self.emoji_collector.set_event_publisher(self.plugin_events)
         self.emoji_lifecycle.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_event_publisher(self.plugin_events)
@@ -424,7 +424,7 @@ class ApplicationContainer:
             planner_context=self.planner_context,
             planner=self.planner,
             turn_coordinator=self.turn_coordinator,
-            planner_signals=self.plugin_planner_signals,
+            admission_signals=self.plugin_admission_signals,
             turn_observations=self.turn_observations,
         )
         self.command_service = CommandService(
@@ -491,7 +491,7 @@ class ApplicationContainer:
             planner_context=self.planner_context,
             planner_service=self.planner,
             turn_coordinator=self.turn_coordinator,
-            planner_signals=self.plugin_planner_signals,
+            planner_signals=self.plugin_admission_signals,
             event_publisher=self.plugin_events,
             emoji_collector=self.emoji_collector,
             emoji_worker=self.emoji_worker,

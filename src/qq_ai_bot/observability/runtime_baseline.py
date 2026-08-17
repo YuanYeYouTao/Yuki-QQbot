@@ -497,13 +497,6 @@ def _aggregate(
             "chat_agent_invocations": models_by_task.get("chat_agent", {}).get(
                 "invocations", 0
             ),
-            "tool_selection_invocations": models_by_task.get("tool_selection", {}).get(
-                "invocations", 0
-            ),
-            "tool_selection_flash_ratio": _ratio(
-                models_by_task.get("tool_selection", {}).get("invocations", 0),
-                len(model_rows),
-            ),
         },
         "tools": {
             "invocations": len(tool_rows),

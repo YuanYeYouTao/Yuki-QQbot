@@ -19,31 +19,29 @@ from qq_ai_bot.capabilities import (
     AuthorityContext,
     CapabilityDescriptor,
     CapabilityEffect,
-    CapabilityExposure,
     CapabilityPolicyContext,
-    CapabilityPolicyEngine,
     CapabilityRisk,
     CapabilityTrustSource,
-    FlashToolReranker,
     InProcessToolProvider,
     ToolArtifactWriter,
-    ToolCandidateSelector,
     ToolExecutionResult,
     ToolInvocationContext,
     ToolKernelMetrics,
     ToolProvider,
     ToolProviderRegistry,
     ToolResultBudgeter,
-    ToolSchemaBudgeter,
     UnifiedToolCatalog,
-    UnifiedToolCatalogEntry,
     resolve_mutation_commit,
 )
-from qq_ai_bot.capabilities.request import (
-    REQUEST_TOOLS_NAME,
-    match_requestable_tools,
-    request_tools_definition,
+from qq_ai_bot.capabilities.catalog import DescriptorRegistrySnapshot
+from qq_ai_bot.capabilities.exposure import NO_LONGER_AUTHORIZED
+from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME
+from qq_ai_bot.capabilities.runtime import (
+    CapabilityIndexCache,
+    CapabilityQuery,
+    TurnCapabilityRuntime,
 )
+from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
@@ -86,12 +84,12 @@ from qq_ai_bot.memory.runtime.contract import MemoryReadPolicy
 from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
 from qq_ai_bot.memory.runtime.turn_session import (
     TurnMemorySession,
-    apply_memory_tool_groups,
     empty_retrieval,
 )
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.models import ModelProtocol, ModelTask
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     PeopleRepository,
@@ -102,10 +100,6 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner.models import (
     PlannedTurn,
     PlannerReasonCode,
-    ToolGroup,
-    ToolMode,
-    ToolScopeSummary,
-    ToolSelection,
 )
 from qq_ai_bot.planner.observability import identifier_hash
 from qq_ai_bot.runtime.authority import TurnAuthority
@@ -150,12 +144,6 @@ from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
 
-# Inherited Planner scope is a discovery mode, not permission to fill the
-# schema budget. Six related tools plus the two stable discovery tools
-# (get_my_capabilities and request_tools) keep the initial set compact while
-# preserving access to the complete actor-authorized catalog.
-_INHERITED_RELATED_TOOL_LIMIT = 6
-_INHERITED_CANDIDATE_POOL_LIMIT = 24
 _ARTIFACT_PROVIDER_ID = "artifacts"
 _ARTIFACT_READER_NAME = "read_tool_artifact"
 _SET_REPLY_TARGET_NAME = "set_reply_target"
@@ -175,10 +163,9 @@ _PLANNER_FAIL_CLOSED_REASONS = frozenset(
 _SET_REPLY_TARGET_TOOL = ChatTool(
     name=_SET_REPLY_TARGET_NAME,
     description=(
-        "控制本轮最终 QQ 引用回复目标。Planner 已给出默认目标时通常不要调用；仅在多人混聊、"
-        "需要明确回应某条较早消息或 Planner 目标不合适时调用。event_id 必须来自当前上下文"
-        "消息行的 #EventRecord.id；省略 event_id 表示取消 Planner 的引用。该函数只设置本轮"
-        "回复样式，不发送消息。每轮最多成功设置一次。"
+        "控制本轮最终 QQ 引用回复目标。仅在多人混聊或需要明确回应某条较早消息时调用。"
+        "event_id 必须来自当前上下文消息行的 #EventRecord.id；省略 event_id 表示取消引用。"
+        "该函数只设置本轮回复样式，不发送消息。每轮最多成功设置一次。"
     ),
     parameters={
         "type": "object",
@@ -196,22 +183,6 @@ def _with_memory_mutation_contract(
         return messages
     return (*messages, ChatMessage(role="system", content=_MEMORY_MUTATION_EXECUTION_CONTRACT))
 
-
-_BUILTIN_SCOPE_DESCRIPTIONS = {
-    "memory": (
-        "搜索近期或永久聊天历史；读取人物、群和 {bot_name} 自我长期记忆；"
-        "创建、纠正、撤销、恢复和管理长期记忆"
-    ),
-    "relationship": "全局查询 {bot_name} 对已认识人物的好感度、信任度和关系阶段",
-    "web": "联网搜索公开信息，并读取网页、链接和在线资料",
-    "automation": "创建、查询、修改和删除提醒、定时任务与周期任务",
-    "onebot": "执行 QQ 平台、群聊、好友和消息相关操作",
-    "config": "读取和修改 {bot_name} 的运行配置",
-    "admin": "超级管理员诊断和管理操作",
-    "capability": "查询当前真实用户拥有的权限和可操作能力",
-    "speech": "处理已经由 Planner 授权的语音回复",
-    "plugin": "调用当前已批准并运行的本地插件能力",
-}
 
 _ADMIN_RETRYABLE_ERRORS = frozenset(
     {
@@ -349,8 +320,6 @@ class PluginToolProvider(Protocol):
 
     def is_read_only(self, name: str) -> bool: ...
 
-    def planner_scope_descriptions(self) -> tuple[str, ...]: ...
-
     async def execute(
         self,
         name: str,
@@ -406,6 +375,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._catalog: UnifiedToolCatalog | None = None
         self._requestable_catalog: UnifiedToolCatalog | None = None
         self._provider_registry: ToolProviderRegistry | None = None
+        self._capability_runtime: TurnCapabilityRuntime | None = None
         self._requested_tool_names: set[str] = set()
         self._callable_tool_names: set[str] = set()
         self._tool_turn_recorded = False
@@ -416,7 +386,24 @@ class _ChatAgentBackend(AgentToolBackend):
     def enable_native_web_fallback(self) -> None:
         """Allow Tavily tools only after the Runner verifies a fallback condition."""
 
+        if self._native_web_fallback:
+            return
         self._native_web_fallback = True
+        # Catalog providers depend on this flag; rebuild before the first request.
+        self._capability_runtime = None
+        self._catalog = None
+        self._requestable_catalog = None
+
+    async def prepare(self, runtime: AgentRuntime | None = None) -> None:
+        """Hydrate lazy MCP metadata before the first model request."""
+
+        del runtime
+        if self._capability_runtime is not None:
+            return
+        capability_runtime = self._install_capability_runtime()
+        await capability_runtime.prepare_initial_exposure(self._capability_query())
+        self._catalog = capability_runtime.authorized_catalog
+        self._requestable_catalog = self._catalog
 
     def _memory(self) -> Any:
         return self._memory_session
@@ -456,330 +443,184 @@ class _ChatAgentBackend(AgentToolBackend):
         self._web_was_used = True
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
+        del runtime
         self._web_was_used = self._web_was_used or web_was_used
         response_controls = () if self._exclusive_write() else self._response_control_definitions()
-        if self._tools_closed:
+        if self._tools_closed or self._runtime.tools_closed:
             self._callable_tool_names = {tool.name for tool in response_controls}
-            self._log_tool_exposure(
-                response_controls,
-                selected_scopes=(),
-                reason="business_tools_closed",
-            )
+            self._log_tool_exposure(response_controls, reason="business_tools_closed")
             return response_controls
-        request_runtime = self._request_runtime()
-        self._provider_registry = self._service._build_tool_registry(
-            request_runtime,
-            web_was_used=self._web_was_used,
-        )
-        self._catalog = self._provider_registry.catalog(request_runtime)
-        policy_scopes = tuple(sorted(self._runtime.tool_groups))
-        if any(scope.startswith("mcp.") for scope in policy_scopes) and "mcp" not in policy_scopes:
-            policy_scopes = (*policy_scopes, "mcp")
-        selection = ToolSelection(
-            mode=self._runtime.tool_mode,
-            scopes=policy_scopes,
-        )
-        policy = CapabilityPolicyEngine()
-        policy_context = CapabilityPolicyContext(
-            authority=AuthorityContext(
-                actor_user_id=self._runtime.actor_user_id,
-                is_superuser=self._runtime.actor_is_superuser,
-            ),
-            origin=self._runtime.origin,
-            tool_selection=selection,
-            contains_images=bool(
-                self._runtime.inbound.attachments or self._runtime.inbound.reply_attachments
-            ),
-            web_was_used=self._web_was_used,
-        )
-        visible = policy.visible(
-            tuple(entry.descriptor for entry in self._catalog.entries),
-            policy_context,
-        )
-        visible_names = {descriptor.model_name for descriptor in visible}
-        # Planner scopes prioritize the initial schema set. They are not an
-        # authority boundary: request_tools may load any capability permitted
-        # by the real actor, origin and current tool mode.
-        authority_visible = policy.visible(
-            tuple(entry.descriptor for entry in self._catalog.entries),
-            replace(
-                policy_context,
-                tool_selection=ToolSelection(
-                    mode=(
-                        ToolMode.INHERIT
-                        if self._runtime.origin is TurnOrigin.USER_MESSAGE
-                        else self._runtime.tool_mode
-                    ),
-                    scopes=(),
-                ),
-            ),
-        )
-        authority_visible_names = {descriptor.model_name for descriptor in authority_visible}
-        self._requestable_catalog = replace(
-            self._catalog,
-            entries=tuple(
-                entry
-                for entry in self._catalog.entries
-                if entry.descriptor.model_name in authority_visible_names
-            ),
-        )
-        if not self._tool_turn_recorded and self._requestable_catalog.entries:
-            self._service._tool_metrics.record_tool_enabled_turn(
-                planner_scope_explicit=self._runtime.planner_scopes_explicit
-            )
-            self._tool_turn_recorded = True
-        filtered_catalog = replace(
-            self._catalog,
-            entries=tuple(
-                entry
-                for entry in self._catalog.entries
-                if entry.descriptor.model_name in visible_names
-            ),
-        )
-        if self._exclusive_write() or self._eager_memory_read():
-            allowed_memory_effects = (
-                {CapabilityEffect.WRITE_STATE}
-                if self._exclusive_write() and not self._locator_open()
-                else {CapabilityEffect.READ_STATE, CapabilityEffect.EXTERNAL_READ}
-            )
-            if self._locator_open():
-                allowed_memory_effects = {
-                    CapabilityEffect.READ_STATE,
-                    CapabilityEffect.EXTERNAL_READ,
-                    CapabilityEffect.WRITE_STATE,
-                }
-            filtered_catalog = replace(
-                filtered_catalog,
-                entries=tuple(
-                    entry
-                    for entry in filtered_catalog.entries
-                    if (
-                        ToolGroup.MEMORY.value in entry.descriptor.scope_ids
-                        and entry.descriptor.effect in allowed_memory_effects
-                    )
-                    or entry.descriptor.model_name in self._requested_tool_names
-                    or (
-                        self._eager_memory_read()
-                        and not self._exclusive_write()
-                        and entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
-                    )
-                ),
-            )
-        if self._runtime.scheduled_automation_intent:
-            # A deterministic automation hint grants visibility, not an
-            # obligation to create a task.  Keep automation_create present
-            # through schema selection while preserving every other
-            # Planner-approved scope for the Agent's own decision.
-            filtered_catalog = replace(
-                filtered_catalog,
-                entries=tuple(
-                    replace(
-                        entry,
-                        descriptor=replace(
-                            entry.descriptor,
-                            exposure=CapabilityExposure.DIRECT_ALWAYS,
-                        ),
-                    )
-                    if entry.descriptor.model_name == "automation_create"
-                    else entry
-                    for entry in filtered_catalog.entries
-                ),
-            )
-        if self._runtime.planner_scopes_explicit and not self._runtime.tool_groups:
-            filtered_catalog = replace(
-                filtered_catalog,
-                entries=tuple(
-                    entry
-                    for entry in filtered_catalog.entries
-                    if entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
-                    or entry.descriptor.model_name in self._requested_tool_names
-                ),
-            )
-        if self._runtime.selected_tool_names is not None and not self._exclusive_write():
-            filtered_catalog = replace(
-                filtered_catalog,
-                entries=tuple(
-                    entry
-                    for entry in filtered_catalog.entries
-                    if entry.descriptor.model_name in self._runtime.selected_tool_names
-                    or entry.descriptor.model_name in self._requested_tool_names
-                    or entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
-                ),
-            )
-        if self._requested_tool_names:
-            # A model-requested tool must survive the same schema/count budgets
-            # that caused it to be omitted initially. Policy filtering happened
-            # above, so this changes exposure priority rather than authority.
-            filtered_catalog = replace(
-                filtered_catalog,
-                entries=tuple(
-                    replace(
-                        entry,
-                        descriptor=replace(
-                            entry.descriptor,
-                            exposure=CapabilityExposure.DIRECT_ALWAYS,
-                        ),
-                    )
-                    if entry.descriptor.model_name in self._requested_tool_names
-                    else entry
-                    for entry in filtered_catalog.entries
-                ),
-            )
-        config = self._runtime.runtime_config
-        assert config is not None
-        tooling = config.tooling
-        mcp = config.mcp
-        known_scopes = {scope.scope_id for scope in filtered_catalog.scopes}
-        selected_scopes = tuple(
-            scope for scope in sorted(self._runtime.tool_groups) if scope in known_scopes
-        )
-        if (
-            any(scope.startswith("mcp.") for scope in self._runtime.tool_groups)
-            and "mcp" in known_scopes
-            and "mcp" not in selected_scopes
-        ):
-            selected_scopes = (*selected_scopes, "mcp")
-        if mcp is not None:
-            mcp_entries = tuple(
-                entry
-                for entry in filtered_catalog.entries
-                if entry.descriptor.trust_source is CapabilityTrustSource.MCP
-            )
-            if mcp_entries:
-                mcp_budgeted = ToolSchemaBudgeter(
-                    selected_tool_limit=(
-                        None
-                        if self._runtime.planner_scopes_explicit and selected_scopes
-                        else mcp.selected_tool_limit
-                    ),
-                    schema_token_budget=mcp.schema_token_budget,
-                ).select(
-                    replace(filtered_catalog, entries=mcp_entries),
-                    scopes=selected_scopes,
-                    query=f"{self._runtime.selection_query} {self._runtime.planner_intent}",
-                )
-                allowed_mcp = {entry.descriptor.model_name for entry in mcp_budgeted.entries}
-                filtered_catalog = replace(
-                    filtered_catalog,
-                    entries=tuple(
-                        entry
-                        for entry in filtered_catalog.entries
-                        if entry.descriptor.trust_source is not CapabilityTrustSource.MCP
-                        or entry.descriptor.model_name in allowed_mcp
-                    ),
-                )
-        if (
-            self._runtime.tool_groups
-            and not selected_scopes
-            and self._runtime.origin is not TurnOrigin.USER_MESSAGE
-            and not any(
-                entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
-                for entry in filtered_catalog.entries
-            )
-        ):
-            self._callable_tool_names = {tool.name for tool in response_controls}
-            self._log_tool_exposure(
-                response_controls,
-                selected_scopes=selected_scopes,
-                reason="selected_scopes_unavailable",
-            )
-            return response_controls
-        budgeted = ToolSchemaBudgeter(
-            selected_tool_limit=(
-                None
-                if self._runtime.planner_scopes_explicit and selected_scopes
-                else (tooling.selected_tool_limit if tooling is not None else None)
-            ),
-            schema_token_budget=tooling.schema_token_budget if tooling is not None else None,
-        ).select(
-            filtered_catalog,
-            scopes=selected_scopes,
-            query=f"{self._runtime.selection_query} {self._runtime.planner_intent}",
-        )
-        definitions = tuple(entry.descriptor.as_chat_tool() for entry in budgeted.entries)
-        exposed_names = {tool.name for tool in definitions}
-        may_request_more = bool(
-            self._runtime.origin is TurnOrigin.USER_MESSAGE
-            and self._requestable_catalog is not None
-            and (not self._exclusive_write() or self._locator_open())
-            and any(
-                entry.descriptor.model_name not in exposed_names
-                for entry in self._requestable_catalog.entries
-            )
-        )
-        if may_request_more:
-            definitions = (*definitions, request_tools_definition())
+        capability_runtime = self._ensure_capability_runtime()
+        session = self._memory()
+        if session is not None:
+            capability_runtime.sync_memory_view(session.capability_view())
+        definitions = capability_runtime.definitions()
         if response_controls:
             definitions = (
                 *(tool for tool in definitions if tool.name != _SET_REPLY_TARGET_NAME),
                 *response_controls,
-            )
-        self._callable_tool_names = {tool.name for tool in definitions}
-        for entry in budgeted.entries:
-            self._service._tool_metrics.record_selection(
-                entry.provider_id,
-                entry.descriptor.provider_tool_name or entry.descriptor.model_name,
-                entry.estimated_schema_tokens,
             )
         if self._admin_retry_constraint is not None:
             definitions = tuple(
                 tool for tool in definitions if tool.name == self._admin_retry_constraint[0]
             )
         definitions = tuple(sorted(definitions, key=lambda tool: tool.name))
-        self._log_tool_exposure(
-            definitions,
-            selected_scopes=selected_scopes,
-            reason="ready",
-        )
+        self._callable_tool_names = set(capability_runtime.callable_capability_ids()) | {
+            tool.name for tool in response_controls
+        }
+        self._callable_tool_names.update(tool.name for tool in definitions)
+        if not self._tool_turn_recorded and definitions:
+            self._service._tool_metrics.record_tool_enabled_turn(planner_scope_explicit=False)
+            self._tool_turn_recorded = True
+        self._log_tool_exposure(definitions, reason="ready")
         return definitions
+
+    def _ensure_capability_runtime(self) -> TurnCapabilityRuntime:
+        if self._capability_runtime is not None:
+            self._catalog = self._capability_runtime.authorized_catalog
+            self._requestable_catalog = self._catalog
+            return self._capability_runtime
+        capability_runtime = self._install_capability_runtime()
+        capability_runtime.initial_exposure(self._capability_query())
+        self._catalog = capability_runtime.authorized_catalog
+        self._requestable_catalog = self._catalog
+        return capability_runtime
+
+    def _capability_query(self) -> CapabilityQuery:
+        query_text = self._runtime.selection_query
+        if self._runtime.scheduled_automation_intent:
+            query_text = f"{query_text} 定时任务 automation_create".strip()
+        return CapabilityQuery(
+            text=query_text,
+            origin=RuntimeTurnOrigin(self._runtime.origin.value),
+            limit=8,
+            reply_excerpt=(self._runtime.inbound.reply_text or "")[:500],
+            priority_capability_ids=self._host_priority_capability_ids(),
+        )
+
+    def _refresh_capability_registry(
+        self,
+    ) -> tuple[DescriptorRegistrySnapshot, Any]:
+        request_runtime = self._request_runtime()
+        self._provider_registry = self._service._build_tool_registry(
+            request_runtime,
+            web_was_used=self._web_was_used,
+        )
+        catalog = self._provider_registry.catalog(request_runtime)
+        snapshot = DescriptorRegistrySnapshot(catalog)
+        index = self._service._capability_index.index_for(snapshot)
+        return snapshot, index
+
+    def _install_capability_runtime(self) -> TurnCapabilityRuntime:
+        snapshot, index = self._refresh_capability_registry()
+        session = self._memory()
+        memory_view = session.capability_view() if session is not None else None
+        reply_target = self._runtime.reply_target_control
+        policy_context = CapabilityPolicyContext(
+            authority=AuthorityContext(
+                actor_user_id=self._runtime.actor_user_id,
+                is_superuser=self._runtime.actor_is_superuser,
+            ),
+            origin=self._runtime.origin,
+            contains_images=bool(
+                self._runtime.inbound.attachments or self._runtime.inbound.reply_attachments
+            ),
+            web_was_used=self._web_was_used,
+            tools_closed=self._runtime.tools_closed,
+            read_only=self._runtime.read_only,
+            memory_view=memory_view,
+            artifact_available=self._service._tool_artifacts is not None,
+            reply_target_available=bool(
+                reply_target is not None and reply_target.visible_event_ids
+            ),
+        )
+        mcp = self._runtime.runtime_config.mcp if self._runtime.runtime_config else None
+        tooling = self._runtime.runtime_config.tooling if self._runtime.runtime_config else None
+        request_runtime = self._request_runtime()
+
+        async def ensure_metadata(server_id: str) -> None:
+            provider = self._provider_registry.provider("mcp") if self._provider_registry else None
+            prepare = getattr(provider, "ensure_server_metadata", None)
+            if callable(prepare):
+                await prepare(server_id, request_runtime)
+
+        authority = TurnAuthority(
+            actor_user_id=self._runtime.actor_user_id or "unknown",
+            bot_user_id=self._runtime.inbound.bot_user_id or "bot",
+            origin=RuntimeTurnOrigin(self._runtime.origin.value),
+            permission_ceiling=frozenset(
+                {"superuser"} if self._runtime.actor_is_superuser else ()
+            ),
+            delegated_authority=None,
+            authority_revision=1,
+        )
+        self._capability_runtime = TurnCapabilityRuntime(
+            registry=snapshot,
+            index=index,
+            authority=authority,
+            scene=self._scene_facts(),
+            memory_view=memory_view,
+            policy_context=policy_context,
+            append_only=self._service._responses_append_only(),
+            schema_token_budget=tooling.schema_token_budget if tooling is not None else None,
+            mcp_schema_token_budget=mcp.schema_token_budget if mcp is not None else None,
+            mcp_tool_limit=mcp.selected_tool_limit if mcp is not None else None,
+            ensure_metadata=ensure_metadata,
+            refresh_registry=self._refresh_capability_registry,
+        )
+        return self._capability_runtime
+
+    def _host_priority_capability_ids(self) -> tuple[str, ...]:
+        """Pin tools implied by trusted host facts, not Planner output."""
+
+        names: list[str] = []
+        if self._runtime.scheduled_automation_intent:
+            names.append("automation_create")
+        web_route = self._runtime.web_route
+        if self._native_web_fallback or (
+            web_route is not None and web_route.provider is WebProvider.TAVILY
+        ):
+            names.extend(("web_search", "read_webpage"))
+        if self._runtime.allow_generic_onebot:
+            names.append("call_onebot_api")
+        return tuple(dict.fromkeys(names))
+
+    def _scene_facts(self) -> Any:
+        from qq_ai_bot.domain.conversations import ScopeType as DomainScopeType
+        from qq_ai_bot.runtime.authority import TurnSceneFacts
+
+        inbound = self._runtime.inbound
+        scope = inbound.scope_type
+        if scope is DomainScopeType.GROUP:
+            return TurnSceneFacts(
+                scope_type=scope,
+                group_id=inbound.group_id,
+                image_present=bool(inbound.attachments or inbound.reply_attachments),
+                mentions_bot=inbound.mentions_bot,
+                reply_present=bool(inbound.reply_text or inbound.reply_sender_user_id),
+            )
+        return TurnSceneFacts(
+            scope_type=scope,
+            group_id=None,
+            image_present=bool(inbound.attachments or inbound.reply_attachments),
+            mentions_bot=inbound.mentions_bot,
+            reply_present=bool(inbound.reply_text or inbound.reply_sender_user_id),
+        )
 
     def _log_tool_exposure(
         self,
         definitions: tuple[ChatTool, ...],
         *,
-        selected_scopes: tuple[str, ...],
         reason: str,
     ) -> None:
         """Log bounded capability metadata without message text or tool arguments."""
 
-        planner_scope_source = "explicit" if self._runtime.planner_scopes_explicit else "inherited"
-        planner_tool_groups = (
-            self._runtime.planner_tool_groups
-            if self._runtime.planner_tool_groups is not None
-            else self._runtime.tool_groups
-        )
-        planner_scopes = (
-            ",".join(sorted(planner_tool_groups)) or "none"
-            if self._runtime.planner_scopes_explicit
-            else "backend_authorized"
-        )
-        automation_scope_added = bool(
-            self._runtime.scheduled_automation_intent
-            and ToolGroup.AUTOMATION.value in self._runtime.tool_groups
-            and ToolGroup.AUTOMATION.value not in planner_tool_groups
-        )
-        memory_scope_added = bool(
-            ToolGroup.MEMORY.value in self._runtime.tool_groups
-            and ToolGroup.MEMORY.value not in planner_tool_groups
-        )
-        effective_scopes = ",".join(selected_scopes) or (
-            "none" if self._runtime.planner_scopes_explicit else "backend_authorized"
-        )
         exposed_tools = ",".join(sorted(tool.name for tool in definitions)) or "none"
         logger.info(
-            "agent_tools_exposed conversation_hash=%s origin=%s tool_mode=%s "
-            "planner_scope_source=%s planner_scopes=%s automation_scope_added=%s "
-            "memory_scope_added=%s "
-            "effective_scopes=%s "
+            "agent_tools_exposed conversation_hash=%s origin=%s "
             "tools=%s exposed_count=%d requestable_count=%d reason=%s",
             identifier_hash(self._runtime.conversation_key) or "missing",
             self._runtime.origin.value,
-            self._runtime.tool_mode.value,
-            planner_scope_source,
-            planner_scopes,
-            automation_scope_added,
-            memory_scope_added,
-            effective_scopes,
             exposed_tools,
             len(definitions),
             len(self._requestable_catalog.entries) if self._requestable_catalog is not None else 0,
@@ -840,7 +681,15 @@ class _ChatAgentBackend(AgentToolBackend):
                     },
                     ensure_ascii=False,
                 )
-            return self._request_tools(arguments_json)
+            return await self._request_tools(arguments_json)
+        capability_runtime = self._capability_runtime
+        if capability_runtime is not None:
+            ok, error = capability_runtime.validate_call(name, arguments_json)
+            if not ok and error != UNDECLARED_TOOL:
+                return json.dumps(
+                    {"ok": False, "error": error or NO_LONGER_AUTHORIZED},
+                    ensure_ascii=False,
+                )
         if name not in self._callable_tool_names:
             requestable = (
                 self._requestable_catalog.by_model_name(name)
@@ -871,24 +720,19 @@ class _ChatAgentBackend(AgentToolBackend):
             first_round_hit = not self._request_tools_called
             self._service._tool_metrics.record_first_round_tool_hit(hit=first_round_hit)
             logger.info(
-                "agent_first_round_tool_hit conversation_hash=%s hit=%s "
-                "planner_scope_explicit=%s tool=%s",
+                "agent_first_round_tool_hit conversation_hash=%s hit=%s tool=%s",
                 identifier_hash(self._runtime.conversation_key) or "missing",
                 first_round_hit,
-                self._runtime.planner_scopes_explicit,
                 descriptor.model_name,
             )
             self._first_real_tool_recorded = True
         effective_descriptor = self._effective_descriptor(call, descriptor)
-        is_web_tool = ToolGroup.WEB.value in effective_descriptor.scope_ids
+        is_web_tool = effective_descriptor.namespace_id.startswith("web.")
         is_memory_read_tool = (
-            ToolGroup.MEMORY.value in effective_descriptor.scope_ids
+            effective_descriptor.namespace_id.startswith("memory.")
             and effective_descriptor.effect is CapabilityEffect.READ_STATE
         )
-        is_memory_write_tool = (
-            ToolGroup.MEMORY.value in effective_descriptor.scope_ids
-            and effective_descriptor.effect is CapabilityEffect.WRITE_STATE
-        )
+        is_memory_write_tool = effective_descriptor.namespace_id == "memory.state.write"
         if is_memory_read_tool and not self._exclusive_write() and not self._eager_memory_read():
             self._service._tool_metrics.record_automatic_memory_read_tool_call(
                 locator_fallback=self._locator_open()
@@ -1056,6 +900,10 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._web_calls_used += 1
                 self._web_was_used = True
         decoded = self._service._decode_tool_result(result)
+        if self._capability_runtime is not None and self.is_side_effecting(
+            name, arguments_json, runtime
+        ):
+            self._capability_runtime.mark_side_effect()
         session = self._memory()
         if session is not None and (is_memory_write_tool or is_memory_read_tool):
             await session.observe_tool_result(name, result)
@@ -1338,7 +1186,7 @@ class _ChatAgentBackend(AgentToolBackend):
             ensure_ascii=False,
         )
 
-    def _request_tools(self, arguments_json: str) -> str:
+    async def _request_tools(self, arguments_json: str) -> str:
         self._request_tools_called = True
         self._service._tool_metrics.record_request_tools()
         if not self._exclusive_write() and not self._eager_memory_read():
@@ -1369,38 +1217,34 @@ class _ChatAgentBackend(AgentToolBackend):
                 },
                 ensure_ascii=False,
             )
-        if self._requestable_catalog is None:
-            self._service._tool_metrics.record_request_tools_zero_result()
-            return json.dumps(
-                {"ok": False, "error": "capability_catalog_unavailable"},
-                ensure_ascii=False,
+        capability_runtime = self._ensure_capability_runtime()
+        payload = await capability_runtime.request_tools(
+            CapabilityQuery(
+                text=query.strip(),
+                origin=self._runtime.origin,
+                limit=max_results,
+                affinity_namespace_ids=capability_runtime.affinity_namespace_ids,
             )
-        matches = match_requestable_tools(
-            self._requestable_catalog,
-            query=query,
-            limit=max_results,
-            excluded_names=frozenset(self._callable_tool_names),
         )
-        if not matches:
+        loaded = payload.get("data") if payload.get("ok") else None
+        loaded_tools = ()
+        if isinstance(loaded, dict):
+            raw_loaded = loaded.get("loaded_tools")
+            if isinstance(raw_loaded, list):
+                loaded_tools = tuple(raw_loaded)
+        if not payload.get("ok") or not loaded_tools:
             self._service._tool_metrics.record_request_tools_zero_result()
             logger.info(
                 "agent_request_tools_result conversation_hash=%s loaded_count=0",
                 identifier_hash(self._runtime.conversation_key) or "missing",
             )
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "capability_not_found",
-                    "detail": "当前真实用户和场景允许的工具目录中没有匹配能力",
-                },
-                ensure_ascii=False,
-            )
-        loaded_names = {match.entry.descriptor.model_name for match in matches}
-        loaded_write = any(
-            ToolGroup.MEMORY.value in match.entry.descriptor.scope_ids
-            and match.entry.descriptor.effect is CapabilityEffect.WRITE_STATE
-            for match in matches
-        )
+            return json.dumps(payload, ensure_ascii=False)
+        loaded_names = {
+            str(item.get("name"))
+            for item in loaded_tools
+            if isinstance(item, dict) and item.get("name")
+        }
+        loaded_write = capability_runtime.requested_exclusive_write()
         session = self._memory()
         if loaded_write and session is not None:
             session.request_exclusive_write()
@@ -1408,9 +1252,10 @@ class _ChatAgentBackend(AgentToolBackend):
             not self._exclusive_write()
             and not self._eager_memory_read()
             and any(
-                ToolGroup.MEMORY.value in match.entry.descriptor.scope_ids
-                and match.entry.descriptor.effect is CapabilityEffect.READ_STATE
-                for match in matches
+                isinstance(item, dict)
+                and str(item.get("namespace", "")).startswith("memory.")
+                and str(item.get("namespace")) != "memory.state.write"
+                for item in loaded_tools
             )
         ):
             self._service._tool_metrics.record_automatic_memory_read_tools_loaded()
@@ -1419,39 +1264,11 @@ class _ChatAgentBackend(AgentToolBackend):
             identifier_hash(self._runtime.conversation_key) or "missing",
             len(loaded_names),
         )
-        loaded_scopes = {scope for match in matches for scope in match.entry.descriptor.scope_ids}
         self._requested_tool_names.update(loaded_names)
-        selected = self._runtime.selected_tool_names
-        self._runtime = replace(
-            self._runtime,
-            tool_mode=(
-                ToolMode.INHERIT
-                if self._runtime.tool_mode is ToolMode.NONE
-                and self._runtime.origin is TurnOrigin.USER_MESSAGE
-                else self._runtime.tool_mode
-            ),
-            tool_groups=frozenset((*self._runtime.tool_groups, *loaded_scopes)),
-            selected_tool_names=(
-                None if selected is None else frozenset((*selected, *loaded_names))
-            ),
-        )
-        return json.dumps(
-            {
-                "ok": True,
-                "data": {
-                    "loaded_tools": [
-                        {
-                            "name": match.entry.descriptor.model_name,
-                            "capability": match.entry.descriptor.canonical_name,
-                            "description": match.entry.compact_description,
-                        }
-                        for match in matches
-                    ],
-                    "instruction": "下一步直接调用 loaded_tools 中的真实工具",
-                },
-            },
-            ensure_ascii=False,
-        )
+        self._catalog = capability_runtime.authorized_catalog
+        self._requestable_catalog = self._catalog
+        self._callable_tool_names = set(capability_runtime.callable_capability_ids())
+        return json.dumps(payload, ensure_ascii=False)
 
     def _retry_identity(self, call: ToolCall) -> tuple[str, str] | None:
         if not self._is_mutating_call(call):
@@ -1542,8 +1359,7 @@ class ChatService:
             fallback_on_target_miss=settings.web.web_fallback_on_target_miss,
         )
         self._agent_runner = AgentRunner(models, concurrency, web_router=self._web_router)
-        self._tool_selector = ToolCandidateSelector()
-        self._tool_reranker = FlashToolReranker(models)
+        self._capability_index = CapabilityIndexCache()
         self._admin_tools: AdminToolService | None = None
         self._automation_tools: AutomationToolProvider | None = None
         self._plugin_tools: PluginToolProvider | None = None
@@ -1611,63 +1427,20 @@ class ChatService:
         self,
         base_scopes: tuple[str, ...],
         runtime: RuntimeConfigSnapshot | None = None,
-    ) -> tuple[ToolScopeSummary, ...]:
-        settings = getattr(self, "_settings", None)
-        bot_name = settings.bot_display_name if settings is not None else "Yuki"
-        summaries = [
-            ToolScopeSummary(
-                scope_id=scope,
-                parent=scope.rpartition(".")[0] or None,
-                display_name=scope,
-                description=_BUILTIN_SCOPE_DESCRIPTIONS.get(
-                    scope,
-                    "{bot_name} 内置 " + scope + " 能力",
-                ).format(bot_name=bot_name),
-                tool_count=0,
-                provider_ids=("core",),
-                tags=(scope,),
-            )
-            for scope in base_scopes
-        ]
-        if self._plugin_tools is not None:
-            plugin_descriptions = self._plugin_tools.planner_scope_descriptions()
-            if plugin_descriptions:
-                summaries.append(
-                    ToolScopeSummary(
-                        scope_id=ToolGroup.PLUGIN.value,
-                        display_name="本地插件",
-                        description="；".join(plugin_descriptions)[:300],
-                        tool_count=len(plugin_descriptions),
-                        provider_ids=("plugin",),
-                        tags=("插件", "扩展"),
-                    )
-                )
-        for provider in self._external_tool_providers:
-            getter = getattr(provider, "scope_summaries", None)
-            if callable(getter):
-                try:
-                    summaries.extend(getter(runtime))
-                except TypeError:
-                    summaries.extend(getter())
-        merged: dict[str, ToolScopeSummary] = {}
-        for item in summaries:
-            previous = merged.get(item.scope_id)
-            if previous is None:
-                merged[item.scope_id] = item
-                continue
-            descriptions = tuple(
-                dict.fromkeys(text for text in (previous.description, item.description) if text)
-            )
-            merged[item.scope_id] = ToolScopeSummary(
-                scope_id=item.scope_id,
-                parent=item.parent or previous.parent,
-                display_name=item.display_name or previous.display_name,
-                description="；".join(descriptions)[:300],
-                tool_count=previous.tool_count + item.tool_count,
-                provider_ids=tuple(sorted(set(previous.provider_ids) | set(item.provider_ids))),
-                tags=tuple(sorted(set(previous.tags) | set(item.tags))),
-            )
-        return tuple(merged[key] for key in sorted(merged))
+    ) -> tuple[object, ...]:
+        """Planner no longer owns tool exposure; keep a stable empty catalog."""
+
+        del base_scopes, runtime
+        return ()
+
+    def _responses_append_only(self) -> bool:
+        protocol = getattr(self._agent_runner._models, "protocol", None)
+        if not callable(protocol):
+            return False
+        try:
+            return protocol(ModelTask.CHAT_AGENT) is ModelProtocol.RESPONSES
+        except (AttributeError, KeyError, RuntimeError, ValueError):
+            return False
 
     def _build_tool_registry(
         self,
@@ -1948,9 +1721,7 @@ class ChatService:
 
             source_display_requested = self._source_policy.requested(content)
             planner_emoji_only = bool(
-                planned_turn is not None
-                and planned_turn.plan.emoji.is_exclusive
-                and planned_turn.plan.tool_mode is ToolMode.NONE
+                planned_turn is not None and planned_turn.plan.emoji.is_exclusive
             )
             fallback_plan = planned_turn is not None and planned_turn.fallback_used
             if (
@@ -2004,10 +1775,6 @@ class ChatService:
                     memory_session=memory_session,
                 )
             exclusive_write = memory_session is not None and memory_session.exclusive_write
-            eager_memory_read = (
-                memory_session is not None
-                and memory_session.contract.read_policy is MemoryReadPolicy.EAGER
-            )
             scheduled_automation_intent = bool(
                 not autonomous
                 and not visual_input_present
@@ -2061,30 +1828,10 @@ class ChatService:
                         source="planner",
                     )
                 )
-            planner_scopes_explicit = bool(
-                planned_turn is not None and planned_turn.plan.tool_selection_explicit
-            )
             if self._memory_context is not None and memory_session is not None:
                 self._memory_context.metrics.record_runtime_access(memory_session.contract)
-            planner_tool_groups = (
-                frozenset(planned_turn.plan.tool_selection.scope_ids)
-                if planned_turn is not None
-                else frozenset(group.value for group in ToolGroup)
-            )
-            if memory_session is not None:
-                planner_tool_groups = apply_memory_tool_groups(
-                    memory_session.capability_view(),
-                    planner_tool_groups,
-                )
-            tool_groups = planner_tool_groups
-            if scheduled_automation_allowed and (planned_turn is None or planner_scopes_explicit):
-                tool_groups = frozenset((*tool_groups, ToolGroup.AUTOMATION.value))
             web_route = self._web_router.select(content, runtime_config.web.mode)
-            web_scope_authorized = not planner_scopes_explicit or any(
-                scope == ToolGroup.WEB.value or scope.startswith(f"{ToolGroup.WEB.value}.")
-                for scope in tool_groups
-            )
-            if web_route is not None and web_scope_authorized:
+            if web_route is not None:
                 logger.info(
                     "web_route_selected conversation_hash=%s provider=%s reason=%s "
                     "matched_domain=%s attempt=%d fallback_allowed=%s",
@@ -2122,21 +1869,7 @@ class ChatService:
                 mentioned_user_ids=inbound.mentioned_user_ids,
                 runtime_config=runtime_config,
                 origin=(TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE),
-                tool_mode=(
-                    ToolMode.INHERIT
-                    if scheduled_automation_allowed
-                    or (
-                        (exclusive_write or eager_memory_read)
-                        and planned_turn is not None
-                        and planned_turn.plan.tool_mode is ToolMode.NONE
-                    )
-                    else (
-                        planned_turn.plan.tool_mode
-                        if planned_turn is not None
-                        else ToolMode.INHERIT
-                    )
-                ),
-                tool_groups=tool_groups,
+                tools_closed=planner_emoji_only,
                 turn_token=turn_token,
                 reply_effects=reply_effects,
                 reply_target_control=reply_target_control,
@@ -2144,10 +1877,7 @@ class ChatService:
                     planned_turn is not None
                     and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
                 ),
-                planner_scopes_explicit=planner_scopes_explicit,
-                planner_tool_groups=planner_tool_groups,
                 selection_query=content,
-                planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
                 scheduled_automation_intent=scheduled_automation_allowed,
                 max_model_requests_override=(1 if fallback_plan else None),
                 native_web_fallback=bool(
@@ -2827,7 +2557,11 @@ class ChatService:
                 gateway=runtime.gateway,
                 runtime_config=config,
                 current_time=current_time,
-                allowed_capabilities=runtime.tool_groups,
+                allowed_capabilities=(
+                    frozenset({"web", "web_search"})
+                    if not runtime.tools_closed and not runtime.read_only
+                    else frozenset()
+                ),
                 max_tool_calls=config.agent.max_tool_calls,
                 max_model_requests=(
                     min(
@@ -2903,14 +2637,10 @@ class ChatService:
             current_group_id=event.group_id,
             runtime_config=runtime,
             origin=TurnOrigin.PLUGIN_BACKGROUND,
-            tool_mode=ToolMode.NONE,
-            tool_groups=frozenset(),
+            tools_closed=False,
+            read_only=True,
             turn_token=turn_token,
-            planner_scopes_explicit=True,
-            planner_tool_groups=frozenset(),
             selection_query=event.content,
-            planner_intent=planned_turn.plan.intent,
-            selected_tool_names=frozenset(),
             max_model_requests_override=min(2, runtime.agent.max_model_requests),
         )
         completed = await self._run_agent(conversation_key, messages, tool_runtime)
@@ -2925,7 +2655,7 @@ class ChatService:
         return replace(result, text=rendered)
 
     async def _prepare_tool_candidates(self, runtime: ToolRuntime) -> ToolRuntime:
-        """Discover selected lazy scopes, then locally select and optionally rerank tools."""
+        """Apply artifact retention; capability runtime owns discovery and exposure."""
 
         config = runtime.runtime_config
         assert config is not None
@@ -2933,116 +2663,7 @@ class ChatService:
             self._tool_artifacts.configure_retention(
                 config.tooling.result_artifact_retention_seconds
             )
-        if runtime.tool_mode is ToolMode.NONE:
-            return replace(runtime, selected_tool_names=frozenset())
-        if runtime.planner_scopes_explicit and not runtime.tool_groups:
-            return replace(runtime, selected_tool_names=frozenset())
-        registry = self._build_tool_registry(runtime, web_was_used=False)
-        scopes = tuple(sorted(runtime.tool_groups))
-        for provider in registry.providers():
-            prepare = getattr(provider, "prepare_scopes", None)
-            if callable(prepare):
-                await prepare(scopes, runtime)
-        catalog = registry.catalog(runtime)
-        known_scopes = {scope.scope_id for scope in catalog.scopes}
-
-        # An explicit Planner scope is a complete, intentional capability
-        # package. The backend applies the schema-token safety budget, but the
-        # compact inherited limit must not truncate this package.
-        if runtime.planner_scopes_explicit:
-            return runtime
-
-        # Inherited scopes express backend authority, not a request to expose
-        # the whole catalog. Only deterministic additions beyond the Planner's
-        # inherited set may prioritize a scope during local relevance ranking.
-        planner_groups = runtime.planner_tool_groups or frozenset()
-        inherited_priority_scopes = tuple(
-            scope for scope in sorted(runtime.tool_groups - planner_groups) if scope in known_scopes
-        )
-        if (
-            any(scope.startswith("mcp.") for scope in inherited_priority_scopes)
-            and "mcp" in known_scopes
-            and "mcp" not in inherited_priority_scopes
-        ):
-            inherited_priority_scopes = (*inherited_priority_scopes, "mcp")
-
-        mcp = config.mcp
-        mode = mcp.tool_selection_mode if mcp is not None else "catalog"
-        has_mcp_tools = any(
-            item.descriptor.trust_source is CapabilityTrustSource.MCP for item in catalog.entries
-        )
-        tooling = config.tooling
-        global_limit = tooling.selected_tool_limit if tooling is not None else None
-        initial_limit = min(
-            _INHERITED_RELATED_TOOL_LIMIT,
-            global_limit if global_limit is not None else _INHERITED_RELATED_TOOL_LIMIT,
-        )
-        candidates = list(
-            self._tool_selector.select(
-                catalog,
-                scopes=inherited_priority_scopes,
-                user_request=runtime.selection_query,
-                planner_intent=runtime.planner_intent,
-                limit=_INHERITED_CANDIDATE_POOL_LIMIT,
-                minimum_score=1,
-            ).entries
-        )
-        if (
-            mcp is not None
-            and mcp.enabled
-            and has_mcp_tools
-            and mcp.selected_tool_limit is not None
-        ):
-            mcp_used = 0
-            limited = []
-            for candidate in candidates:
-                if candidate.descriptor.trust_source is CapabilityTrustSource.MCP:
-                    if mcp_used >= mcp.selected_tool_limit:
-                        continue
-                    mcp_used += 1
-                limited.append(candidate)
-            candidates = self._retain_required_tools(
-                limited,
-                catalog.entries,
-                inherited_priority_scopes,
-            )
-        if mode == "hybrid" and has_mcp_tools and len(candidates) > initial_limit:
-            candidates = list(
-                await self._tool_reranker.rerank(
-                    tuple(candidates),
-                    user_request=runtime.selection_query,
-                    planner_intent=runtime.planner_intent,
-                    limit=initial_limit,
-                    required_scope_ids=inherited_priority_scopes,
-                )
-            )
-        else:
-            candidates = self._retain_required_tools(
-                candidates[:initial_limit],
-                catalog.entries,
-                inherited_priority_scopes,
-            )
-        return replace(
-            runtime,
-            selected_tool_names=frozenset(item.descriptor.model_name for item in candidates),
-        )
-
-    @staticmethod
-    def _retain_required_tools(
-        selected: list[UnifiedToolCatalogEntry],
-        available: tuple[UnifiedToolCatalogEntry, ...],
-        scopes: tuple[str, ...],
-    ) -> list[UnifiedToolCatalogEntry]:
-        selected_names = {item.descriptor.model_name for item in selected}
-        required_scopes = set(scopes)
-        for item in available:
-            required = item.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS or bool(
-                required_scopes.intersection(item.bundle_scope_ids)
-            )
-            if required and item.descriptor.model_name not in selected_names:
-                selected.append(item)
-                selected_names.add(item.descriptor.model_name)
-        return selected
+        return runtime
 
     @staticmethod
     def _decode_tool_result(value: str) -> dict[str, object]:

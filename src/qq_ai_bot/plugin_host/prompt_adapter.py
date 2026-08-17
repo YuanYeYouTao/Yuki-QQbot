@@ -14,6 +14,9 @@ from qq_ai_bot.services.prompt_registry import (
 )
 from yuki_plugin_sdk.models import PromptFragment as SdkPromptFragment
 
+_DELETED_PLUGIN_STAGES = frozenset({"planner_plan"})
+_DELETED_PLUGIN_TARGETS = frozenset({"planner", "both"})
+
 
 class PluginPromptAdapter:
     def __init__(self, extensions: ExtensionRegistry, core: PromptRegistry) -> None:
@@ -32,8 +35,12 @@ class PluginPromptAdapter:
             kind=ExtensionKind.PROMPT_FRAGMENT,
         ):
             fragment = cast(SdkPromptFragment, item.registration)
+            stage_value = getattr(fragment.stage, "value", fragment.stage)
+            target_value = getattr(fragment.target, "value", fragment.target)
+            if stage_value in _DELETED_PLUGIN_STAGES or target_value in _DELETED_PLUGIN_TARGETS:
+                continue
             # Independent plugin sessions own a separate prompt pipeline.
-            if fragment.target.value == "plugin_session":
+            if target_value == "plugin_session":
                 continue
             self._core.register(
                 PromptFragment(

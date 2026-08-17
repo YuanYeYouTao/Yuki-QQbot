@@ -21,7 +21,7 @@ from qq_ai_bot.planner.context import PlannerContextBuilder
 from qq_ai_bot.planner.models import PlannerDecision
 from qq_ai_bot.planner.provider import PlannerInterruptedError as ProviderPlannerInterruptedError
 from qq_ai_bot.planner.service import PlannerService
-from qq_ai_bot.plugin_host.planner_adapter import PluginPlannerSignalAdapter
+from qq_ai_bot.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
     TurnObservationRecorder,
@@ -63,7 +63,7 @@ class AutonomousGroupService:
         planner: PlannerService,
         runtime_config: RuntimeConfigService | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
-        planner_signals: PluginPlannerSignalAdapter | None = None,
+        admission_signals: PluginAdmissionSignalAdapter | None = None,
         turn_observations: TurnObservationRecorder | None = None,
     ) -> None:
         self._chat = chat
@@ -71,7 +71,7 @@ class AutonomousGroupService:
         self._planner_context = planner_context
         self._planner = planner
         self._coordinator = turn_coordinator or chat._turn_coordinator
-        self._planner_signals = planner_signals
+        self._admission_signals = admission_signals
         self._turn_observations = turn_observations
         self._states: dict[str, _GroupState] = {}
         self._task_failures = 0
@@ -256,12 +256,12 @@ class AutonomousGroupService:
             if token is None:
                 return
         plugin_signals = (
-            await self._planner_signals.collect(
+            await self._admission_signals.collect(
                 message=last,
                 origin=TurnOrigin.AUTONOMOUS_GROUP,
                 runtime=runtime,
             )
-            if self._planner_signals is not None
+            if self._admission_signals is not None
             else ()
         )
         planner_input = await self._planner_context.build(
@@ -271,7 +271,6 @@ class AutonomousGroupService:
             origin=TurnOrigin.AUTONOMOUS_GROUP,
             runtime=runtime,
             visual_input_present=False,
-            available_tool_categories=("history", "memory", "web"),
             plugin_signals=plugin_signals,
         )
         if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
@@ -314,7 +313,6 @@ class AutonomousGroupService:
                 origin=TurnOrigin.AUTONOMOUS_GROUP,
                 runtime=runtime,
                 visual_input_present=False,
-                available_tool_categories=("history", "memory", "web"),
                 plugin_signals=plugin_signals,
             )
             if not self._is_latest(group_id, revision):

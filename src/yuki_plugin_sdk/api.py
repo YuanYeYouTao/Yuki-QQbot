@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-PLUGIN_API_VERSION = "1.1"
+PLUGIN_API_VERSION = "2.0"
 _API_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 DEFAULT_FEATURES: frozenset[str] = frozenset(
@@ -12,7 +12,7 @@ DEFAULT_FEATURES: frozenset[str] = frozenset(
         "message.normalized.v1",
         "message.current.mentions.v1",
         "prompt.fragment.v1",
-        "planner.signal.v1",
+        "admission.signal.v1",
         "automation.action.v1",
         "plugin.agent_session.v1",
         "emoji.facade.v1",
@@ -35,6 +35,6 @@ def api_major(version: str) -> int:
 
 
 def is_api_compatible(requested: str, host: str = PLUGIN_API_VERSION) -> bool:
-    """Plugin API 1.x is compatible within the same major version."""
+    """Plugin API is compatible only within the same major version."""
 
     return api_major(requested) == api_major(host)

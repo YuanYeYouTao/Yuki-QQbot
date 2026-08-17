@@ -1,4 +1,4 @@
-"""Stable Plugin API v1 permission names."""
+"""Stable Plugin API v2 permission names."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ class PluginPermission(StrEnum):
     NOTIFICATION_PUBLISH = "notification.publish"
     NOTIFICATION_AGENT = "notification.agent"
     STORAGE_PRIVATE = "storage.private"
-    PLANNER_SIGNAL_REGISTER = "planner.signal.register"
+    ADMISSION_SIGNAL_REGISTER = "admission.signal.register"
     MCP_READ = "mcp.read"
     MCP_CALL = "mcp.call"
 

@@ -6,15 +6,15 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from yuki_plugin_sdk.events import EventName, NotificationHandler
 from yuki_plugin_sdk.models import (
+    AdmissionSignal,
+    AdmissionSignalContext,
     EmojiSelectionSignal,
     EmojiSelectionSignalContext,
     PermissionLevel,
-    PlannerSignal,
-    PlannerSignalContext,
     PromptFragment,
     RestartPolicy,
     RetryPolicy,
@@ -22,19 +22,26 @@ from yuki_plugin_sdk.models import (
     StrictModel,
     TurnOrigin,
 )
+from yuki_plugin_sdk.namespace import (
+    is_reserved_plugin_namespace,
+    is_valid_namespace_id,
+)
 from yuki_plugin_sdk.results import CommandResult, ToolResult
 
 ToolHandler = Callable[[BaseModel], Awaitable[ToolResult | BaseModel]]
 CommandHandler = Callable[[BaseModel], Awaitable[CommandResult]]
 AutomationHandler = Callable[[BaseModel], Awaitable[ToolResult | BaseModel]]
-PlannerSignalProvider = (
-    Callable[[PlannerSignalContext], Awaitable[PlannerSignal | None]]
-    | Callable[[], Awaitable[PlannerSignal | None]]
+AdmissionSignalProvider = (
+    Callable[[AdmissionSignalContext], Awaitable[AdmissionSignal | None]]
+    | Callable[[], Awaitable[AdmissionSignal | None]]
 )
 EmojiSelectionSignalProvider = Callable[
     [EmojiSelectionSignalContext], Awaitable[EmojiSelectionSignal | None]
 ]
 BackgroundRunner = Callable[[], Awaitable[None]]
+
+_MAX_TOOL_LABELS = 8
+_MAX_USE_WHEN_CHARS = 200
 
 
 class ToolMetadata(StrictModel):
@@ -43,11 +50,44 @@ class ToolMetadata(StrictModel):
     permission: PermissionLevel = PermissionLevel.USER
     risk: RiskClass = RiskClass.READ
     schema_version: int = Field(default=1, ge=1)
+    namespace: str = ""
+    aliases: tuple[str, ...] = Field(default=(), max_length=_MAX_TOOL_LABELS)
+    use_when: tuple[str, ...] = Field(default=(), max_length=_MAX_TOOL_LABELS)
+    tags: tuple[str, ...] = Field(default=(), max_length=_MAX_TOOL_LABELS)
     allowed_origins: frozenset[TurnOrigin] = Field(
         default_factory=lambda: frozenset({TurnOrigin.USER_MESSAGE})
     )
     timeout_seconds: float = Field(default=10, gt=0, le=600)
     retry_policy: RetryPolicy = RetryPolicy.NONE
+
+    @field_validator("namespace")
+    @classmethod
+    def _valid_namespace(cls, value: str) -> str:
+        if not value:
+            return value
+        if not is_valid_namespace_id(value):
+            raise ValueError(f"invalid tool namespace: {value!r}")
+        if is_reserved_plugin_namespace(value):
+            raise ValueError(f"plugin tools cannot use reserved namespace: {value!r}")
+        return value
+
+    @field_validator("aliases", "tags")
+    @classmethod
+    def _valid_labels(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for label in value:
+            if not label or label != label.lower():
+                raise ValueError(f"tool aliases/tags must be lowercase, got {label!r}")
+        if len(set(value)) != len(value):
+            raise ValueError("tool aliases/tags must be unique")
+        return value
+
+    @field_validator("use_when")
+    @classmethod
+    def _valid_use_when(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for item in value:
+            if not item or len(item) > _MAX_USE_WHEN_CHARS:
+                raise ValueError("use_when items must be 1-200 characters")
+        return value
 
 
 class CommandMetadata(StrictModel):
@@ -60,7 +100,9 @@ class CommandMetadata(StrictModel):
 
 class AutomationActionMetadata(ToolMetadata):
     allowed_origins: frozenset[TurnOrigin] = Field(
-        default_factory=lambda: frozenset({TurnOrigin.SCHEDULED_AUTOMATION, TurnOrigin.SYSTEM_TASK})
+        default_factory=lambda: frozenset(
+            {TurnOrigin.SCHEDULED_AUTOMATION, TurnOrigin.SYSTEM_TASK}
+        )
     )
 
 
@@ -109,9 +151,9 @@ class EventHookRegistration:
 
 
 @dataclass(frozen=True, slots=True)
-class PlannerSignalRegistration:
+class AdmissionSignalRegistration:
     name: str
-    provider: PlannerSignalProvider
+    provider: AdmissionSignalProvider
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +189,7 @@ class PluginRegistrar(Protocol):
 
     def register_automation_action(self, registration: AutomationActionRegistration) -> None: ...
 
-    def register_planner_signal(self, registration: PlannerSignalRegistration) -> None: ...
+    def register_admission_signal(self, registration: AdmissionSignalRegistration) -> None: ...
 
     def register_emoji_selection_signal(
         self, registration: EmojiSelectionSignalRegistration

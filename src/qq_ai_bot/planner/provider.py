@@ -23,8 +23,6 @@ from qq_ai_bot.planner.models import (
     PlannerInput,
     PlannerModelOutput,
     PlannerReasonCode,
-    ToolMode,
-    ToolSelection,
     TurnPlan,
 )
 from qq_ai_bot.planner.observability import PlannerObservability
@@ -96,22 +94,7 @@ def validate_turn_plan(
 ) -> TurnPlan:
     """Narrow event-bound fields without discarding otherwise valid intent."""
 
-    plan = _strip_memory_tool_scopes(plan)
     known_targets = set(planner_input.known_target_user_ids)
-    available_scopes = {
-        *(scope.scope_id for scope in planner_input.available_tool_scopes),
-        *planner_input.available_tool_categories,
-    }
-    # Compatibility inputs built before dynamic scope summaries existed do not
-    # advertise a catalog.  Production inputs always do; only validate names
-    # when the caller supplied the authoritative catalog.
-    unknown_scopes = (
-        sorted(set(plan.tool_selection.scope_ids) - available_scopes) if available_scopes else []
-    )
-    if unknown_scopes:
-        raise PlannerResponseError(
-            f"planner selected unknown tool scopes: {', '.join(unknown_scopes)}"
-        )
     updates: dict[str, object] = {
         "target_user_ids": tuple(
             dict.fromkeys(target for target in plan.target_user_ids if target in known_targets)
@@ -127,34 +110,7 @@ def validate_turn_plan(
             else 0.0
         ),
     }
-    if plan.tool_selection_explicit:
-        updates["tool_selection"] = plan.tool_selection.model_copy(
-            update={"scopes": plan.tool_selection.scope_ids}
-        )
     return plan.model_copy(update=updates)
-
-
-def _strip_memory_tool_scopes(plan: TurnPlan) -> TurnPlan:
-    """Let memory access, not Planner tool scopes, own first-round orchestration."""
-
-    selection = plan.tool_selection
-    scopes = tuple(scope for scope in selection.scope_ids if not _is_memory_tool_scope(scope))
-    if scopes == selection.scope_ids:
-        return plan
-    return plan.model_copy(
-        update={
-            "tool_selection": selection.model_copy(update={"scopes": scopes}),
-        }
-    )
-
-
-def _is_memory_tool_scope(scope: str) -> bool:
-    normalized = scope.strip().casefold().replace("-", "_")
-    return (
-        normalized == "memory"
-        or normalized.startswith("memory.")
-        or normalized.startswith("memory_")
-    )
 
 
 def normalize_reply_target(
@@ -188,7 +144,6 @@ def deterministic_effect_plan(planner_input: PlannerInput) -> TurnPlan:
         target_user_ids=(planner_input.current_sender_user_id,),
         delivery_mode=DeliveryMode.SINGLE,
         desired_messages=1,
-        tool_selection=ToolSelection(mode=ToolMode.NONE),
         confidence=1.0,
         reason_code=PlannerReasonCode.DETERMINISTIC_EFFECT_REQUEST,
         emoji=EmojiReplyPlan(
@@ -236,7 +191,6 @@ def deterministic_fallback_plan(
         target_user_ids=(planner_input.current_sender_user_id,) if should_reply else (),
         delivery_mode=DeliveryMode.CONCISE,
         desired_messages=1,
-        tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
         wait_seconds=0.0,
         confidence=0.0,
         reason_code=reason_code,

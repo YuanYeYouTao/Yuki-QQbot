@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from dataclasses import dataclass
@@ -159,6 +160,7 @@ class AgentRunner:
             enable_fallback = getattr(tools, "enable_native_web_fallback", None)
             if callable(enable_fallback):
                 enable_fallback()
+        await self._prepare_tools(tools, runtime)
         for request_index in range(runtime.max_model_requests):
             definitions = (
                 tools.definitions(runtime, web_was_used=web_was_used) if tools is not None else ()
@@ -191,6 +193,7 @@ class AgentRunner:
                     enable_fallback()
                     tavily_fallback = True
                     web_route = self._fallback_route(web_route, WebRouteReason.NATIVE_UNAVAILABLE)
+                    await self._prepare_tools(tools, runtime)
                     definitions = tools.definitions(runtime, web_was_used=web_was_used)
             if tavily_fallback:
                 native_definitions = ()
@@ -868,6 +871,17 @@ class AgentRunner:
         return bool(callable(probe) and probe(call.function.name, call.function.arguments, runtime))
 
     @staticmethod
+    async def _prepare_tools(tools: AgentToolBackend | None, runtime: AgentRuntime) -> None:
+        if tools is None:
+            return
+        prepare = getattr(tools, "prepare", None)
+        if not callable(prepare):
+            return
+        result = prepare(runtime)
+        if inspect.isawaitable(result):
+            await result
+
+    @staticmethod
     def _record_failure_usage(
         tools: AgentToolBackend | None,
         *,
@@ -884,7 +898,11 @@ class AgentRunner:
         current: tuple[ChatTool, ...],
     ) -> tuple[ChatTool, ...]:
         merged = {item.name: item for item in previous}
-        merged.update({item.name: item for item in current})
+        for item in current:
+            existing = merged.get(item.name)
+            if existing is None or existing.parameters == item.parameters:
+                merged[item.name] = item
+            # Responses declared schemas are append-only; never silently replace.
         return tuple(sorted(merged.values(), key=lambda item: item.name))
 
     @staticmethod

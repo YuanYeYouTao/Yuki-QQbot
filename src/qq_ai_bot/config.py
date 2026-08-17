@@ -340,7 +340,7 @@ class Settings(BaseSettings):
     # Local in-process plugins.  Approval is API governance, not a Python sandbox.
     plugin_system_enabled: bool = False
     plugin_directory: Path = Path("plugins")
-    plugin_api_version: str = "1.1"
+    plugin_api_version: str = "2.0"
     plugin_direct_command_bindings: dict[str, str] = Field(default_factory=dict)
     plugin_hook_timeout_seconds: float = 3.0
     plugin_start_timeout_seconds: float = 10.0

@@ -87,13 +87,13 @@ def validate_release_identity(root: Path, tag: str) -> str:
         _ALEMBIC_HEAD_PATTERN,
         "Alembic head",
     )
-    if alembic_head != "0037":
-        raise ReleaseValidationError(f"Alembic head must remain 0037, got {alembic_head}")
+    if alembic_head != "0038":
+        raise ReleaseValidationError(f"Alembic head must remain 0038, got {alembic_head}")
     plugin_api = _match_value(
         root / "src/yuki_plugin_sdk/api.py", _PLUGIN_API_PATTERN, "Plugin API version"
     )
-    if plugin_api != "1.1":
-        raise ReleaseValidationError(f"Plugin API must remain 1.1, got {plugin_api}")
+    if plugin_api != "2.0":
+        raise ReleaseValidationError(f"Plugin API must remain 2.0, got {plugin_api}")
     return tag_version
 
 

@@ -849,7 +849,6 @@ class MessageProcessor:
             if self._planner_signals is not None
             else ()
         )
-        tool_categories = self._tool_categories(message, visual_input_present)
         planner_input = await self._planner_context.build(
             inbound=message,
             conversation_key=turn_token.conversation_key,
@@ -857,8 +856,6 @@ class MessageProcessor:
             origin=TurnOrigin.USER_MESSAGE,
             runtime=runtime,
             visual_input_present=visual_input_present,
-            available_tool_categories=tool_categories,
-            available_tool_scopes=self._chat.planner_tool_scopes(tool_categories, runtime),
             plugin_signals=plugin_signals,
         )
         async with self._turn_coordinator.track(turn_token, "planner"):
@@ -889,8 +886,6 @@ class MessageProcessor:
             origin=TurnOrigin.USER_MESSAGE,
             runtime=runtime,
             visual_input_present=visual_input_present,
-            available_tool_categories=tool_categories,
-            available_tool_scopes=self._chat.planner_tool_scopes(tool_categories, runtime),
             plugin_signals=plugin_signals,
         )
         async with self._turn_coordinator.track(turn_token, "planner"):
@@ -903,18 +898,6 @@ class MessageProcessor:
         if second.planned_turn.plan.decision is PlannerDecision.WAIT:
             return None
         return second
-
-    def _tool_categories(
-        self,
-        message: InboundMessage,
-        visual_input_present: bool,
-    ) -> tuple[str, ...]:
-        categories = ["memory", "relationship", "automation", "emoji", "speech", "plugin"]
-        if self._settings.web.mode.value != "disabled":
-            categories.append("web")
-        if message.sender.user_id in self._settings.superusers and not visual_input_present:
-            categories.extend(("admin", "config", "onebot"))
-        return tuple(categories)
 
     async def _analyze_visual_input(
         self,

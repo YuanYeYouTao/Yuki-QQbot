@@ -14,7 +14,6 @@ from qq_ai_bot.domain.messages import (
     SenderIdentity,
     ToolCall,
 )
-from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
 
@@ -124,7 +123,7 @@ class PluginAgentToolBackend:
             current_group_id=runtime.current_group_id,
             runtime_config=runtime.runtime_config,
             origin=TurnOrigin.PLUGIN_SESSION,
-            tool_mode=ToolMode.READ_ONLY,
+            read_only=True,
         )
 
     @staticmethod

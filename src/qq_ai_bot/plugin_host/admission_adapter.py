@@ -1,4 +1,4 @@
-"""Failure-isolated collection of bounded plugin Planner signals."""
+"""Failure-isolated collection of bounded plugin admission signals."""
 
 from __future__ import annotations
 
@@ -15,16 +15,14 @@ from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.planner.models import PlannerSignal
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from yuki_plugin_sdk.models import (
+    AdmissionSignal as SdkAdmissionSignal,
+)
+from yuki_plugin_sdk.models import (
+    AdmissionSignalContext,
     CurrentMessage,
-    PlannerSignalContext,
 )
-from yuki_plugin_sdk.models import (
-    PlannerSignal as SdkPlannerSignal,
-)
-from yuki_plugin_sdk.models import (
-    TurnOrigin as SdkTurnOrigin,
-)
-from yuki_plugin_sdk.registrar import PlannerSignalProvider, PlannerSignalRegistration
+from yuki_plugin_sdk.models import TurnOrigin as SdkTurnOrigin
+from yuki_plugin_sdk.registrar import AdmissionSignalProvider, AdmissionSignalRegistration
 
 InvocationScope = Callable[
     [str, InboundMessage, TurnOrigin, RuntimeConfigSnapshot],
@@ -32,7 +30,13 @@ InvocationScope = Callable[
 ]
 
 
-class PluginPlannerSignalAdapter:
+class PluginAdmissionSignalAdapter:
+    """Collect plugin admission hints and map them onto host PlannerSignal.
+
+    Admission signals only influence autonomous-group participation scoring.
+    They must not change tool exposure, memory contracts, or authority.
+    """
+
     def __init__(
         self,
         registry: ExtensionRegistry,
@@ -41,7 +45,7 @@ class PluginPlannerSignalAdapter:
         invocation_scope: InvocationScope | None = None,
     ) -> None:
         if timeout_seconds <= 0:
-            raise ValueError("planner signal timeout must be positive")
+            raise ValueError("admission signal timeout must be positive")
         self._registry = registry
         self._timeout = timeout_seconds
         self._invocation_scope = invocation_scope
@@ -50,7 +54,7 @@ class PluginPlannerSignalAdapter:
         """Apply the HOT hook timeout to subsequent signal collections."""
 
         if timeout_seconds <= 0:
-            raise ValueError("planner signal timeout must be positive")
+            raise ValueError("admission signal timeout must be positive")
         self._timeout = timeout_seconds
 
     async def collect(
@@ -60,7 +64,7 @@ class PluginPlannerSignalAdapter:
         origin: TurnOrigin,
         runtime: RuntimeConfigSnapshot,
     ) -> tuple[PlannerSignal, ...]:
-        signal_context = PlannerSignalContext(
+        signal_context = AdmissionSignalContext(
             conversation_key=(
                 f"group:{message.group_id}"
                 if message.group_id is not None
@@ -79,13 +83,13 @@ class PluginPlannerSignalAdapter:
         tasks = [
             self._collect_one(
                 item.plugin_id,
-                cast(PlannerSignalRegistration, item.registration),
+                cast(AdmissionSignalRegistration, item.registration),
                 message=message,
                 origin=origin,
                 runtime=runtime,
                 signal_context=signal_context,
             )
-            for item in self._registry.list(kind=ExtensionKind.PLANNER_SIGNAL)
+            for item in self._registry.list(kind=ExtensionKind.ADMISSION_SIGNAL)
         ]
         if not tasks:
             return ()
@@ -95,12 +99,12 @@ class PluginPlannerSignalAdapter:
     async def _collect_one(
         self,
         plugin_id: str,
-        registration: PlannerSignalRegistration,
+        registration: AdmissionSignalRegistration,
         *,
         message: InboundMessage,
         origin: TurnOrigin,
         runtime: RuntimeConfigSnapshot,
-        signal_context: PlannerSignalContext,
+        signal_context: AdmissionSignalContext,
     ) -> PlannerSignal | None:
         try:
             async with asyncio.timeout(self._timeout):
@@ -145,21 +149,21 @@ class PluginPlannerSignalAdapter:
 
 
 async def _invoke_provider(
-    provider: PlannerSignalProvider,
-    context: PlannerSignalContext,
-) -> SdkPlannerSignal | None:
+    provider: AdmissionSignalProvider,
+    context: AdmissionSignalContext,
+) -> SdkAdmissionSignal | None:
     try:
         accepts_context = bool(inspect.signature(provider).parameters)
     except (TypeError, ValueError):
         accepts_context = True
     if accepts_context:
         contextual = cast(
-            Callable[[PlannerSignalContext], Awaitable[SdkPlannerSignal | None]],
+            Callable[[AdmissionSignalContext], Awaitable[SdkAdmissionSignal | None]],
             provider,
         )
         return await contextual(context)
-    parameterless = cast(Callable[[], Awaitable[SdkPlannerSignal | None]], provider)
+    parameterless = cast(Callable[[], Awaitable[SdkAdmissionSignal | None]], provider)
     return await parameterless()
 
 
-__all__ = ["PluginPlannerSignalAdapter"]
+__all__ = ["PluginAdmissionSignalAdapter"]

@@ -23,6 +23,8 @@ MEMORY_READ_NAMESPACES: tuple[str, ...] = (
     "memory.person.read",
     "memory.self.read",
     "memory.group.read",
+    "memory.fact.read",
+    "memory.evidence.read",
 )
 MEMORY_WRITE_NAMESPACE = "memory.state.write"
 

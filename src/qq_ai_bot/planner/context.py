@@ -21,7 +21,6 @@ from qq_ai_bot.planner.models import (
     PlannerMemoryContext,
     PlannerSignal,
     PlannerSpeechContext,
-    ToolScopeSummary,
 )
 from qq_ai_bot.planner.necessity import ReplyNecessityFeatures, ReplyNecessityScorer
 from qq_ai_bot.planner.repository import PlannerRepository, PlannerVoiceCadence
@@ -91,8 +90,6 @@ class PlannerContextBuilder:
         origin: TurnOrigin,
         runtime: RuntimeConfigSnapshot,
         visual_input_present: bool = False,
-        available_tool_categories: tuple[str, ...] = (),
-        available_tool_scopes: tuple[ToolScopeSummary, ...] = (),
         plugin_signals: tuple[PlannerSignal, ...] = (),
         speech: PlannerSpeechContext | None = None,
         now: datetime | None = None,
@@ -248,8 +245,6 @@ class PlannerContextBuilder:
             relationship_stage=relationship.stage if relationship is not None else None,
             current_time=current_time,
             necessity=necessity,
-            available_tool_categories=available_tool_categories,
-            available_tool_scopes=available_tool_scopes,
             plugin_signals=plugin_signals,
             emoji=emoji_context,
             speech=speech_context or PlannerSpeechContext(),
@@ -288,8 +283,6 @@ class PlannerContextBuilder:
             content=event.content,
             origin=TurnOrigin.PLUGIN_BACKGROUND,
             runtime=runtime,
-            available_tool_categories=(),
-            available_tool_scopes=(),
         )
         necessity = base.necessity.model_copy(
             update={
