@@ -171,15 +171,21 @@ class AgentRunner:
                 web_mode = WebMode(getattr(web_config, "mode", WebMode.DISABLED.value))
             except ValueError:
                 web_mode = WebMode.DISABLED
-            native_definitions = self._native_tools.bind(
-                protocol=self._models.protocol(self._task),
-                capabilities=self._models.capabilities(self._task),
-                allowed_capabilities=runtime.allowed_capabilities,
-                web_mode=web_mode,
-                web_was_used=web_was_used,
+            web_search_selected = any(tool.name == "web_search" for tool in definitions)
+            native_definitions = (
+                self._native_tools.bind(
+                    protocol=self._models.protocol(self._task),
+                    capabilities=self._models.capabilities(self._task),
+                    allowed_capabilities=runtime.allowed_capabilities,
+                    web_mode=web_mode,
+                    web_was_used=web_was_used,
+                )
+                if web_search_selected
+                else ()
             )
             if (
                 not tavily_fallback
+                and web_search_selected
                 and web_mode is WebMode.NATIVE_WITH_TAVILY_FALLBACK
                 and web_route is not None
                 and web_route.provider is WebProvider.NATIVE

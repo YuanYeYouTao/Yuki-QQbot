@@ -219,7 +219,6 @@ class TurnCapabilityRuntime:
             artifact_available=self._policy_context.artifact_available,
             reply_target_available=self._policy_context.reply_target_available,
             priority_ids=query.priority_capability_ids,
-            priority_provider_ids=self._discovered_mcp_providers,
         )
         self._apply_plan(self._plan)
         self._affinity = tuple(dict.fromkeys(hit.namespace_id for hit in hits[:3]))

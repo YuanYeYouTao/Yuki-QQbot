@@ -24,6 +24,7 @@ DEFAULT_NON_RESIDENT_LIMIT = 8
 DEFAULT_FIRST_ROUND_HARD_CAP = 12
 SCHEMA_REVISION_CONFLICT = "capability_schema_revision_conflict"
 NO_LONGER_AUTHORIZED = "capability_no_longer_authorized"
+BUNDLE_EXCEEDS_BUDGET = "bundle_exceeds_schema_budget"
 
 _PERMISSION_QUERY_HINTS = (
     "权限",
@@ -167,7 +168,6 @@ class AuthorityFirstExposurePlanner:
         artifact_available: bool,
         reply_target_available: bool,
         priority_ids: tuple[str, ...] = (),
-        priority_provider_ids: tuple[str, ...] = (),
     ) -> ExposurePlan:
         by_id = {entry.descriptor.model_name: entry for entry in catalog.entries}
         selected: list[UnifiedToolCatalogEntry] = []
@@ -203,33 +203,6 @@ class AuthorityFirstExposurePlanner:
         for name in priority_ids:
             add(by_id.get(name))
 
-        mcp_providers = {
-            provider_id for provider_id in priority_provider_ids if provider_id.strip()
-        }
-        for hit in hits:
-            entry = by_id.get(hit.capability_id)
-            if entry is not None and entry.descriptor.trust_source is CapabilityTrustSource.MCP:
-                mcp_providers.add(entry.provider_id)
-        mcp_count = 0
-        mcp_tokens = 0
-        if mcp_providers:
-            for entry in catalog.entries:
-                if entry.provider_id not in mcp_providers:
-                    continue
-                if self._mcp_tool_limit is not None and mcp_count >= self._mcp_tool_limit:
-                    break
-                next_tokens = mcp_tokens + entry.estimated_schema_tokens
-                if (
-                    self._mcp_schema_token_budget is not None
-                    and next_tokens > self._mcp_schema_token_budget
-                ):
-                    continue
-                before = entry.descriptor.model_name in selected_ids
-                add(entry)
-                if not before and entry.descriptor.model_name in selected_ids:
-                    mcp_count += 1
-                    mcp_tokens = next_tokens
-
         non_resident = 0
         for hit in hits[: self._lexical_limit]:
             if non_resident >= self._non_resident_limit:
@@ -243,10 +216,30 @@ class AuthorityFirstExposurePlanner:
             ):
                 non_resident += 1
 
+        reason = "ready"
+        selected, selected_ids, rejected = _expand_selected_bundles(
+            selected,
+            selected_ids=selected_ids,
+            catalog=catalog,
+            requestable_ids=requestable_ids,
+            hard_cap=max(0, self._hard_cap - len(kernel_tools)),
+            schema_token_budget=self._schema_token_budget,
+            mcp_schema_token_budget=self._mcp_schema_token_budget,
+            mcp_tool_limit=self._mcp_tool_limit,
+            drop_on_reject=True,
+        )
+        if rejected:
+            reason = f"{BUNDLE_EXCEEDS_BUDGET}:{','.join(rejected)}"
+
         selected = _clip_budget(
             selected,
             hard_cap=max(0, self._hard_cap - len(kernel_tools)),
             schema_token_budget=self._schema_token_budget,
+            preserve_ids={
+                entry.descriptor.model_name
+                for entry in selected
+                if entry.descriptor.bundle_scopes
+            },
         )
         callable_ids = frozenset(item.descriptor.model_name for item in selected) | frozenset(
             tool.name for tool in kernel_tools
@@ -268,6 +261,7 @@ class AuthorityFirstExposurePlanner:
             kernel_tools=kernel_tools,
             callable_ids=callable_ids,
             omitted_count=omitted,
+            reason=reason,
         )
 
     def plan_growth(
@@ -295,7 +289,30 @@ class AuthorityFirstExposurePlanner:
                 continue
             added.append(entry)
         kept = [by_id[name] for name in current_ids if name in by_id]
-        selected = (*kept, *added)
+        seed = list(kept)
+        seed_ids = {entry.descriptor.model_name for entry in seed}
+        for entry in added:
+            if entry.descriptor.model_name in seed_ids:
+                continue
+            seed.append(entry)
+            seed_ids.add(entry.descriptor.model_name)
+        selected, _selected_ids, rejected = _expand_selected_bundles(
+            seed,
+            selected_ids=seed_ids,
+            catalog=catalog,
+            requestable_ids=requestable_ids,
+            hard_cap=max(0, self._hard_cap - len(kernel_tools)),
+            schema_token_budget=self._schema_token_budget,
+            mcp_schema_token_budget=self._mcp_schema_token_budget,
+            mcp_tool_limit=self._mcp_tool_limit,
+            drop_on_reject=False,
+        )
+        reason = "request_tools"
+        if rejected:
+            reason = f"{BUNDLE_EXCEEDS_BUDGET}:{','.join(rejected)}"
+        loaded_count = sum(
+            1 for entry in selected if entry.descriptor.model_name not in current_ids
+        )
         callable_ids = frozenset(item.descriptor.model_name for item in selected) | frozenset(
             tool.name for tool in kernel_tools
         )
@@ -305,8 +322,8 @@ class AuthorityFirstExposurePlanner:
             entries=tuple(selected),
             kernel_tools=kernel_tools,
             callable_ids=callable_ids,
-            omitted_count=max(0, len(hits) - len(added)),
-            reason="request_tools",
+            omitted_count=max(0, len(hits) - loaded_count),
+            reason=reason,
         )
 
 
@@ -319,21 +336,108 @@ def _looks_like_permission_query(query: str) -> bool:
     return any(hint.casefold() in folded for hint in _PERMISSION_QUERY_HINTS)
 
 
+def _expand_selected_bundles(
+    selected: list[UnifiedToolCatalogEntry],
+    *,
+    selected_ids: set[str],
+    catalog: UnifiedToolCatalog,
+    requestable_ids: frozenset[str],
+    hard_cap: int,
+    schema_token_budget: int | None,
+    mcp_schema_token_budget: int | None,
+    mcp_tool_limit: int | None,
+    drop_on_reject: bool,
+) -> tuple[list[UnifiedToolCatalogEntry], set[str], tuple[str, ...]]:
+    """Load every required member of a selected bundle, or refuse that bundle."""
+
+    scopes = tuple(
+        dict.fromkeys(
+            scope
+            for entry in selected
+            for scope in entry.descriptor.bundle_scopes
+            if scope.strip()
+        )
+    )
+    rejected: list[str] = []
+    kept = list(selected)
+    kept_ids = set(selected_ids)
+    for scope in scopes:
+        members = [
+            entry
+            for entry in catalog.entries
+            if scope in entry.descriptor.bundle_scopes
+            and entry.descriptor.model_name in requestable_ids
+            and not _is_synthetic(entry)
+        ]
+        if not members:
+            continue
+        trial = [entry for entry in kept if scope not in entry.descriptor.bundle_scopes]
+        trial.extend(members)
+        if _exceeds_caps(
+            trial,
+            hard_cap=hard_cap,
+            schema_token_budget=schema_token_budget,
+            mcp_schema_token_budget=mcp_schema_token_budget,
+            mcp_tool_limit=mcp_tool_limit,
+        ):
+            rejected.append(scope)
+            if drop_on_reject:
+                kept = [entry for entry in kept if scope not in entry.descriptor.bundle_scopes]
+                kept_ids = {entry.descriptor.model_name for entry in kept}
+            continue
+        for entry in members:
+            if entry.descriptor.model_name in kept_ids:
+                continue
+            kept.append(entry)
+            kept_ids.add(entry.descriptor.model_name)
+    return kept, kept_ids, tuple(rejected)
+
+
+def _exceeds_caps(
+    entries: list[UnifiedToolCatalogEntry],
+    *,
+    hard_cap: int,
+    schema_token_budget: int | None,
+    mcp_schema_token_budget: int | None,
+    mcp_tool_limit: int | None,
+) -> bool:
+    if hard_cap >= 0 and len(entries) > hard_cap:
+        return True
+    tokens = sum(entry.estimated_schema_tokens for entry in entries)
+    if schema_token_budget is not None and tokens > schema_token_budget:
+        return True
+    mcp_entries = [
+        entry
+        for entry in entries
+        if entry.descriptor.trust_source is CapabilityTrustSource.MCP
+    ]
+    if mcp_tool_limit is not None and len(mcp_entries) > mcp_tool_limit:
+        return True
+    mcp_tokens = sum(entry.estimated_schema_tokens for entry in mcp_entries)
+    return bool(mcp_schema_token_budget is not None and mcp_tokens > mcp_schema_token_budget)
+
+
 def _clip_budget(
     entries: list[UnifiedToolCatalogEntry],
     *,
     hard_cap: int,
     schema_token_budget: int | None,
+    preserve_ids: set[str] | None = None,
 ) -> list[UnifiedToolCatalogEntry]:
-    selected: list[UnifiedToolCatalogEntry] = []
-    used = 0
+    preserve = preserve_ids or set()
+    selected = [entry for entry in entries if entry.descriptor.model_name in preserve]
+    used = sum(entry.estimated_schema_tokens for entry in selected)
+    selected_ids = {entry.descriptor.model_name for entry in selected}
     for entry in entries:
+        if entry.descriptor.model_name in selected_ids:
+            continue
         if len(selected) >= hard_cap:
             break
         next_used = used + entry.estimated_schema_tokens
         if schema_token_budget is not None and next_used > schema_token_budget:
             continue
         selected.append(entry)
+        selected_ids.add(entry.descriptor.model_name)
         used = next_used
     return selected
 

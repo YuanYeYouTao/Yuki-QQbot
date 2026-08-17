@@ -597,8 +597,6 @@ class _ChatAgentBackend(AgentToolBackend):
             web_route is not None and web_route.provider is WebProvider.TAVILY
         ):
             names.extend(("web_search", "read_webpage"))
-        if self._runtime.allow_generic_onebot:
-            names.append("call_onebot_api")
         if self._runtime.origin is TurnOrigin.AUTONOMOUS_GROUP:
             names.append("decline_reply")
         return tuple(dict.fromkeys(names))
