@@ -204,8 +204,8 @@ Memory V2 质量、合成大库性能基准与生产审计命令见
 3. 重建 Bot：`docker compose up -d --no-deps --force-recreate bot`。不要重建或退出 NapCat，可保留 QQ 登录状态。
 4. 用 `/ai mcp list` 查看状态；超级管理员可执行 `/ai mcp doctor <server_id>`。
 
-`MCP_TOOL_SELECTION_MODE=hybrid` 会先做本地目录粗选，再由 `TOOL_SELECTION` 的 Flash
-档案对紧凑候选精排；Flash 不会看到工具 Schema。大量工具部署可设置
+Capability Search 只做本地 FTS5 BM25 检索，不再使用 Planner 或 Flash
+Tool Selection。大量工具部署可设置
 `TOOLING_SELECTED_TOOL_LIMIT`、`TOOLING_SCHEMA_TOKEN_BUDGET`、
 `MCP_SELECTED_TOOL_LIMIT` 与 `MCP_SCHEMA_TOKEN_BUDGET`。默认采用宽松的首批预算，
 遗漏能力仍可通过 `request_tools` 按需加载；显式留空表示不增加对应限制。
@@ -1364,22 +1364,14 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `AGENT_MAX_TOOL_CALLS` | `8` |
 | `AGENT_MAX_MODEL_REQUESTS` | `6` |
 | `AGENT_TOOL_RESULT_MAX_CHARACTERS` | `8000` |
-| `PLANNER_DIRECT_ENABLED` | `true` |
-| `PLANNER_GROUP_ENABLED` | `true` |
-| `PLANNER_GROUP_DEBOUNCE_SECONDS` | `3` |
-| `PLANNER_PREFERRED_MESSAGES` | `3`（热配置范围 `1`～`20`） |
-| `PLANNER_TEMPERATURE` | `0.1` |
-| `PLANNER_MAX_OUTPUT_TOKENS` | `512` |
-| `PLANNER_TIMEOUT_SECONDS` | `20` |
-| `PLANNER_CONFIDENCE_THRESHOLD` | `0.2` |
-| `PLANNER_REPLY_NECESSITY_THRESHOLD` | `0` |
-| `PLANNER_MAX_PENDING_MESSAGES` | `8` |
-| `PLANNER_RECENT_PRESENCE_WINDOW_SECONDS` | `300` |
-| `PLANNER_MAX_WAIT_SECONDS` | `60` |
-| `PLANNER_INTERRUPT_AUTONOMOUS_ON_NEW_MESSAGE` | `true` |
-| `PLANNER_RECORD_RUNS` | `true` |
+| `CONVERSATION_AUTONOMOUS_ENABLED` | `true` |
+| `CONVERSATION_AUTONOMOUS_DEBOUNCE_SECONDS` | `3` |
+| `CONVERSATION_AUTONOMOUS_ADMISSION_THRESHOLD` | `0` |
+| `CONVERSATION_AUTONOMOUS_BATCH_LIMIT` | `8`（热配置范围 `1`～`100`） |
+| `CONVERSATION_AUTONOMOUS_PRESENCE_WINDOW_SECONDS` | `300` |
+| `CONVERSATION_INTERRUPT_AUTONOMOUS_ON_NEW_MESSAGE` | `true` |
 | `REPLY_SEQUENCE_CANCEL_ON_NEW_MESSAGE` | `true` |
-| `REPLY_PLAN_HARD_MAX_MESSAGES` | `10`（可热更新至 `20`） |
+| `REPLY_HARD_MAX_MESSAGES` | `10`（可热更新至 `20`） |
 | `PLUGIN_SYSTEM_ENABLED` | `false` |
 | `PLUGIN_DIRECTORY` | `plugins` |
 | `PLUGIN_API_VERSION` | `2.0` |

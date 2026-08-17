@@ -109,30 +109,19 @@ class ConversationSettings(DomainSettings):
     agent_max_model_requests: int = Field(gt=0)
     agent_tool_result_max_characters: int = Field(gt=0)
     reply_sequence_cancel_on_new_message: bool
-    reply_plan_hard_max_messages: int = Field(gt=0)
+    reply_hard_max_messages: int = Field(gt=0)
+    conversation_autonomous_enabled: bool
+    conversation_autonomous_debounce_seconds: float = Field(ge=0)
+    conversation_autonomous_admission_threshold: int = Field(ge=0)
+    conversation_autonomous_batch_limit: int = Field(gt=0)
+    conversation_autonomous_presence_window_seconds: int = Field(gt=0)
+    conversation_interrupt_autonomous_on_new_message: bool
 
     @model_validator(mode="after")
     def _delay_order(self) -> ConversationSettings:
         if self.daily_chat_message_delay_min_seconds > self.daily_chat_message_delay_max_seconds:
             raise ValueError("daily chat minimum delay must not exceed maximum delay")
         return self
-
-
-class PlannerSettings(DomainSettings):
-    planner_direct_enabled: bool
-    planner_group_enabled: bool
-    planner_group_debounce_seconds: float = Field(ge=0)
-    planner_preferred_messages: int = Field(gt=0)
-    planner_temperature: float = Field(ge=0, le=2)
-    planner_max_output_tokens: int = Field(gt=0)
-    planner_timeout_seconds: float = Field(gt=0)
-    planner_confidence_threshold: float = Field(ge=0, le=1)
-    planner_reply_necessity_threshold: int = Field(ge=0)
-    planner_max_pending_messages: int = Field(gt=0)
-    planner_recent_presence_window_seconds: int = Field(gt=0)
-    planner_max_wait_seconds: int = Field(ge=0)
-    planner_interrupt_autonomous_on_new_message: bool
-    planner_record_runs: bool
 
 
 class PluginSettings(DomainSettings):
@@ -479,7 +468,7 @@ class SpeechSettings(DomainSettings):
     speech_default_profile: str
     speech_worker_start_timeout_seconds: float = Field(gt=0)
     speech_worker_request_timeout_seconds: float = Field(gt=0)
-    speech_planner_enabled: bool
+    speech_agent_effects_enabled: bool
     speech_default_mode: str
     speech_split_sentence: bool
     speech_max_synthesis_characters: int | None = Field(default=None, gt=0)
@@ -527,7 +516,6 @@ class MCPSettings(DomainSettings):
     mcp_config_path: Path
     mcp_cache_enabled: bool
     mcp_gateway_enabled: bool
-    mcp_tool_selection_mode: str
     mcp_metadata_cache_ttl_seconds: int = Field(gt=0)
     mcp_connect_timeout_seconds: float = Field(gt=0)
     mcp_request_timeout_seconds: float = Field(gt=0)
@@ -537,9 +525,3 @@ class MCPSettings(DomainSettings):
     mcp_result_item_limit: int | None = Field(default=None, gt=0)
     mcp_max_parallel_calls: int = Field(gt=0)
     mcp_artifact_retention_seconds: int = Field(gt=0)
-
-    @model_validator(mode="after")
-    def _selection_mode(self) -> MCPSettings:
-        if self.mcp_tool_selection_mode not in {"all", "catalog", "hybrid", "gateway"}:
-            raise ValueError("MCP_TOOL_SELECTION_MODE must be all/catalog/hybrid/gateway")
-        return self

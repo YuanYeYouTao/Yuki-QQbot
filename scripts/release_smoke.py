@@ -257,7 +257,7 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     alembic_version = compose.run(
         "exec", "-T", "bot", "python", "-c", migration_command, capture=True
     )
-    if alembic_version != "0039":
+    if alembic_version != "0040":
         raise SmokeError(f"unexpected Alembic version: {alembic_version!r}")
     compose.run("exec", "-T", "bot", "qq-ai-bot-cli", "plugin", "discover", capture=True)
     selected = write_plugin_pending(deploy_directory)

@@ -212,7 +212,7 @@ class ApplicationContainer:
         self.turn_coordinator = ConversationTurnCoordinator(
             cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
-                settings.planner_interrupt_autonomous_on_new_message
+                settings.conversation_interrupt_autonomous_on_new_message
             ),
         )
         speech = SpeechModule(

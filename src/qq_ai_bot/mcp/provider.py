@@ -36,11 +36,9 @@ class MCPToolProvider:
         manager: MCPManager,
         *,
         gateway_enabled: bool,
-        selection_mode: str,
     ) -> None:
         self._manager = manager
         self._gateway_enabled = gateway_enabled
-        self._selection_mode = selection_mode
         self._gateway_binding = MCPGatewayBinding(manager)
 
     def descriptors(self, context: Any) -> tuple[CapabilityDescriptor, ...]:
@@ -48,13 +46,11 @@ class MCPToolProvider:
             return ()
         runtime = getattr(context, "runtime_config", None)
         mcp = getattr(runtime, "mcp", None)
-        selection_mode = mcp.tool_selection_mode if mcp is not None else self._selection_mode
         gateway_enabled = mcp.gateway_enabled if mcp is not None else self._gateway_enabled
         cached = self._manager.cached_tools
         cached_servers = {item.server_id for item in cached}
         descriptors: list[CapabilityDescriptor] = []
-        if selection_mode != "gateway":
-            descriptors.extend(self._descriptor(item) for item in cached)
+        descriptors.extend(self._descriptor(item) for item in cached)
         for server_id in self._manager.configured_server_ids:
             if not self._manager.server_enabled(server_id):
                 continue
@@ -197,9 +193,7 @@ class MCPToolProvider:
             ),
             use_when=tuple(
                 dict.fromkeys(
-                    item
-                    for item in (config.yuki.summary, *bundle_summaries)
-                    if item.strip()
+                    item for item in (config.yuki.summary, *bundle_summaries) if item.strip()
                 )
             ),
             input_schema=dict(_SYNTHETIC_SCHEMA),

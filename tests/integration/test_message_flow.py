@@ -545,7 +545,7 @@ async def test_natural_and_deterministic_config_entrypoints_share_runtime_instan
                             name="admin_set_config",
                             arguments=json.dumps(
                                 {
-                                    "key": "planner.max_pending_messages",
+                                    "key": "conversation.autonomous_batch_limit",
                                     "value": 10,
                                     "scope_type": "global",
                                     "scope_id": "",
@@ -580,7 +580,7 @@ async def test_natural_and_deterministic_config_entrypoints_share_runtime_instan
     command_sender = MemorySender()
     command = normalize_event(
         private_event(
-            Message("/ai config get planner.max_pending_messages"),
+            Message("/ai config get conversation.autonomous_batch_limit"),
             message_id=411,
             user_id=9000,
         )

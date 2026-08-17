@@ -1414,7 +1414,7 @@ class ChatService:
         self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
             cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
-                settings.planner_interrupt_autonomous_on_new_message
+                settings.conversation_interrupt_autonomous_on_new_message
             ),
         )
         self._reply_sequence = reply_sequence or ReplySequenceManager(self._turn_coordinator)

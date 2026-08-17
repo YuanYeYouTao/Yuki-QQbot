@@ -253,13 +253,10 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     settings = Settings(_env_file=None)
     assert settings.daily_chat_message_delay_min_seconds == 1
     assert settings.daily_chat_message_delay_max_seconds == 2
-    assert settings.planner_group_debounce_seconds == 3
-    assert settings.planner_max_wait_seconds == 60
-    assert settings.planner_preferred_messages == 3
-    assert settings.planner_confidence_threshold == 0.2
-    assert settings.planner_reply_necessity_threshold == 0
-    assert settings.planner_max_pending_messages == 8
-    assert settings.reply_plan_hard_max_messages == 10
+    assert settings.conversation_autonomous_debounce_seconds == 3
+    assert settings.conversation_autonomous_admission_threshold == 0
+    assert settings.conversation_autonomous_batch_limit == 8
+    assert settings.reply_hard_max_messages == 10
     assert settings.max_context_characters == 12_000
     assert settings.local_context_event_limit == 1_000
     assert settings.history_window_low_watermark_ratio == 0.67
@@ -286,14 +283,12 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.plugin_api_version == "2.0"
     assert settings.plugin_ai_session_max_history_messages == 200
 
-    assert Settings.model_validate({"planner_reply_necessity_threshold": 101})
+    assert Settings.model_validate({"conversation_autonomous_admission_threshold": 101})
     with pytest.raises(ValidationError, match="greater than or equal to 0"):
-        Settings.model_validate({"planner_reply_necessity_threshold": -1})
-    assert Settings.model_validate({"planner_group_debounce_seconds": 0})
-    assert Settings.model_validate({"planner_group_debounce_seconds": 61})
-    assert Settings.model_validate({"planner_max_wait_seconds": 0})
-    assert Settings.model_validate({"planner_preferred_messages": 21})
-    assert Settings.model_validate({"reply_plan_hard_max_messages": 21})
+        Settings.model_validate({"conversation_autonomous_admission_threshold": -1})
+    assert Settings.model_validate({"conversation_autonomous_debounce_seconds": 0})
+    assert Settings.model_validate({"conversation_autonomous_debounce_seconds": 61})
+    assert Settings.model_validate({"reply_hard_max_messages": 21})
     with pytest.raises(ValidationError, match="PLUGIN_API_VERSION"):
         Settings.model_validate({"plugin_api_version": "v1"})
     with pytest.raises(ValidationError, match="total plugin prompt budget"):

@@ -162,7 +162,7 @@ async def test_hygiene_rejects_stale_fingerprint(database: Database) -> None:
 @pytest.mark.asyncio
 async def test_release_check_is_read_only_and_requires_explicit_database(tmp_path: Path) -> None:
     report = await MemoryReleaseCheck(ROOT, artifact_directory=tmp_path).run()
-    assert report.alembic_head == "0039"
+    assert report.alembic_head == "0040"
     database = next(item for item in report.items if item.code == "production_database")
     assert database.status == "warn"
     assert "--database-url" in database.detail

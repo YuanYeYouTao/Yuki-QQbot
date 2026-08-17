@@ -174,21 +174,21 @@ def admin_stack(
 
 def test_registry_is_explicit_and_converts_supported_types() -> None:
     registry = ConfigRegistry()
-    assert "planner.max_pending_messages" in registry.keys
+    assert "conversation.autonomous_batch_limit" in registry.keys
     assert "llm_api_key" not in registry.keys
     assert "system_prompt" not in registry.keys
-    assert registry.convert(registry.get("planner.max_pending_messages"), "10") == 10
+    assert registry.convert(registry.get("conversation.autonomous_batch_limit"), "10") == 10
     assert registry.convert(registry.get("llm.temperature"), "0.25") == 0.25
-    assert registry.convert(registry.get("planner.group_enabled"), "开启") is True
-    assert registry.get("desired_messages").key == "planner.preferred_messages"
-    assert registry.convert(registry.get("日常回复条数"), "5") == 5
+    assert registry.convert(registry.get("conversation.autonomous_enabled"), "开启") is True
+    assert registry.get("单轮发送硬上限").key == "reply.hard_max_messages"
+    assert registry.convert(registry.get("单轮消息上限"), "5") == 5
     emoji_frequency = registry.get("日常表情频率")
     assert emoji_frequency.key == "emoji.spontaneous_frequency"
     assert registry.convert(emoji_frequency, "0.1") == 0.1
     with pytest.raises(KeyError):
         registry.get("arbitrary_config_set")
     with pytest.raises(ValueError):
-        registry.convert(registry.get("planner.max_pending_messages"), 10000)
+        registry.convert(registry.get("conversation.autonomous_batch_limit"), 10000)
 
 
 def test_registry_exposes_reviewed_vision_configuration_only() -> None:
@@ -581,7 +581,7 @@ async def test_rollback_is_actor_bound_and_detects_newer_changes(database: Datab
     settings = make_settings(database.url)
     service = RuntimeConfigService(settings=settings, database=database)
     first = await service.set_override(
-        "planner.max_pending_messages",
+        "conversation.autonomous_batch_limit",
         8,
         scope_type="global",
         scope_id="",
@@ -594,7 +594,7 @@ async def test_rollback_is_actor_bound_and_detects_newer_changes(database: Datab
     assert denied.error_category == "permission_denied"
 
     second = await service.set_override(
-        "planner.max_pending_messages",
+        "conversation.autonomous_batch_limit",
         9,
         scope_type="global",
         scope_id="",
@@ -621,7 +621,7 @@ async def test_concurrent_same_key_updates_increment_version(database: Database)
     changes = await asyncio.gather(
         *(
             service.set_override(
-                "planner.max_pending_messages",
+                "conversation.autonomous_batch_limit",
                 value,
                 scope_type="global",
                 scope_id="",
@@ -724,7 +724,7 @@ async def test_natural_language_config_change_is_hot_and_group_scoped(
                             name="admin_set_config",
                             arguments=json.dumps(
                                 {
-                                    "key": "planner.max_pending_messages",
+                                    "key": "conversation.autonomous_batch_limit",
                                     "value": 10,
                                     "scope_type": "group",
                                     "scope_id": "current_group",
@@ -752,12 +752,12 @@ async def test_natural_language_config_change_is_hot_and_group_scoped(
     )
     assert result.reason == "chat"
     assert sender.messages[0].text == "本群上限已立即改为 10 次。"
-    assert (await runtime.snapshot(group_id="2001")).planner.max_pending_messages == 10
-    assert (await runtime.snapshot(group_id="2002")).planner.max_pending_messages == 8
+    assert (await runtime.snapshot(group_id="2001")).conversation.autonomous_batch_limit == 10
+    assert (await runtime.snapshot(group_id="2002")).conversation.autonomous_batch_limit == 8
 
 
 @pytest.mark.asyncio
-async def test_natural_language_can_change_planner_message_target(
+async def test_natural_language_can_change_reply_hard_max(
     database: Database,
 ) -> None:
     calls = 0
@@ -773,12 +773,12 @@ async def test_natural_language_can_change_planner_message_target(
                 latency_seconds=0,
                 tool_calls=(
                     ToolCall(
-                        id="planner-message-target",
+                        id="reply-hard-max-target",
                         function=ToolFunction(
                             name="admin_set_config",
                             arguments=json.dumps(
                                 {
-                                    "key": "desired_messages",
+                                    "key": "reply.hard_max_messages",
                                     "value": 5,
                                     "scope_type": "global",
                                     "scope_id": "",
@@ -798,13 +798,13 @@ async def test_natural_language_can_change_planner_message_target(
     sender = MemorySender()
 
     result = await harness.processor.handle(
-        inbound("把 Planner 日常回复偏好改成 5 条", message_id="planner-message-config"),
+        inbound("把单轮发送硬上限改成 5 条", message_id="reply-hard-max-config"),
         sender,
     )
 
     assert result.reason == "chat"
     assert sender.messages[0].text == "日常回复现在会尽量分成 5 条。"
-    assert (await runtime.snapshot()).planner.preferred_messages == 5
+    assert (await runtime.snapshot()).reply.hard_max_messages == 5
 
 
 @pytest.mark.asyncio
@@ -831,7 +831,7 @@ async def test_same_management_text_from_normal_user_is_ordinary_chat(
     )
     assert result.reason == "chat"
     assert sender.messages[0].text == "普通用户不能修改这个设置。"
-    assert (await runtime.get_effective("planner.max_pending_messages")).value == 8
+    assert (await runtime.get_effective("conversation.autonomous_batch_limit")).value == 8
 
 
 @pytest.mark.asyncio
@@ -983,7 +983,7 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
             )
             assert repeat_result["ok"] is True
             assert [item["id"] for item in repeat_result["data"]["capabilities"]] == [
-                "config:planner.max_pending_messages"
+                "config:conversation.autonomous_batch_limit"
             ]
             assert "admin_set_config" in tool_names
             return ChatResponse(
@@ -996,7 +996,7 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
                             name="admin_set_config",
                             arguments=json.dumps(
                                 {
-                                    "key": "planner.max_pending_messages",
+                                    "key": "conversation.autonomous_batch_limit",
                                     "value": 30,
                                     "scope_type": "global",
                                     "scope_id": "",
@@ -1032,7 +1032,7 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
 
     assert result.reason == "chat"
     assert sender.messages[0].text == "好啦主人，每小时上限已经改成 30 了～"
-    assert (await runtime.get_effective("planner.max_pending_messages")).value == 30
+    assert (await runtime.get_effective("conversation.autonomous_batch_limit")).value == 30
     assert calls == 4
 
 
@@ -1154,7 +1154,7 @@ async def test_single_chat_agent_executes_multiple_distinct_mutations_in_order(
                             name="admin_set_config",
                             arguments=json.dumps(
                                 {
-                                    "key": "planner.max_pending_messages",
+                                    "key": "conversation.autonomous_batch_limit",
                                     "value": 10,
                                     "scope_type": "global",
                                     "scope_id": "",
@@ -1200,7 +1200,7 @@ async def test_single_chat_agent_executes_multiple_distinct_mutations_in_order(
     )
 
     assert result.reason == "chat"
-    assert (await runtime.get_effective("planner.max_pending_messages")).value == 10
+    assert (await runtime.get_effective("conversation.autonomous_batch_limit")).value == 10
     memories = await MemoryFactService(MemoryFactRepository(database)).list_person(
         "9000", limit=100
     )
@@ -1472,7 +1472,7 @@ async def test_deterministic_config_command_uses_runtime_service(database: Datab
     sender = MemorySender()
     result = await harness.processor.handle(
         inbound(
-            "/ai config set planner.max_pending_messages 9",
+            "/ai config set conversation.autonomous_batch_limit 9",
             message_id="deterministic-config",
         ),
         sender,
@@ -1480,7 +1480,7 @@ async def test_deterministic_config_command_uses_runtime_service(database: Datab
     assert result.reason == "command_config"
     assert "已立即生效" in sender.messages[0].text
     assert (
-        await harness.processor._runtime_config.get_effective("planner.max_pending_messages")
+        await harness.processor._runtime_config.get_effective("conversation.autonomous_batch_limit")
     ).value == 9
 
 
@@ -1489,7 +1489,7 @@ async def test_group_override_is_visible_in_next_snapshot(database: Database) ->
     settings = make_settings(database.url)
     service = RuntimeConfigService(settings=settings, database=database)
     changed = await service.set_override(
-        "planner.max_pending_messages",
+        "conversation.autonomous_batch_limit",
         10,
         scope_type="group",
         scope_id="2001",
@@ -1498,7 +1498,7 @@ async def test_group_override_is_visible_in_next_snapshot(database: Database) ->
     )
     assert changed.success
     debounce = await service.set_override(
-        "planner.group_debounce_seconds",
+        "conversation.autonomous_debounce_seconds",
         1,
         scope_type="group",
         scope_id="2001",
@@ -1506,10 +1506,10 @@ async def test_group_override_is_visible_in_next_snapshot(database: Database) ->
         trigger_message_id="planner-debounce",
     )
     assert debounce.success
-    assert (await service.snapshot(group_id="2001")).planner.max_pending_messages == 10
-    assert (await service.snapshot(group_id="2001")).planner.group_debounce_seconds == 1
-    assert (await service.snapshot(group_id="2002")).planner.max_pending_messages == 8
-    assert (await service.snapshot(group_id="2002")).planner.group_debounce_seconds == 3
+    assert (await service.snapshot(group_id="2001")).conversation.autonomous_batch_limit == 10
+    assert (await service.snapshot(group_id="2001")).conversation.autonomous_debounce_seconds == 1
+    assert (await service.snapshot(group_id="2002")).conversation.autonomous_batch_limit == 8
+    assert (await service.snapshot(group_id="2002")).conversation.autonomous_debounce_seconds == 3
 
 
 @pytest.mark.asyncio
@@ -1541,7 +1541,7 @@ def test_admin_actor_cannot_be_forged_with_dataclass_replace() -> None:
 
 def test_numeric_conversion_rejects_minimum_nan_and_infinity() -> None:
     registry = ConfigRegistry()
-    integer = registry.get("planner.max_pending_messages")
+    integer = registry.get("conversation.autonomous_batch_limit")
     number = registry.get("llm.temperature")
     with pytest.raises(ValueError, match="不能小于"):
         registry.convert(integer, 0)
@@ -1639,7 +1639,7 @@ async def test_two_admin_service_facades_share_atomic_versions(database: Databas
     second = RuntimeConfigService(settings=settings, database=database)
     same_key = await asyncio.gather(
         first.set_override(
-            "planner.max_pending_messages",
+            "conversation.autonomous_batch_limit",
             4,
             scope_type="global",
             scope_id="",
@@ -1647,7 +1647,7 @@ async def test_two_admin_service_facades_share_atomic_versions(database: Databas
             trigger_message_id="admin-a",
         ),
         second.set_override(
-            "planner.max_pending_messages",
+            "conversation.autonomous_batch_limit",
             5,
             scope_type="global",
             scope_id="",
@@ -1733,7 +1733,7 @@ async def test_forged_tool_runtime_is_rejected_by_capability_gateway(
             "admin_set_config",
             json.dumps(
                 {
-                    "key": "planner.max_pending_messages",
+                    "key": "conversation.autonomous_batch_limit",
                     "value": 10,
                     "scope_type": "global",
                     "scope_id": "",

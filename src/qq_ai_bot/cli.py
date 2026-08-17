@@ -189,6 +189,14 @@ def _add_diagnostics_parsers(
     model_commands.add_parser("profiles")
     model_commands.add_parser("stats")
 
+    runtime = subparsers.add_parser("runtime", help="只读 Runtime / Capability / Memory 诊断")
+    runtime_commands = runtime.add_subparsers(dest="runtime_command", required=True)
+    runtime_commands.add_parser("snapshot")
+    search = runtime_commands.add_parser("capability-search")
+    search.add_argument("query")
+    search.add_argument("--limit", type=int, default=8)
+    runtime_commands.add_parser("memory-session")
+
 
 def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     memory = subparsers.add_parser("memory", help="Memory V2 质量、审计与显式治理")
@@ -612,6 +620,62 @@ async def _speech_command(settings: Settings, args: argparse.Namespace) -> int:
         await database.close()
 
 
+def _capability_search_hits(query: str, *, limit: int) -> list[dict[str, object]]:
+    from qq_ai_bot.capabilities.models import CapabilityTrustSource
+    from qq_ai_bot.capabilities.provider import _CORE_METADATA, _CORE_SEARCH_TAGS, _CORE_USE_WHEN
+    from qq_ai_bot.capabilities.search_document import CapabilitySearchDocument
+    from qq_ai_bot.capabilities.search_index import FtsCapabilitySearchIndex
+
+    documents = tuple(
+        CapabilitySearchDocument(
+            capability_id=name,
+            model_name=name,
+            canonical_name=name,
+            namespace_id=namespace,
+            description=(_CORE_USE_WHEN.get(name) or (name,))[0],
+            aliases=_CORE_SEARCH_TAGS.get(name, ()),
+            use_when=_CORE_USE_WHEN.get(name, ()),
+            trust_source=CapabilityTrustSource.CORE,
+            effect=effect,
+            risk=risk,
+        )
+        for name, (namespace, effect, risk) in _CORE_METADATA.items()
+    )
+    index = FtsCapabilitySearchIndex()
+    index.rebuild(revision="cli-core", documents=documents)
+    return [
+        {
+            "capability_id": hit.capability_id,
+            "namespace_id": hit.namespace_id,
+            "score": hit.score,
+        }
+        for hit in index.search(query, limit=limit)
+    ]
+
+
+async def _runtime_diagnostics(settings: Settings, args: argparse.Namespace) -> int:
+    database = Database(settings.database_url)
+    try:
+        snapshot = await _runtime_snapshot(settings, database)
+        command = str(args.runtime_command)
+        if command == "snapshot":
+            payload: dict[str, object] = asdict(snapshot)
+        elif command == "memory-session":
+            payload = {
+                "memory": asdict(snapshot.memory),
+                "conversation": asdict(snapshot.conversation),
+            }
+        else:
+            payload = {
+                "query": str(args.query),
+                "hits": _capability_search_hits(str(args.query), limit=int(args.limit)),
+            }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    finally:
+        await database.close()
+
+
 async def _runtime_snapshot(settings: Settings, database: Database) -> RuntimeConfigSnapshot:
     from qq_ai_bot.admin.config_service import RuntimeConfigService
 
@@ -973,6 +1037,8 @@ def main() -> None:
                 for profile_id, profile in catalog.profiles.items()
             }
         print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "runtime":
+        raise SystemExit(asyncio.run(_runtime_diagnostics(settings, args)))
     elif args.command == "memory":
         raise SystemExit(asyncio.run(_memory_command(settings, args)))
 

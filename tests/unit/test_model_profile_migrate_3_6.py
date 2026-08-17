@@ -7,7 +7,10 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import text
 
-from qq_ai_bot.deployment_setup.migrate_3_6 import migrate_deployment_model_profiles
+from qq_ai_bot.deployment_setup.migrate_3_6 import (
+    migrate_deployment_3_6,
+    migrate_deployment_model_profiles,
+)
 from qq_ai_bot.deployment_setup.service import SetupPaths
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.profiles import (
@@ -167,3 +170,62 @@ async def test_repository_projects_retired_planner_task(database: Database) -> N
     assert by_task["planner"].invocations == 1
     assert errors[0].task == "planner"
     assert errors[0].error_category == "RetiredTask"
+
+
+def test_migrate_3_6_rewrites_env_with_conflict_policy(tmp_path) -> None:
+    root = tmp_path / "deploy"
+    (root / "config").mkdir(parents=True)
+    (root / ".env").write_text(
+        "\n".join(
+            (
+                "PLANNER_GROUP_ENABLED=false",
+                "CONVERSATION_AUTONOMOUS_ENABLED=true",
+                "PLANNER_MAX_PENDING_MESSAGES=12",
+                "PLANNER_TEMPERATURE=0.1",
+                "MCP_TOOL_SELECTION_MODE=hybrid",
+                "TOOL_SELECTION_MODE=all",
+                "REPLY_PLAN_HARD_MAX_MESSAGES=4",
+                "SPEECH_PLANNER_ENABLED=false",
+                "LLM_MODEL=pro-model",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    (root / "config/model_profiles.toml").write_text(_v2_document(), encoding="utf-8")
+
+    result = migrate_deployment_3_6(
+        SetupPaths(root),
+        baseline_output=tmp_path / "baseline-v1.json",
+        repo_root=tmp_path / "not-a-git-repo",
+    )
+
+    env = (root / ".env").read_text(encoding="utf-8")
+    assert "PLANNER_GROUP_ENABLED" not in env
+    assert "CONVERSATION_AUTONOMOUS_ENABLED=true" in env
+    assert "CONVERSATION_AUTONOMOUS_BATCH_LIMIT=12" in env
+    assert "PLANNER_TEMPERATURE" not in env
+    assert "MCP_TOOL_SELECTION_MODE" not in env
+    assert "TOOL_SELECTION_MODE" not in env
+    assert "REPLY_HARD_MAX_MESSAGES=4" in env
+    assert "SPEECH_AGENT_EFFECTS_ENABLED=false" in env
+    assert result.env.changed is True
+    assert result.baseline.skipped == "database_missing"
+
+
+def test_migrate_3_6_skips_baseline_when_planner_runs_absent(tmp_path) -> None:
+    import sqlite3
+
+    root = tmp_path / "deploy"
+    (root / "data").mkdir(parents=True)
+    with sqlite3.connect(root / "data/qq_ai_bot.db") as connection:
+        connection.execute("CREATE TABLE memory_facts (id INTEGER)")
+        connection.commit()
+
+    result = migrate_deployment_3_6(
+        SetupPaths(root),
+        baseline_output=tmp_path / "baseline-v1.json",
+        repo_root=tmp_path / "not-a-git-repo",
+    )
+    assert result.baseline.skipped == "planner_runs_absent"
+    assert not (tmp_path / "baseline-v1.json").exists()

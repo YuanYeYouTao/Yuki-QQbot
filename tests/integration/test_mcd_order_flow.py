@@ -346,7 +346,6 @@ async def test_bundled_mcd_order_flow_commits_once_and_preserves_payment_url(
         mcp_enabled=True,
         mcp_config_path=config_path,
         mcp_gateway_enabled=True,
-        mcp_tool_selection_mode="catalog",
         tooling_selected_tool_limit=32,
         agent_max_tool_calls=10,
         agent_max_model_requests=10,
@@ -359,7 +358,7 @@ async def test_bundled_mcd_order_flow_commits_once_and_preserves_payment_url(
         retention_seconds=60,
     )
     harness.processor._chat.register_tool_provider(
-        MCPToolProvider(manager, gateway_enabled=True, selection_mode="catalog")
+        MCPToolProvider(manager, gateway_enabled=True)
     )
     sender = MemorySender()
     try:

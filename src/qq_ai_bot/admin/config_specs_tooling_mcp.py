@@ -93,18 +93,6 @@ def tooling_mcp_config_specs() -> tuple[ConfigSpec, ...]:
             settings_fields=("mcp_gateway_enabled",),
             category="mcp",
         ),
-        _spec(
-            "mcp.tool_selection_mode",
-            "MCP 工具选择模式",
-            "all、catalog、hybrid 或 gateway。",
-            value_type="enum",
-            choices=("all", "catalog", "hybrid", "gateway"),
-            scopes=_G,
-            env_alias="MCP_TOOL_SELECTION_MODE",
-            getter=_field("mcp_tool_selection_mode"),
-            settings_fields=("mcp_tool_selection_mode",),
-            category="mcp",
-        ),
         *(
             _spec(
                 f"mcp.{name}",

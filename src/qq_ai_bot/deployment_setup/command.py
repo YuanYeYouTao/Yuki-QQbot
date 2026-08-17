@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qq_ai_bot import __version__
 from qq_ai_bot.config import Settings
-from qq_ai_bot.deployment_setup.migrate_3_6 import migrate_deployment_model_profiles
+from qq_ai_bot.deployment_setup.migrate_3_6 import migrate_deployment_3_6
 from qq_ai_bot.deployment_setup.service import (
     EnvironmentDocument,
     SetupConfiguration,
@@ -96,6 +96,18 @@ def add_setup_parser(
     setup.add_argument("--no-color", action="store_true")
     setup.add_argument("--health-url", default="http://127.0.0.1:8080/healthz")
     setup.add_argument("--timeout", type=float, default=180.0)
+    setup.add_argument(
+        "--baseline-output",
+        type=Path,
+        default=None,
+        help="Git-external path for the 3.6.0 runtime baseline JSON",
+    )
+    setup.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="Working tree used to reject in-repo baseline output",
+    )
 
 
 def run_setup_command(args: argparse.Namespace) -> int:
@@ -113,19 +125,40 @@ def run_setup_command(args: argparse.Namespace) -> int:
             ui.success("配置通过本地严格验证；未发起任何计费 API 请求")
             return 0
         if action == "migrate-3-6":
-            result = migrate_deployment_model_profiles(paths)
-            if result.backup is not None:
-                ui.info(f"配置已备份到 {result.backup.relative_to(paths.root)}")
-            if result.materialized_attribution_from is not None:
+            result = migrate_deployment_3_6(
+                paths,
+                baseline_output=Path(args.baseline_output) if args.baseline_output else None,
+                repo_root=Path(args.repo_root) if args.repo_root else None,
+            )
+            profiles = result.profiles
+            if profiles.backup is not None:
+                ui.info(f"配置已备份到 {profiles.backup.relative_to(paths.root)}")
+            if profiles.materialized_attribution_from is not None:
                 ui.info(
-                    f"已将 memory_attribution 显式写为 {result.materialized_attribution_from} 档案"
+                    "已将 memory_attribution 显式写为 "
+                    f"{profiles.materialized_attribution_from} 档案"
                 )
-            if result.removed_routes:
-                ui.info("已删除路由：" + ", ".join(result.removed_routes))
-            if result.changed:
+            if profiles.removed_routes:
+                ui.info("已删除路由：" + ", ".join(profiles.removed_routes))
+            if profiles.changed:
                 ui.success("model_profiles.toml 已迁移到 schema v3")
             else:
                 ui.disabled("model_profiles.toml 已是 schema v3，无需改写")
+            if result.env.renamed:
+                ui.info(
+                    "已重命名环境变量："
+                    + ", ".join(f"{old}->{new}" for old, new in result.env.renamed)
+                )
+            if result.env.deleted:
+                ui.info("已删除环境变量：" + ", ".join(result.env.deleted))
+            if result.env.changed:
+                ui.success(".env 已按 Conversation Runtime 映射改写")
+            else:
+                ui.disabled(".env 无需改写")
+            if result.baseline.output is not None:
+                ui.success(f"runtime baseline 已写入 {result.baseline.output}")
+            elif result.baseline.skipped:
+                ui.disabled(f"跳过 runtime baseline：{result.baseline.skipped}")
             return 0
         if action == "apply-pending":
             with _working_directory(paths.root):

@@ -169,6 +169,45 @@ class EnvironmentDocument:
         output.extend(f"{key}={_encode_env_value(normalized[key])}" for key in missing)
         return "\n".join(output).rstrip() + "\n"
 
+    def rewrite_keys(
+        self,
+        *,
+        renames: Mapping[str, str],
+        deletes: Iterable[str],
+    ) -> tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]]:
+        """Rename mapped keys and drop exclusive keys. Conflict keeps the new key."""
+
+        values = self.values()
+        drop = {key.upper() for key in deletes}
+        rename_map = {old.upper(): new.upper() for old, new in renames.items()}
+        apply_rename: dict[str, str] = {}
+        for old, new in rename_map.items():
+            if old not in values:
+                continue
+            if new in values:
+                drop.add(old)
+            else:
+                apply_rename[old] = new
+        applied: list[tuple[str, str]] = []
+        deleted: list[str] = []
+        output: list[str] = []
+        for line in self._lines:
+            match = _ENV_LINE.match(line)
+            if match is None:
+                output.append(line)
+                continue
+            key = match.group("key").upper()
+            if key in drop:
+                deleted.append(key)
+                continue
+            if key in apply_rename:
+                new_key = apply_rename[key]
+                applied.append((key, new_key))
+                output.append(f"{match.group('prefix')}{new_key}={line[match.end() :]}")
+                continue
+            output.append(line)
+        return "\n".join(output).rstrip() + "\n", tuple(applied), tuple(deleted)
+
 
 def build_model_profiles(*, main_protocol: str, flash_enabled: bool) -> str:
     if main_protocol not in {"chat_completions", "responses"}:

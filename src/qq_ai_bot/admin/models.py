@@ -212,19 +212,6 @@ class ConversationRuntimeConfig:
     autonomous_presence_window_seconds: int
     interrupt_autonomous_on_new_message: bool
 
-    @classmethod
-    def from_planner(cls, planner: PlannerRuntimeConfig) -> ConversationRuntimeConfig:
-        """Derive R4 conversation policy from still-live Planner snapshot keys."""
-
-        return cls(
-            autonomous_enabled=planner.group_enabled,
-            autonomous_debounce_seconds=planner.group_debounce_seconds,
-            autonomous_admission_threshold=planner.reply_necessity_threshold,
-            autonomous_batch_limit=planner.max_pending_messages,
-            autonomous_presence_window_seconds=planner.recent_presence_window_seconds,
-            interrupt_autonomous_on_new_message=planner.interrupt_autonomous_on_new_message,
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class ReplyRuntimeConfig:
@@ -232,33 +219,7 @@ class ReplyRuntimeConfig:
     delay_max_seconds: float
     max_qq_message_chars: int
     cancel_on_new_message: bool
-    plan_hard_max_messages: int
-
-    @property
-    def hard_max_messages(self) -> int:
-        """Canonical R4 name; values still come from the dual-read snapshot."""
-
-        return self.plan_hard_max_messages
-
-
-@dataclass(frozen=True, slots=True)
-class PlannerRuntimeConfig:
-    """One effective Planner policy snapshot for a real turn."""
-
-    direct_enabled: bool
-    group_enabled: bool
-    temperature: float
-    max_output_tokens: int
-    timeout_seconds: float
-    confidence_threshold: float
-    reply_necessity_threshold: int
-    max_pending_messages: int
-    recent_presence_window_seconds: int
-    max_wait_seconds: int
-    interrupt_autonomous_on_new_message: bool
-    record_runs: bool
-    group_debounce_seconds: float = 8.0
-    preferred_messages: int = 3
+    hard_max_messages: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,7 +264,6 @@ class ToolingRuntimeConfig:
 class MCPRuntimeConfig:
     enabled: bool
     gateway_enabled: bool
-    tool_selection_mode: str
     metadata_cache_ttl_seconds: int
     connect_timeout_seconds: float
     request_timeout_seconds: float
@@ -392,7 +352,7 @@ class SpeechRuntimeConfig:
     root: str
     genie_data_dir: str
     default_profile: str
-    planner_enabled: bool
+    agent_effects_enabled: bool
     default_mode: str
     split_sentence: bool
     max_synthesis_characters: int | None
@@ -405,18 +365,11 @@ class SpeechRuntimeConfig:
     text_fallback_enabled: bool
     spontaneous_frequency: float = 0.15
 
-    @property
-    def agent_effects_enabled(self) -> bool:
-        """Canonical R4 name for the former speech.planner_enabled gate."""
-
-        return self.planner_enabled
-
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfigSnapshot:
     """One internally consistent runtime view for an incoming message."""
 
-    planner: PlannerRuntimeConfig
     plugins: PluginRuntimeConfig
     context: ContextRuntimeConfig
     memory: MemoryRetrievalRuntimeConfig
@@ -428,13 +381,11 @@ class RuntimeConfigSnapshot:
     vision: VisionRuntimeConfig
     emoji: EmojiRuntimeConfig
     speech: SpeechRuntimeConfig
+    conversation: ConversationRuntimeConfig
     tooling: ToolingRuntimeConfig | None = None
     mcp: MCPRuntimeConfig | None = None
-    conversation: ConversationRuntimeConfig | None = None
 
     def conversation_policy(self) -> ConversationRuntimeConfig:
-        """Return R4 conversation policy, falling back to Planner-era keys."""
+        """Return the autonomous-conversation policy for this snapshot."""
 
-        if self.conversation is not None:
-            return self.conversation
-        return ConversationRuntimeConfig.from_planner(self.planner)
+        return self.conversation

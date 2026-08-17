@@ -259,7 +259,7 @@ async def test_autonomous_group_batch_never_analyzes_observed_images(database) -
     vision = FakeVisionProvider()
     settings = _vision_settings(
         "sqlite+aiosqlite:///:memory:",
-        planner_group_debounce_seconds=0.01,
+        conversation_autonomous_debounce_seconds=0.01,
         daily_chat_message_delay_min_seconds=0,
         daily_chat_message_delay_max_seconds=0,
     )

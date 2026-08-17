@@ -135,7 +135,7 @@ async def test_excess_blank_sections_merge_without_recreating_empty_line(
         database=database,
     )
     await runtime_service.set_override(
-        "reply.plan_hard_max_messages",
+        "reply.hard_max_messages",
         2,
         scope_type="global",
         scope_id="",

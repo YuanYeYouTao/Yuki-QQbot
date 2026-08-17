@@ -17,7 +17,6 @@ from qq_ai_bot.admin.models import (
     EmojiRuntimeConfig,
     LLMRuntimeConfig,
     MemoryRetrievalRuntimeConfig,
-    PlannerRuntimeConfig,
     PluginRuntimeConfig,
     RelationshipRuntimeConfig,
     ReplyRuntimeConfig,
@@ -67,22 +66,16 @@ from qq_ai_bot.time.models import TimeContext
 
 
 def _runtime() -> RuntimeConfigSnapshot:
-    """Build a dual-read snapshot; Planner keys remain until the config purge."""
+    """Build a Conversation Runtime snapshot without Planner dual-read keys."""
 
     return RuntimeConfigSnapshot(
-        planner=PlannerRuntimeConfig(
-            direct_enabled=True,
-            group_enabled=True,
-            temperature=0.1,
-            max_output_tokens=512,
-            timeout_seconds=20,
-            confidence_threshold=0.65,
-            reply_necessity_threshold=80,
-            max_pending_messages=20,
-            recent_presence_window_seconds=300,
-            max_wait_seconds=60,
+        conversation=ConversationRuntimeConfig(
+            autonomous_enabled=True,
+            autonomous_debounce_seconds=3.0,
+            autonomous_admission_threshold=80,
+            autonomous_batch_limit=20,
+            autonomous_presence_window_seconds=300,
             interrupt_autonomous_on_new_message=True,
-            record_runs=True,
         ),
         plugins=PluginRuntimeConfig(
             hook_timeout_seconds=3,
@@ -106,7 +99,7 @@ def _runtime() -> RuntimeConfigSnapshot:
             delay_max_seconds=5,
             max_qq_message_chars=1500,
             cancel_on_new_message=True,
-            plan_hard_max_messages=10,
+            hard_max_messages=10,
         ),
         llm=LLMRuntimeConfig(
             model="main-model",
@@ -184,7 +177,7 @@ def _runtime() -> RuntimeConfigSnapshot:
             root="/data/speech",
             genie_data_dir="/data/speech/genie_data",
             default_profile="",
-            planner_enabled=True,
+            agent_effects_enabled=True,
             default_mode="optional",
             split_sentence=True,
             max_synthesis_characters=None,
@@ -286,15 +279,15 @@ def test_cadence_conversation_hash_matches_stable_identifier() -> None:
     assert conversation_key_hash(key) == stable_identifier_hash(key, kind="conversation")
 
 
-def test_conversation_policy_falls_back_to_planner_keys() -> None:
+def test_conversation_policy_reads_conversation_keys() -> None:
     snapshot = _runtime()
     policy = snapshot.conversation_policy()
-    assert snapshot.conversation is None
+    assert policy is snapshot.conversation
     assert isinstance(policy, ConversationRuntimeConfig)
-    assert policy.autonomous_enabled is snapshot.planner.group_enabled
-    assert policy.autonomous_admission_threshold == snapshot.planner.reply_necessity_threshold
-    assert snapshot.reply.hard_max_messages == snapshot.reply.plan_hard_max_messages
-    assert snapshot.speech.agent_effects_enabled is snapshot.speech.planner_enabled
+    assert policy.autonomous_enabled is True
+    assert policy.autonomous_admission_threshold == 80
+    assert snapshot.reply.hard_max_messages == 10
+    assert snapshot.speech.agent_effects_enabled is True
 
 
 def _tool_service() -> AgentToolService:

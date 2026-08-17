@@ -158,7 +158,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     assert "可修改运行时配置参数：0 项" in user_text
     assert "本人确定性自助接口：37 项，其中修改型 17 项" in user_text
     assert "memory.add" in user_text
-    assert "planner.max_pending_messages" not in user_text
+    assert "conversation.autonomous_batch_limit" not in user_text
 
     admin_sender = MemorySender()
     await harness.processor.handle(
@@ -171,9 +171,9 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：235 项" in admin_text
+    assert "可修改运行时配置参数：218 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
-    assert "planner.max_pending_messages" in admin_text
+    assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
     assert "受保护配置（12 项，不可修改）" in admin_text
     assert "NapCat/OneBot 通用全接口网关：1 项" in admin_text

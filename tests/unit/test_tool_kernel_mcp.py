@@ -610,7 +610,7 @@ async def test_lazy_mcp_discovery_same_name_is_collision_free_and_calls_fake_tra
     )
     await manager.start()
     assert not any(connection.connected for connection in connections.values())
-    provider = MCPToolProvider(manager, gateway_enabled=True, selection_mode="all")
+    provider = MCPToolProvider(manager, gateway_enabled=True)
     bootstrap = provider.descriptors(SimpleNamespace(runtime_config=None))
     synthetic = {item.model_name: item for item in bootstrap}
     assert synthetic["mcp__music__discover"].provider_metadata == {"synthetic": True}
@@ -857,7 +857,7 @@ async def test_mcp_disabled_keeps_catalog_empty_without_connecting(
         connection_factory=lambda *_args, **_kwargs: connection,
     )
     await manager.start()
-    provider = MCPToolProvider(manager, gateway_enabled=True, selection_mode="hybrid")
+    provider = MCPToolProvider(manager, gateway_enabled=True)
     assert provider.descriptors(SimpleNamespace(runtime_config=None)) == ()
     assert not connection.connected
 

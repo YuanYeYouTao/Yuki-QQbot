@@ -45,10 +45,13 @@ def test_migrated_and_deleted_keys_do_not_overlap() -> None:
     assert tuple(PLANNER_CONFIG_MIGRATION_MAP.values()) == NEW_RUNTIME_CONFIG_KEYS
 
 
-def test_current_registry_still_owns_every_old_key() -> None:
+def test_current_registry_owns_new_keys_and_drops_old_planner_keys() -> None:
     registry = ConfigRegistry()
     for key in (*PLANNER_CONFIG_MIGRATION_MAP, *PLANNER_CONFIG_DELETED_KEYS):
+        assert registry.maybe_get(key) is None, key
+    for key in NEW_RUNTIME_CONFIG_KEYS:
         assert registry.maybe_get(key) is not None, key
+    assert registry.maybe_get("mcp.tool_selection_mode") is None
 
 
 def test_classify_planner_config_key() -> None:

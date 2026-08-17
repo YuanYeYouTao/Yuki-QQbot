@@ -22,7 +22,6 @@ from qq_ai_bot.settings_domains import (
     MemorySettings,
     ModelRuntimeSettings,
     OneBotSettings,
-    PlannerSettings,
     PluginSettings,
     RelationshipSettings,
     SpeechSettings,
@@ -307,7 +306,6 @@ class Settings(BaseSettings):
     mcp_config_path: Path = Path(".mcp.json")
     mcp_cache_enabled: bool = True
     mcp_gateway_enabled: bool = True
-    mcp_tool_selection_mode: str = "hybrid"
     mcp_metadata_cache_ttl_seconds: int = 3600
     mcp_connect_timeout_seconds: float = 15.0
     mcp_request_timeout_seconds: float = 60.0
@@ -318,24 +316,14 @@ class Settings(BaseSettings):
     mcp_max_parallel_calls: int = 8
     mcp_artifact_retention_seconds: int = 86400
 
-    # Planner-first conversation orchestration. Planner is a required runtime
-    # boundary; direct and group switches only control which turns invoke it.
-    planner_direct_enabled: bool = True
-    planner_group_enabled: bool = True
-    planner_group_debounce_seconds: float = 3.0
-    planner_preferred_messages: int = 3
-    planner_temperature: float = 0.1
-    planner_max_output_tokens: int = 512
-    planner_timeout_seconds: float = 20.0
-    planner_confidence_threshold: float = 0.2
-    planner_reply_necessity_threshold: int = 0
-    planner_max_pending_messages: int = 8
-    planner_recent_presence_window_seconds: int = 300
-    planner_max_wait_seconds: int = 60
-    planner_interrupt_autonomous_on_new_message: bool = True
-    planner_record_runs: bool = True
+    conversation_autonomous_enabled: bool = True
+    conversation_autonomous_debounce_seconds: float = 3.0
+    conversation_autonomous_admission_threshold: int = 0
+    conversation_autonomous_batch_limit: int = 8
+    conversation_autonomous_presence_window_seconds: int = 300
+    conversation_interrupt_autonomous_on_new_message: bool = True
     reply_sequence_cancel_on_new_message: bool = True
-    reply_plan_hard_max_messages: int = 10
+    reply_hard_max_messages: int = 10
 
     # Local in-process plugins.  Approval is API governance, not a Python sandbox.
     plugin_system_enabled: bool = False
@@ -458,7 +446,7 @@ class Settings(BaseSettings):
     speech_default_profile: str = ""
     speech_worker_start_timeout_seconds: float = 30.0
     speech_worker_request_timeout_seconds: float = 120.0
-    speech_planner_enabled: bool = True
+    speech_agent_effects_enabled: bool = True
     speech_default_mode: str = "optional"
     speech_split_sentence: bool = True
     speech_max_synthesis_characters: int | None = None
@@ -682,7 +670,6 @@ class Settings(BaseSettings):
             self.onebot,
             self.model_runtime,
             self.conversation,
-            self.planner,
             self.plugins,
             self.memory,
             self.relationship,
@@ -740,10 +727,6 @@ class Settings(BaseSettings):
     @cached_property
     def conversation(self) -> ConversationSettings:
         return ConversationSettings.model_validate(self)
-
-    @cached_property
-    def planner(self) -> PlannerSettings:
-        return PlannerSettings.model_validate(self)
 
     @cached_property
     def plugins(self) -> PluginSettings:
@@ -860,12 +843,6 @@ class Settings(BaseSettings):
             and self.vision_api_key.strip()
             and self.vision_model.strip()
         )
-
-    @property
-    def planner_configured(self) -> bool:
-        """Whether the mandatory Planner has a configured model provider."""
-
-        return self.llm_configured
 
     @property
     def memory_embedding_configured(self) -> bool:
