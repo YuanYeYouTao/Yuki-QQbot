@@ -55,6 +55,10 @@ class MemoryTurnSession(Protocol):
         """Record a memory tool read/write result into the session ledger."""
         ...
 
+    def finalize_text(self) -> str | None:
+        """Deterministic mutation/receipt text, or None to keep the model reply."""
+        ...
+
     async def on_delivery_confirmed(self, summary: DeliverySummary) -> None:
         """Freeze the immutable attribution job after confirmed delivery."""
         ...

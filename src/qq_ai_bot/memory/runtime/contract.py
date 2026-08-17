@@ -13,10 +13,26 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from qq_ai_bot.memory.enums import MemoryRecallPurpose
+from qq_ai_bot.memory.runtime.errors import MemoryContractError
 
-
-class MemoryContractError(ValueError):
-    """A memory contract violated a composition or authority rule."""
+__all__ = [
+    "MemoryAvailability",
+    "MemoryContextPolicy",
+    "MemoryContractError",
+    "MemoryFinalizationPolicy",
+    "MemoryReadPolicy",
+    "MemoryTurnContract",
+    "MemoryWritePolicy",
+    "MemoryWriteTransition",
+    "active_read_contract",
+    "dormant_contract",
+    "exclusive_write_contract",
+    "forbidden_contract",
+    "passive_contract",
+    "to_exclusive_write",
+    "to_locator_read",
+    "to_mutation_retry",
+]
 
 
 class MemoryContextPolicy(StrEnum):
@@ -141,6 +157,101 @@ class MemoryTurnContract(BaseModel):
             )
 
 
+def _write_transition(*, persistent_write_allowed: bool) -> MemoryWriteTransition:
+    if persistent_write_allowed:
+        return MemoryWriteTransition.REQUESTABLE
+    return MemoryWriteTransition.DENIED
+
+
+def dormant_contract(
+    default_purpose: MemoryRecallPurpose = MemoryRecallPurpose.BACKGROUND,
+    *,
+    persistent_write_allowed: bool = True,
+) -> MemoryTurnContract:
+    """No automatic inject; reads stay requestable.  Not a checkable profile name."""
+
+    contract = MemoryTurnContract(
+        context_policy=MemoryContextPolicy.NONE,
+        read_policy=MemoryReadPolicy.DEFERRED,
+        write_policy=MemoryWritePolicy.DISABLED,
+        write_transition=_write_transition(persistent_write_allowed=persistent_write_allowed),
+        finalization_policy=MemoryFinalizationPolicy.NORMAL,
+        availability=MemoryAvailability.ENABLED,
+        default_purpose=default_purpose,
+    )
+    contract.require_write_authority(persistent_write_allowed=persistent_write_allowed)
+    return contract
+
+
+def passive_contract(
+    default_purpose: MemoryRecallPurpose = MemoryRecallPurpose.BACKGROUND,
+    *,
+    persistent_write_allowed: bool = True,
+) -> MemoryTurnContract:
+    """Automatic background/continuation inject; first-round reads stay deferred."""
+
+    if default_purpose is MemoryRecallPurpose.CONTINUATION:
+        context = MemoryContextPolicy.CONTINUATION
+    elif default_purpose is MemoryRecallPurpose.BACKGROUND:
+        context = MemoryContextPolicy.BACKGROUND
+    else:
+        raise MemoryContractError(
+            "passive automatic context only accepts background or continuation purpose"
+        )
+    contract = MemoryTurnContract(
+        context_policy=context,
+        read_policy=MemoryReadPolicy.DEFERRED,
+        write_policy=MemoryWritePolicy.DISABLED,
+        write_transition=_write_transition(persistent_write_allowed=persistent_write_allowed),
+        finalization_policy=MemoryFinalizationPolicy.NORMAL,
+        availability=MemoryAvailability.ENABLED,
+        default_purpose=default_purpose,
+    )
+    contract.require_write_authority(persistent_write_allowed=persistent_write_allowed)
+    return contract
+
+
+def active_read_contract(
+    default_purpose: MemoryRecallPurpose = MemoryRecallPurpose.RECALL,
+    *,
+    persistent_write_allowed: bool = True,
+) -> MemoryTurnContract:
+    """No automatic inject; read tools are eager on the first model request."""
+
+    contract = MemoryTurnContract(
+        context_policy=MemoryContextPolicy.NONE,
+        read_policy=MemoryReadPolicy.EAGER,
+        write_policy=MemoryWritePolicy.DISABLED,
+        write_transition=_write_transition(persistent_write_allowed=persistent_write_allowed),
+        finalization_policy=MemoryFinalizationPolicy.NORMAL,
+        availability=MemoryAvailability.ENABLED,
+        default_purpose=default_purpose,
+    )
+    contract.require_write_authority(persistent_write_allowed=persistent_write_allowed)
+    return contract
+
+
+def exclusive_write_contract(
+    default_purpose: MemoryRecallPurpose = MemoryRecallPurpose.CORRECT,
+    *,
+    persistent_write_allowed: bool = True,
+    locator_only: bool = False,
+) -> MemoryTurnContract:
+    """Exclusive mutation lane.  Locator reads are an explicit escalation."""
+
+    contract = MemoryTurnContract(
+        context_policy=MemoryContextPolicy.NONE,
+        read_policy=(MemoryReadPolicy.LOCATOR_ONLY if locator_only else MemoryReadPolicy.DENIED),
+        write_policy=MemoryWritePolicy.EXCLUSIVE,
+        write_transition=MemoryWriteTransition.ALREADY_EXCLUSIVE,
+        finalization_policy=MemoryFinalizationPolicy.RECEIPT_GATED,
+        availability=MemoryAvailability.ENABLED,
+        default_purpose=default_purpose,
+    )
+    contract.require_write_authority(persistent_write_allowed=persistent_write_allowed)
+    return contract
+
+
 def forbidden_contract(default_purpose: MemoryRecallPurpose) -> MemoryTurnContract:
     """The only valid FORBIDDEN-availability shape, as a convenience factory."""
 
@@ -152,4 +263,45 @@ def forbidden_contract(default_purpose: MemoryRecallPurpose) -> MemoryTurnContra
         finalization_policy=MemoryFinalizationPolicy.NORMAL,
         availability=MemoryAvailability.FORBIDDEN,
         default_purpose=default_purpose,
+    )
+
+
+def to_exclusive_write(contract: MemoryTurnContract) -> MemoryTurnContract:
+    """Atomically enter the exclusive write lane from a requestable contract."""
+
+    if contract.availability is MemoryAvailability.FORBIDDEN:
+        raise MemoryContractError("FORBIDDEN contracts cannot enter exclusive write")
+    if contract.write_transition is not MemoryWriteTransition.REQUESTABLE:
+        raise MemoryContractError(
+            "exclusive write requires transition=REQUESTABLE on the current contract"
+        )
+    return exclusive_write_contract(
+        contract.default_purpose,
+        persistent_write_allowed=True,
+    )
+
+
+def to_locator_read(contract: MemoryTurnContract) -> MemoryTurnContract:
+    """Open the one-shot locator-read escalation on an exclusive-write contract."""
+
+    if contract.write_policy is not MemoryWritePolicy.EXCLUSIVE:
+        raise MemoryContractError("locator read requires write=EXCLUSIVE")
+    if contract.read_policy is MemoryReadPolicy.LOCATOR_ONLY:
+        return contract
+    return exclusive_write_contract(
+        contract.default_purpose,
+        persistent_write_allowed=True,
+        locator_only=True,
+    )
+
+
+def to_mutation_retry(contract: MemoryTurnContract) -> MemoryTurnContract:
+    """Return to exclusive write after a locator read, hiding read tools again."""
+
+    if contract.write_policy is not MemoryWritePolicy.EXCLUSIVE:
+        raise MemoryContractError("mutation retry requires write=EXCLUSIVE")
+    return exclusive_write_contract(
+        contract.default_purpose,
+        persistent_write_allowed=True,
+        locator_only=False,
     )

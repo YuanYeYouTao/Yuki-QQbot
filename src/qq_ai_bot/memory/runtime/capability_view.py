@@ -53,6 +53,14 @@ def build_capability_view(
             transition_revision=transition_revision,
         )
     if contract.write_policy is MemoryWritePolicy.EXCLUSIVE:
+        if contract.read_policy is MemoryReadPolicy.LOCATOR_ONLY:
+            return MemoryCapabilityView(
+                eager_namespaces=(*MEMORY_READ_NAMESPACES, MEMORY_WRITE_NAMESPACE),
+                requestable_namespaces=(),
+                hidden_namespaces=(),
+                exclusive_namespace=MEMORY_WRITE_NAMESPACE,
+                transition_revision=transition_revision,
+            )
         return MemoryCapabilityView(
             eager_namespaces=(MEMORY_WRITE_NAMESPACE,),
             requestable_namespaces=(),

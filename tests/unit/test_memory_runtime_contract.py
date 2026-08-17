@@ -19,7 +19,14 @@ from qq_ai_bot.memory.runtime.contract import (
     MemoryTurnContract,
     MemoryWritePolicy,
     MemoryWriteTransition,
+    active_read_contract,
+    dormant_contract,
+    exclusive_write_contract,
     forbidden_contract,
+    passive_contract,
+    to_exclusive_write,
+    to_locator_read,
+    to_mutation_retry,
 )
 from qq_ai_bot.memory.runtime.resolver import resolve_scope_from_scene
 from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
@@ -162,6 +169,16 @@ class TestCapabilityView:
         assert set(view.eager_namespaces) == set(MEMORY_READ_NAMESPACES)
         assert view.requestable_namespaces == (MEMORY_WRITE_NAMESPACE,)
 
+    def test_locator_only_exposes_read_namespaces_on_exclusive_lane(self) -> None:
+        view = build_capability_view(
+            exclusive_write_contract(locator_only=True),
+            transition_revision=5,
+        )
+        assert MEMORY_WRITE_NAMESPACE in view.eager_namespaces
+        assert set(MEMORY_READ_NAMESPACES) <= set(view.eager_namespaces)
+        assert view.exclusive_namespace == MEMORY_WRITE_NAMESPACE
+        assert view.hidden_namespaces == ()
+
     def test_exclusive_write_exposes_only_write_namespace(self) -> None:
         view = build_capability_view(
             _contract(
@@ -175,6 +192,45 @@ class TestCapabilityView:
         assert view.eager_namespaces == (MEMORY_WRITE_NAMESPACE,)
         assert view.exclusive_namespace == MEMORY_WRITE_NAMESPACE
         assert set(view.hidden_namespaces) == set(MEMORY_READ_NAMESPACES)
+
+
+class TestProfileFactories:
+    def test_factories_are_valid_shapes_not_checkable_names(self) -> None:
+        dormant = dormant_contract()
+        passive = passive_contract()
+        continuation = passive_contract(MemoryRecallPurpose.CONTINUATION)
+        active = active_read_contract()
+        exclusive = exclusive_write_contract()
+        assert dormant.context_policy is MemoryContextPolicy.NONE
+        assert dormant.read_policy is MemoryReadPolicy.DEFERRED
+        assert passive.context_policy is MemoryContextPolicy.BACKGROUND
+        assert continuation.context_policy is MemoryContextPolicy.CONTINUATION
+        assert active.read_policy is MemoryReadPolicy.EAGER
+        assert exclusive.write_policy is MemoryWritePolicy.EXCLUSIVE
+        assert exclusive.finalization_policy is MemoryFinalizationPolicy.RECEIPT_GATED
+
+    def test_image_or_external_write_denial_uses_transition_not_profile(self) -> None:
+        contract = passive_contract(persistent_write_allowed=False)
+        assert contract.write_transition is MemoryWriteTransition.DENIED
+        assert contract.context_policy is MemoryContextPolicy.BACKGROUND
+
+    def test_passive_rejects_non_automatic_purpose(self) -> None:
+        with pytest.raises(ValueError, match="background or continuation"):
+            passive_contract(MemoryRecallPurpose.RECALL)
+
+    def test_requestable_to_exclusive_and_locator_round_trip(self) -> None:
+        start = passive_contract()
+        exclusive = to_exclusive_write(start)
+        assert exclusive.write_policy is MemoryWritePolicy.EXCLUSIVE
+        locator = to_locator_read(exclusive)
+        assert locator.read_policy is MemoryReadPolicy.LOCATOR_ONLY
+        retry = to_mutation_retry(locator)
+        assert retry.read_policy is MemoryReadPolicy.DENIED
+        assert retry.write_policy is MemoryWritePolicy.EXCLUSIVE
+
+    def test_forbidden_cannot_enter_exclusive_write(self) -> None:
+        with pytest.raises(ValueError, match="FORBIDDEN"):
+            to_exclusive_write(forbidden_contract(MemoryRecallPurpose.BACKGROUND))
 
 
 class TestScopeResolution:
