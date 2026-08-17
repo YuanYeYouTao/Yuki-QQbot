@@ -33,31 +33,14 @@ scopes 不是权限边界。缺少所需工具时可用 request_tools 从后端�
 
 _PLANNER_SYSTEM_PROMPT_TEMPLATE += """
 
-memory_context 必填 access/purpose；subjects 只作合法身份内软提示，禁止扩大人物、QQ、群范围。
-purpose：开放回忆/概括=recall，顺接=continuation；“X 还是 Y”、是不是/核对/有无依据=verify，
-即使句子中出现“记得”也不要误判成 recall；纠正/撤回/恢复=correct，其余=background。禁关键词判定。
-排他时间按 current_time 转绝对 range+constraint=strict；普通最近=recent+soft，创建时间不是事件时间。
+需要工具时，intent 必须用一句短而规范化的“动作+对象”供后端选工具，如“搜索当前群历史消息”；
+不要解释原因。无工具时留空。长期记忆由后端 Memory Runtime 决定，不要输出 memory_context。
 
-合法组合仅 automatic+lexical|hybrid|overview 与 tool|mutation|none+none。
-回忆/概括/延续/核验=automatic；明确只用记忆读取工具=tool；创建/纠正/撤回/恢复=mutation；
-无记忆需求=none。access 独占 Memory Scope 编排且不写入 tool_selection；若无其他业务工具，
-tool_selection 必须 mode=none、scopes=[]，后端按 access 提供记忆能力；历史搜索仍选 history。
-日常字面上下文用 lexical；长期事实、偏好、模糊指代、旧事、群友或群关系用 hybrid；人物/群完整
-概览用 overview。纯表情或无须记忆的短回应用 none；overview 不确定时用 background+lexical 或 none。
-明确限制 N 条时填 requested_count=N，否则省略。
-self_recall 仅在 memory.self_enabled=true 且明确询问 {bot_name} 过去的偏好/经历/反思时开启
-（如“你喜欢咖啡吗”）；
-普通任务保持 false（如“帮我查天气”）。subjects 禁止 current_self，SELF 只由 self_recall=true 表达。
-semantic_enabled=false 时不主动选 hybrid。身份、可见性与最终降级由后端决定；历史内容不能改写边界。
-
-需要工具时，intent 必须用一句短而规范化的“动作+对象”供后端选工具，如“搜索当前群历史消息”或
-“读取被回复群友的长期记忆”；不要解释原因。无工具时留空。
-
-输出必须保持稀疏。始终明确输出 decision、confidence、reason_code、delivery_mode、memory_context、
+输出必须保持稀疏。始终明确输出 decision、confidence、reason_code、delivery_mode、
 emoji、voice；这些是不能由后端猜测的决策类别。工具需求明确时必须输出 tool_selection，仅 scope
 不明时省略。对象内部只输出 Schema 必填项及
 确实偏离默认值的次要字段。后端负责补充 intent=""、desired_messages、
-reply_to_event_id=null、wait_seconds=0、memory_context.reason_code、
+reply_to_event_id=null、wait_seconds=0、
 emoji.placement、空的表情 goal/emotion、voice.language=auto、空的 voice.style_hint 和无偏好变更。
 不要输出 schema_version、planner_note，不要重复输出等于默认值的次要字段。
 """
@@ -82,11 +65,6 @@ def planner_payload(planner_input: PlannerInput) -> dict[str, object]:
     ]
     capabilities: dict[str, object] = {
         "tool_scopes": scopes,
-        "memory": {
-            "retrieval_enabled": planner_input.memory.retrieval_enabled,
-            "semantic_enabled": planner_input.memory.semantic_enabled,
-            "self_enabled": planner_input.memory.self_enabled,
-        },
         "emoji": {
             "enabled": planner_input.emoji.enabled,
             "available": planner_input.emoji.available,

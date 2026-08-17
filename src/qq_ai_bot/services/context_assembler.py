@@ -27,7 +27,7 @@ from qq_ai_bot.memory.context import (
     self_retrieval_fact_context,
 )
 from qq_ai_bot.memory.enums import MemoryContextMode, MemoryTargetRole
-from qq_ai_bot.memory.models import MemoryQueryIntent
+from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryRetrievalResult
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     EventRecord,
@@ -129,6 +129,8 @@ class ContextAssembler:
         memory_intent: MemoryQueryIntent | None = None,
         requested_limit: int | None = None,
         turn_origin: str = "user_message",
+        memory_retrieval: MemoryRetrievalResult | None = None,
+        persist_memory_exposure: bool = True,
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
 
@@ -142,16 +144,19 @@ class ContextAssembler:
             since=reset,
         )
         external_events = self._external_event_context(recent)
-        retrieval = await self._memory_context.retrieve_for_turn(
-            inbound=inbound,
-            content=content,
-            planner_intent=planner_intent,
-            runtime=runtime,
-            memory_mode=memory_mode,
-            self_recall=self_recall,
-            memory_intent=memory_intent,
-            requested_limit=requested_limit,
-        )
+        if memory_retrieval is not None:
+            retrieval = memory_retrieval
+        else:
+            retrieval = await self._memory_context.retrieve_for_turn(
+                inbound=inbound,
+                content=content,
+                planner_intent=planner_intent,
+                runtime=runtime,
+                memory_mode=memory_mode,
+                self_recall=self_recall,
+                memory_intent=memory_intent,
+                requested_limit=requested_limit,
+            )
         hits_by_role = {
             block.target.role: block.hits
             for block in retrieval.blocks
@@ -288,16 +293,18 @@ class ContextAssembler:
         )
         metadata_payload, selected_fact_ids = self._fit_metadata(context, metadata_budget)
         memory_exposures = self._memory_exposures(retrieval, selected_fact_ids)
-        await self._memory_context.mark_injected(retrieval, selected_fact_ids)
-        recall_turn = await self._memory_context.record_recall(
-            conversation_key=identity.key,
-            trigger_message_id=inbound.message_id,
-            origin=turn_origin,
-            intent=memory_intent,
-            result=retrieval,
-            injected_fact_ids=selected_fact_ids,
-            runtime=runtime,
-        )
+        recall_turn = None
+        if persist_memory_exposure:
+            await self._memory_context.mark_injected(retrieval, selected_fact_ids)
+            recall_turn = await self._memory_context.record_recall(
+                conversation_key=identity.key,
+                trigger_message_id=inbound.message_id,
+                origin=turn_origin,
+                intent=memory_intent,
+                result=retrieval,
+                injected_fact_ids=selected_fact_ids,
+                runtime=runtime,
+            )
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -436,7 +443,7 @@ class ContextAssembler:
         external_events = self._external_event_context(recent)
         if external_events:
             context["recent_external_events"] = list(external_events)
-        metadata_payload, selected_fact_ids = self._fit_metadata(
+        metadata_payload, _selected_fact_ids = self._fit_metadata(
             context,
             max(
                 1,
@@ -446,7 +453,6 @@ class ContextAssembler:
                 ),
             ),
         )
-        await self._memory_context.mark_injected(retrieval, selected_fact_ids)
         metadata_characters = len(
             json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         )

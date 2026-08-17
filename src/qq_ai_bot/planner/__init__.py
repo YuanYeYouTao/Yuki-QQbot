@@ -13,8 +13,6 @@ __all__ = [
     "DeliveryMode",
     "FakePlannerProvider",
     "LLMPlannerProvider",
-    "MemoryContextPlan",
-    "MemoryContextReasonCode",
     "PlannedTurn",
     "PlannerDecision",
     "PlannerInput",
@@ -41,8 +39,6 @@ __all__ = [
 
 _EXPORT_MODULES = {
     "DeliveryMode": "models",
-    "MemoryContextPlan": "models",
-    "MemoryContextReasonCode": "models",
     "PlannedTurn": "models",
     "PlannerDecision": "models",
     "PlannerInput": "models",

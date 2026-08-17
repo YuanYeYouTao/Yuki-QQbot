@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -12,8 +12,7 @@ import pytest
 from tests.conftest import make_settings
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
@@ -32,6 +31,8 @@ from qq_ai_bot.memory.attribution import (
 from qq_ai_bot.memory.enums import MemoryAccessMode, MemoryContextMode, MemoryRecallPurpose
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryQueryIntent
+from qq_ai_bot.memory.receipt import MemoryRecallTurn
+from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession, empty_retrieval
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
@@ -40,8 +41,10 @@ from qq_ai_bot.model_runtime.models import (
     StructuredOutputMode,
 )
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.chat import ChatService
+from qq_ai_bot.runtime.authority import TurnAuthority
+from qq_ai_bot.runtime.contracts import DeliverySummary
+from qq_ai_bot.runtime.delivery import DeliveryStatus
+from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 
 
 class AttributionExecutor:
@@ -253,63 +256,106 @@ async def test_worker_rejects_ref_outside_exposure_whitelist(database: Database)
 
 
 @pytest.mark.asyncio
-async def test_chat_enqueue_requires_an_eligible_delivered_turn(database: Database) -> None:
+async def test_session_attribution_requires_an_eligible_delivered_turn(database: Database) -> None:
     runtime_config = RuntimeConfigService(
         settings=make_settings(database.url),
         database=database,
     )
     config = await runtime_config.snapshot(user_id="1001")
     queue = AttributionQueue()
-    service = cast(Any, object.__new__(ChatService))
-    service._memory_attribution = queue
-    runtime = ToolRuntime(
-        inbound=InboundMessage(
-            message_id="message-1",
-            event_type="private_message",
-            scope_type=ScopeType.PRIVATE,
-            sender=SenderIdentity(user_id="1001"),
-            text="question",
-        ),
-        gateway=None,
-        allow_generic_onebot=False,
-        runtime_config=config,
-        memory_turn_id="turn-gated",
-        memory_intent=MemoryQueryIntent(
-            mode=MemoryContextMode.HYBRID,
-            purpose=MemoryRecallPurpose.RECALL,
-        ),
+    inbound = InboundMessage(
+        message_id="message-1",
+        event_type="private_message",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id="1001"),
+        text="question",
+        bot_user_id="bot-9",
     )
     exposure = _exposure(1, source=MemoryExposureSource.AUTOMATIC)
 
-    assert service._enqueue_memory_attribution(
-        runtime=runtime,
-        user_question="question",
-        final_response="memory-backed answer",
-        exposures=(exposure,),
+    class _Context:
+        async def retrieve_for_turn(self, **_kwargs: object) -> object:
+            return empty_retrieval()
+
+        async def mark_injected(self, _result: object, fact_ids: tuple[int, ...]) -> int:
+            return len(fact_ids)
+
+        async def record_recall(self, **kwargs: object) -> MemoryRecallTurn:
+            injected = kwargs.get("injected_fact_ids")
+            assert isinstance(injected, tuple)
+            return MemoryRecallTurn(turn_id="turn-gated", injected_fact_ids=injected)
+
+    def open_session(
+        *, origin: RuntimeTurnOrigin = RuntimeTurnOrigin.USER_MESSAGE
+    ) -> TurnMemorySession:
+        return TurnMemorySession.open(
+            inbound=inbound,
+            identity=ConversationIdentity.private("1001"),
+            runtime=config,
+            memory_context=_Context(),  # type: ignore[arg-type]
+            origin=origin,
+            user_question="question",
+            authority=TurnAuthority(
+                actor_user_id="1001",
+                bot_user_id="bot-9",
+                origin=origin,
+                permission_ceiling=frozenset(),
+                delegated_authority=None,
+                authority_revision=1,
+            ),
+            attribution=queue,
+        )
+
+    async def confirm(session: TurnMemorySession) -> None:
+        await session.prefetch()
+        session.stage_prompt_selection((1,), (exposure,))
+        await session.confirm_prompt_exposure()
+
+    eligible = open_session()
+    await confirm(eligible)
+    await eligible.on_delivery_confirmed(
+        DeliverySummary(
+            final_agent_run_id="message-1",
+            status=DeliveryStatus.COMPLETE,
+            delivered_text="memory-backed answer",
+        )
     )
     assert len(queue.jobs) == 1
-    assert not service._enqueue_memory_attribution(
-        runtime=replace(runtime, planner_fallback=True),
-        user_question="question",
-        final_response="memory-backed answer",
-        exposures=(exposure,),
+
+    cancelled = open_session()
+    await confirm(cancelled)
+    await cancelled.on_delivery_confirmed(
+        DeliverySummary(
+            final_agent_run_id="message-1",
+            status=DeliveryStatus.CANCELLED,
+            delivered_text="memory-backed answer",
+        )
     )
-    assert not service._enqueue_memory_attribution(
-        runtime=replace(runtime, origin=TurnOrigin.PLUGIN_BACKGROUND),
-        user_question="question",
-        final_response="memory-backed answer",
-        exposures=(exposure,),
+    plugin = open_session(origin=RuntimeTurnOrigin.PLUGIN_BACKGROUND)
+    await confirm(plugin)
+    await plugin.on_delivery_confirmed(
+        DeliverySummary(
+            final_agent_run_id="message-1",
+            status=DeliveryStatus.COMPLETE,
+            delivered_text="memory-backed answer",
+        )
     )
-    assert not service._enqueue_memory_attribution(
-        runtime=runtime,
-        user_question="question",
-        final_response="",
-        exposures=(exposure,),
+    empty_text = open_session()
+    await confirm(empty_text)
+    await empty_text.on_delivery_confirmed(
+        DeliverySummary(
+            final_agent_run_id="message-1",
+            status=DeliveryStatus.COMPLETE,
+            delivered_text="",
+        )
     )
-    assert not service._enqueue_memory_attribution(
-        runtime=runtime,
-        user_question="question",
-        final_response="memory-backed answer",
-        exposures=(),
+    no_exposure = open_session()
+    await no_exposure.prefetch()
+    await no_exposure.on_delivery_confirmed(
+        DeliverySummary(
+            final_agent_run_id="message-1",
+            status=DeliveryStatus.COMPLETE,
+            delivered_text="memory-backed answer",
+        )
     )
     assert len(queue.jobs) == 1

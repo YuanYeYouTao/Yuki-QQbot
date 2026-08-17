@@ -8,8 +8,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -72,21 +71,23 @@ from qq_ai_bot.emoji.models import (
 )
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.memory.attribution import (
-    MemoryAttributionJob,
     MemoryAttributionWorker,
     MemoryExposure,
     MemoryExposureRegistry,
 )
 from qq_ai_bot.memory.context import MemoryContextService
-from qq_ai_bot.memory.enums import MemoryAccessMode, MemoryContextMode
+from qq_ai_bot.memory.enums import MemoryContextMode
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.models import MemoryQueryIntent
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
-from qq_ai_bot.memory.runtime.finalizer import (
-    finalize_mutation_text,
-    mutation_view_from_tool_result,
+from qq_ai_bot.memory.runtime.contract import MemoryReadPolicy
+from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
+from qq_ai_bot.memory.runtime.turn_session import (
+    TurnMemorySession,
+    apply_memory_tool_groups,
+    empty_retrieval,
 )
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
@@ -107,6 +108,10 @@ from qq_ai_bot.planner.models import (
     ToolSelection,
 )
 from qq_ai_bot.planner.observability import identifier_hash
+from qq_ai_bot.runtime.authority import TurnAuthority
+from qq_ai_bot.runtime.contracts import DeliverySummary
+from qq_ai_bot.runtime.delivery import DeliveryStatus
+from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
@@ -183,33 +188,11 @@ _SET_REPLY_TARGET_TOOL = ChatTool(
 )
 
 
-def _initial_scopes_for_memory_access(
-    access: MemoryAccessMode,
-    scopes: frozenset[str],
-) -> frozenset[str]:
-    """Make Planner memory access the sole first-round Memory Scope decision."""
-
-    if access in {MemoryAccessMode.TOOL, MemoryAccessMode.MUTATION}:
-        return frozenset((*scopes, ToolGroup.MEMORY.value))
-    return frozenset(
-        scope
-        for scope in scopes
-        if scope != ToolGroup.MEMORY.value and not scope.startswith(f"{ToolGroup.MEMORY.value}.")
-    )
-
-
-def _automatic_memory_mode(
-    access: MemoryAccessMode,
-    mode: MemoryContextMode,
-) -> MemoryContextMode:
-    return mode if access is MemoryAccessMode.AUTOMATIC else MemoryContextMode.NONE
-
-
 def _with_memory_mutation_contract(
     messages: tuple[ChatMessage, ...],
-    access: MemoryAccessMode,
+    exclusive_write: bool,
 ) -> tuple[ChatMessage, ...]:
-    if access is not MemoryAccessMode.MUTATION:
+    if not exclusive_write:
         return messages
     return (*messages, ChatMessage(role="system", content=_MEMORY_MUTATION_EXECUTION_CONTRACT))
 
@@ -408,6 +391,7 @@ class _ChatAgentBackend(AgentToolBackend):
     def __init__(self, service: ChatService, runtime: ToolRuntime) -> None:
         self._service = service
         self._runtime = runtime
+        self._memory_session = getattr(runtime, "memory_session", None)
         self._tools_closed = False
         self._web_was_used = False
         self._web_calls_used = 0
@@ -427,15 +411,44 @@ class _ChatAgentBackend(AgentToolBackend):
         self._tool_turn_recorded = False
         self._request_tools_called = False
         self._first_real_tool_recorded = False
-        self._memory_locator_failed = False
-        self._memory_mutation_attempted = False
-        self._last_memory_mutation_result: dict[str, object] | None = None
         self._native_web_fallback = runtime.native_web_fallback
 
     def enable_native_web_fallback(self) -> None:
         """Allow Tavily tools only after the Runner verifies a fallback condition."""
 
         self._native_web_fallback = True
+
+    def _memory(self) -> Any:
+        return self._memory_session
+
+    def _exclusive_write(self) -> bool:
+        session = self._memory()
+        return session is not None and session.exclusive_write
+
+    def _eager_memory_read(self) -> bool:
+        session = self._memory()
+        if session is None:
+            return False
+        return session.contract.read_policy in {
+            MemoryReadPolicy.EAGER,
+            MemoryReadPolicy.LOCATOR_ONLY,
+        }
+
+    def _locator_open(self) -> bool:
+        session = self._memory()
+        return session is not None and session.locator_open
+
+    async def confirm_memory_prompt_exposure(self) -> None:
+        session = self._memory()
+        if session is not None:
+            await session.confirm_prompt_exposure()
+
+    def terminal_memory_reply(self) -> str | None:
+        session = self._memory()
+        if session is None or not session.mutation_terminal:
+            return None
+        text = session.finalize_text()
+        return text if isinstance(text, str) else None
 
     def mark_native_web_used(self) -> None:
         """Apply post-Web isolation before same-response local calls execute."""
@@ -444,11 +457,7 @@ class _ChatAgentBackend(AgentToolBackend):
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         self._web_was_used = self._web_was_used or web_was_used
-        response_controls = (
-            ()
-            if self._runtime.memory_access is MemoryAccessMode.MUTATION
-            else self._response_control_definitions()
-        )
+        response_controls = () if self._exclusive_write() else self._response_control_definitions()
         if self._tools_closed:
             self._callable_tool_names = {tool.name for tool in response_controls}
             self._log_tool_exposure(
@@ -527,15 +536,18 @@ class _ChatAgentBackend(AgentToolBackend):
                 if entry.descriptor.model_name in visible_names
             ),
         )
-        if self._runtime.memory_access in {
-            MemoryAccessMode.TOOL,
-            MemoryAccessMode.MUTATION,
-        }:
+        if self._exclusive_write() or self._eager_memory_read():
             allowed_memory_effects = (
                 {CapabilityEffect.WRITE_STATE}
-                if self._runtime.memory_access is MemoryAccessMode.MUTATION
+                if self._exclusive_write() and not self._locator_open()
                 else {CapabilityEffect.READ_STATE, CapabilityEffect.EXTERNAL_READ}
             )
+            if self._locator_open():
+                allowed_memory_effects = {
+                    CapabilityEffect.READ_STATE,
+                    CapabilityEffect.EXTERNAL_READ,
+                    CapabilityEffect.WRITE_STATE,
+                }
             filtered_catalog = replace(
                 filtered_catalog,
                 entries=tuple(
@@ -547,7 +559,8 @@ class _ChatAgentBackend(AgentToolBackend):
                     )
                     or entry.descriptor.model_name in self._requested_tool_names
                     or (
-                        self._runtime.memory_access is MemoryAccessMode.TOOL
+                        self._eager_memory_read()
+                        and not self._exclusive_write()
                         and entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
                     )
                 ),
@@ -582,10 +595,7 @@ class _ChatAgentBackend(AgentToolBackend):
                     or entry.descriptor.model_name in self._requested_tool_names
                 ),
             )
-        if (
-            self._runtime.selected_tool_names is not None
-            and self._runtime.memory_access is not MemoryAccessMode.MUTATION
-        ):
+        if self._runtime.selected_tool_names is not None and not self._exclusive_write():
             filtered_catalog = replace(
                 filtered_catalog,
                 entries=tuple(
@@ -691,10 +701,7 @@ class _ChatAgentBackend(AgentToolBackend):
         may_request_more = bool(
             self._runtime.origin is TurnOrigin.USER_MESSAGE
             and self._requestable_catalog is not None
-            and (
-                self._runtime.memory_access is not MemoryAccessMode.MUTATION
-                or self._memory_locator_failed
-            )
+            and (not self._exclusive_write() or self._locator_open())
             and any(
                 entry.descriptor.model_name not in exposed_names
                 for entry in self._requestable_catalog.entries
@@ -824,10 +831,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
         if name == REQUEST_TOOLS_NAME:
-            if (
-                self._runtime.memory_access is MemoryAccessMode.MUTATION
-                and not self._memory_locator_failed
-            ):
+            if self._exclusive_write() and not self._locator_open():
                 return json.dumps(
                     {
                         "ok": False,
@@ -885,11 +889,10 @@ class _ChatAgentBackend(AgentToolBackend):
             ToolGroup.MEMORY.value in effective_descriptor.scope_ids
             and effective_descriptor.effect is CapabilityEffect.WRITE_STATE
         )
-        if is_memory_read_tool and self._runtime.memory_access is MemoryAccessMode.AUTOMATIC:
+        if is_memory_read_tool and not self._exclusive_write() and not self._eager_memory_read():
             self._service._tool_metrics.record_automatic_memory_read_tool_call(
-                locator_fallback=self._memory_locator_failed
+                locator_fallback=self._locator_open()
             )
-            self._memory_locator_failed = False
         config = self._runtime.runtime_config
         assert config is not None
         mutation_identity = self._mutation_identity(call)
@@ -981,10 +984,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 should_finalize_after_commit = bool(
                     mutation_committed
                     and (
-                        (
-                            is_memory_write_tool
-                            and self._runtime.memory_access is MemoryAccessMode.MUTATION
-                        )
+                        (is_memory_write_tool and self._exclusive_write())
                         or outcome.finalize_after_commit is True
                         or effective_descriptor.finalize_after_commit
                     )
@@ -1056,11 +1056,10 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._web_calls_used += 1
                 self._web_was_used = True
         decoded = self._service._decode_tool_result(result)
-        if is_memory_write_tool and self._runtime.memory_access is MemoryAccessMode.MUTATION:
-            if not self._memory_mutation_attempted:
-                self._service._record_memory_mutation_turn_outcome("attempted")
-            self._memory_mutation_attempted = True
-            self._last_memory_mutation_result = decoded
+        session = self._memory()
+        if session is not None and (is_memory_write_tool or is_memory_read_tool):
+            await session.observe_tool_result(name, result)
+        if is_memory_write_tool and session is not None and session.exclusive_write:
             self._service._record_memory_mutation_turn_outcome(
                 self._memory_mutation_outcome(decoded)
             )
@@ -1083,7 +1082,7 @@ class _ChatAgentBackend(AgentToolBackend):
                     self._completed_admin_mutations.add(mutation_identity)
                     self._remember_committed_mutation(decoded)
                     self._mutation_committed = True
-                    if self._runtime.memory_access is MemoryAccessMode.MUTATION:
+                    if self._exclusive_write():
                         self._tools_closed = True
             elif (decoded.get("error") or decoded.get("error_code")) == "duplicate_mutation":
                 # A prior identical call already committed in this turn. Keep
@@ -1096,7 +1095,7 @@ class _ChatAgentBackend(AgentToolBackend):
             }:
                 self._admin_terminal_failure = None
                 self._admin_retry_constraint = None
-                self._memory_locator_failed = True
+                pass
             elif bool(decoded.get("retryable")):
                 self._admin_terminal_failure = None
                 self._admin_retry_constraint = self._retry_identity(call)
@@ -1113,8 +1112,9 @@ class _ChatAgentBackend(AgentToolBackend):
         return result
 
     def finalize(self, content: str, runtime: AgentRuntime) -> str:
-        if self._runtime.memory_access is MemoryAccessMode.MUTATION:
-            return self._memory_mutation_final_text()
+        memory_text = self._memory_mutation_final_text()
+        if memory_text is not None:
+            return memory_text
         if self._admin_terminal_failure is not None:
             return self._service._admin_failure_text(self._admin_terminal_failure)
         if self._capability_was_used and contains_internal_capability_payload(content):
@@ -1146,11 +1146,9 @@ class _ChatAgentBackend(AgentToolBackend):
     def post_commit_recovery_text(self) -> str | None:
         """Return a deterministic reply when model finalization fails after a commit."""
 
-        if (
-            self._runtime.memory_access is MemoryAccessMode.MUTATION
-            and self._memory_mutation_attempted
-        ):
-            return self._memory_mutation_final_text()
+        memory_text = self._memory_mutation_final_text()
+        if memory_text is not None:
+            return memory_text
         if not self._committed_mutation_messages:
             return None
         return "\n".join(self._committed_mutation_messages)
@@ -1169,8 +1167,9 @@ class _ChatAgentBackend(AgentToolBackend):
             self._committed_mutation_messages.append(message)
 
     def exhausted(self, runtime: AgentRuntime) -> str:
-        if self._runtime.memory_access is MemoryAccessMode.MUTATION:
-            return self._memory_mutation_final_text()
+        memory_text = self._memory_mutation_final_text()
+        if memory_text is not None:
+            return memory_text
         if self._admin_terminal_failure is not None:
             return self._service._admin_failure_text(self._admin_terminal_failure)
         return "这次操作的工具调用次数过多，已停止继续执行。请把请求拆小后再试。"
@@ -1192,16 +1191,16 @@ class _ChatAgentBackend(AgentToolBackend):
             return "committed"
         return "rejected"
 
-    def _memory_mutation_final_text(self) -> str:
-        result = self._last_memory_mutation_result
-        if not self._memory_mutation_attempted or result is None:
+    def _memory_mutation_final_text(self) -> str | None:
+        session = self._memory()
+        if session is None:
+            return None
+        text = session.finalize_text()
+        if not isinstance(text, str):
+            return None
+        if session.receipt_gated and not session.mutation_terminal:
             self._service._record_memory_mutation_turn_outcome("not_attempted")
-        return finalize_mutation_text(
-            mutation_view_from_tool_result(
-                result,
-                attempted=self._memory_mutation_attempted,
-            )
-        )
+        return text
 
     def _is_mutating_call(self, call: ToolCall) -> bool:
         entry = (
@@ -1342,7 +1341,7 @@ class _ChatAgentBackend(AgentToolBackend):
     def _request_tools(self, arguments_json: str) -> str:
         self._request_tools_called = True
         self._service._tool_metrics.record_request_tools()
-        if self._runtime.memory_access is MemoryAccessMode.AUTOMATIC:
+        if not self._exclusive_write() and not self._eager_memory_read():
             self._service._tool_metrics.record_automatic_memory_request_tools()
         try:
             arguments = json.loads(arguments_json)
@@ -1397,10 +1396,22 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
         loaded_names = {match.entry.descriptor.model_name for match in matches}
-        if self._runtime.memory_access is MemoryAccessMode.AUTOMATIC and any(
+        loaded_write = any(
             ToolGroup.MEMORY.value in match.entry.descriptor.scope_ids
-            and match.entry.descriptor.effect is CapabilityEffect.READ_STATE
+            and match.entry.descriptor.effect is CapabilityEffect.WRITE_STATE
             for match in matches
+        )
+        session = self._memory()
+        if loaded_write and session is not None:
+            session.request_exclusive_write()
+        if (
+            not self._exclusive_write()
+            and not self._eager_memory_read()
+            and any(
+                ToolGroup.MEMORY.value in match.entry.descriptor.scope_ids
+                and match.entry.descriptor.effect is CapabilityEffect.READ_STATE
+                for match in matches
+            )
         ):
             self._service._tool_metrics.record_automatic_memory_read_tools_loaded()
         logger.info(
@@ -1915,6 +1926,7 @@ class ChatService:
         visual_failure: bool = False,
         planned_turn: PlannedTurn | None = None,
         turn_token: TurnToken | None = None,
+        structured_memory_command: MemoryStructuredCommand = MemoryStructuredCommand.NONE,
     ) -> int:
         """Run one ordered Agent turn and return the sent message count."""
 
@@ -1955,6 +1967,8 @@ class ChatService:
                 result = await sender.send(OutboundMessage(text=_PLANNER_FAIL_CLOSED_MESSAGE))
                 await self._record_outbound(inbound, _PLANNER_FAIL_CLOSED_MESSAGE, result)
                 return 1
+            turn_origin = TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
+            memory_session: TurnMemorySession | None = None
             if planner_emoji_only:
                 messages: tuple[ChatMessage, ...] = ()
                 visible_event_ids: frozenset[int] = frozenset()
@@ -1962,6 +1976,15 @@ class ChatService:
                 automatic_memory_exposures: tuple[MemoryExposure, ...] = ()
                 memory_intent: MemoryQueryIntent | None = None
             else:
+                memory_session = self._open_memory_session(
+                    inbound,
+                    identity,
+                    content,
+                    runtime_config,
+                    autonomous=autonomous,
+                    visual_input_present=visual_input_present,
+                    structured_command=structured_memory_command,
+                )
                 (
                     messages,
                     visible_event_ids,
@@ -1977,14 +2000,13 @@ class ChatService:
                     visual_observation=visual_observation,
                     visual_failure=visual_failure,
                     planned_turn=planned_turn,
-                    turn_origin=(
-                        TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
-                    ),
+                    turn_origin=turn_origin,
+                    memory_session=memory_session,
                 )
-            memory_access = (
-                planned_turn.plan.memory_context.access
-                if planned_turn is not None
-                else MemoryAccessMode.AUTOMATIC
+            exclusive_write = memory_session is not None and memory_session.exclusive_write
+            eager_memory_read = (
+                memory_session is not None
+                and memory_session.contract.read_policy is MemoryReadPolicy.EAGER
             )
             scheduled_automation_intent = bool(
                 not autonomous
@@ -1997,9 +2019,7 @@ class ChatService:
                 and is_scheduled_automation_request(content)
             )
             scheduled_automation_allowed = bool(
-                scheduled_automation_intent
-                and not fallback_plan
-                and memory_access is not MemoryAccessMode.MUTATION
+                scheduled_automation_intent and not fallback_plan and not exclusive_write
             )
             if scheduled_automation_allowed:
                 messages = (
@@ -2016,7 +2036,7 @@ class ChatService:
                     ),
                 )
             if not planner_emoji_only:
-                messages = _with_memory_mutation_contract(messages, memory_access)
+                messages = _with_memory_mutation_contract(messages, exclusive_write)
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
@@ -2044,17 +2064,18 @@ class ChatService:
             planner_scopes_explicit = bool(
                 planned_turn is not None and planned_turn.plan.tool_selection_explicit
             )
-            if self._memory_context is not None:
-                self._memory_context.metrics.record_access(memory_access)
+            if self._memory_context is not None and memory_session is not None:
+                self._memory_context.metrics.record_runtime_access(memory_session.contract)
             planner_tool_groups = (
                 frozenset(planned_turn.plan.tool_selection.scope_ids)
                 if planned_turn is not None
                 else frozenset(group.value for group in ToolGroup)
             )
-            planner_tool_groups = _initial_scopes_for_memory_access(
-                memory_access,
-                planner_tool_groups,
-            )
+            if memory_session is not None:
+                planner_tool_groups = apply_memory_tool_groups(
+                    memory_session.capability_view(),
+                    planner_tool_groups,
+                )
             tool_groups = planner_tool_groups
             if scheduled_automation_allowed and (planned_turn is None or planner_scopes_explicit):
                 tool_groups = frozenset((*tool_groups, ToolGroup.AUTOMATION.value))
@@ -2105,7 +2126,7 @@ class ChatService:
                     ToolMode.INHERIT
                     if scheduled_automation_allowed
                     or (
-                        memory_access in {MemoryAccessMode.TOOL, MemoryAccessMode.MUTATION}
+                        (exclusive_write or eager_memory_read)
                         and planned_turn is not None
                         and planned_turn.plan.tool_mode is ToolMode.NONE
                     )
@@ -2136,7 +2157,7 @@ class ChatService:
                 memory_turn_id=memory_turn_id,
                 memory_exposures=automatic_memory_exposures,
                 memory_intent=memory_intent,
-                memory_access=memory_access,
+                memory_session=memory_session,
                 planner_fallback=fallback_plan,
             )
             if planner_emoji_only:
@@ -2148,7 +2169,6 @@ class ChatService:
                 completed_agent = await self._run_agent(identity.key, messages, runtime)
             if not planner_emoji_only:
                 agent_result = completed_agent.result
-                attributed_exposures = completed_agent.memory_exposures
                 response_text = agent_result.text
                 if agent_result.native_tool_events:
                     native_response = recover_native_web_response(
@@ -2201,7 +2221,6 @@ class ChatService:
                                 fallback_runtime,
                             )
                             agent_result = completed_agent.result
-                            attributed_exposures = completed_agent.memory_exposures
                             response_text = agent_result.text
             sources = await self._web_sources.for_trigger(
                 conversation_key=identity.key,
@@ -2452,12 +2471,13 @@ class ChatService:
                     suppress_text=suppress_text,
                     reply_to_message_id=reply_to_message_id,
                 )
-                if not planner_emoji_only and agent_body_delivered and not sequence.cancelled:
-                    self._enqueue_memory_attribution(
-                        runtime=runtime,
-                        user_question=content,
-                        final_response=attribution_response_text,
-                        exposures=attributed_exposures,
+                if not planner_emoji_only:
+                    await self._finish_memory_turn(
+                        memory_session,
+                        run_id=inbound.message_id,
+                        delivered_text=attribution_response_text,
+                        delivered=agent_body_delivered,
+                        cancelled=sequence.cancelled,
                     )
                 return sequence.sent_messages
             chunks = self._render_chunks(rendered, runtime_config) if rendered else ()
@@ -2600,49 +2620,81 @@ class ChatService:
                     receipt = await sender.send(OutboundMessage(text=source_text))
                     await self._record_outbound(inbound, source_text, receipt)
                     sent_count += 1
-            if not planner_emoji_only and agent_body_delivered:
-                self._enqueue_memory_attribution(
-                    runtime=runtime,
-                    user_question=content,
-                    final_response=attribution_response_text,
-                    exposures=attributed_exposures,
+            if not planner_emoji_only:
+                await self._finish_memory_turn(
+                    memory_session,
+                    run_id=inbound.message_id,
+                    delivered_text=attribution_response_text,
+                    delivered=agent_body_delivered,
+                    cancelled=False,
                 )
             return sent_count
 
-    def _enqueue_memory_attribution(
+    def _open_memory_session(
         self,
+        inbound: InboundMessage,
+        identity: ConversationIdentity,
+        content: str,
+        runtime: RuntimeConfigSnapshot,
         *,
-        runtime: ToolRuntime,
-        user_question: str,
-        final_response: str,
-        exposures: tuple[MemoryExposure, ...],
-    ) -> bool:
-        config = runtime.runtime_config
-        if (
-            self._memory_attribution is None
-            or config is None
-            or not config.memory.usage_attribution_enabled
-            or not runtime.memory_turn_id
-            or runtime.memory_intent is None
-            or runtime.planner_fallback
-            or runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
-            or not final_response.strip()
-            or not exposures
-        ):
-            return False
-        return self._memory_attribution.enqueue(
-            MemoryAttributionJob(
-                turn_id=runtime.memory_turn_id,
-                user_id=runtime.inbound.sender.user_id,
-                group_id=runtime.inbound.group_id,
-                user_question=user_question,
-                final_response=final_response,
-                intent=runtime.memory_intent,
-                exposures=exposures,
-                runtime=config,
-                enqueued_at=datetime.now(UTC),
+        autonomous: bool,
+        visual_input_present: bool,
+        structured_command: MemoryStructuredCommand,
+    ) -> TurnMemorySession | None:
+        if self._memory_context is None:
+            return None
+        origin = (
+            RuntimeTurnOrigin.AUTONOMOUS_GROUP if autonomous else RuntimeTurnOrigin.USER_MESSAGE
+        )
+        attachments = (*inbound.attachments, *inbound.reply_attachments)
+        image_present = visual_input_present or any(
+            item.kind is AttachmentKind.IMAGE for item in attachments
+        )
+        return TurnMemorySession.open(
+            inbound=inbound,
+            identity=identity,
+            runtime=runtime,
+            memory_context=self._memory_context,
+            origin=origin,
+            user_question=content,
+            authority=TurnAuthority(
+                actor_user_id=inbound.sender.user_id,
+                bot_user_id=inbound.bot_user_id or "bot",
+                origin=origin,
+                permission_ceiling=frozenset(),
+                delegated_authority=None,
+                authority_revision=1,
+            ),
+            structured_command=structured_command,
+            image_present=image_present,
+            attribution=self._memory_attribution,
+        )
+
+    async def _finish_memory_turn(
+        self,
+        session: TurnMemorySession | None,
+        *,
+        run_id: str,
+        delivered_text: str,
+        delivered: bool,
+        cancelled: bool,
+    ) -> None:
+        if session is None:
+            return
+        if cancelled:
+            status = DeliveryStatus.CANCELLED
+        elif delivered:
+            status = DeliveryStatus.COMPLETE
+        else:
+            status = DeliveryStatus.FAILED
+        await session.on_delivery_confirmed(
+            DeliverySummary(
+                final_agent_run_id=run_id,
+                status=status,
+                delivered_text=delivered_text,
             )
         )
+        await session.close()
 
     async def _build_messages(
         self,
@@ -2656,6 +2708,7 @@ class ChatService:
         visual_failure: bool = False,
         planned_turn: PlannedTurn | None = None,
         turn_origin: TurnOrigin = TurnOrigin.USER_MESSAGE,
+        memory_session: TurnMemorySession | None = None,
     ) -> tuple[
         tuple[ChatMessage, ...],
         frozenset[int],
@@ -2663,6 +2716,18 @@ class ChatService:
         tuple[MemoryExposure, ...],
         MemoryQueryIntent | None,
     ]:
+        retrieval = None
+        persist_exposure = True
+        memory_mode = MemoryContextMode.LEXICAL
+        memory_intent: MemoryQueryIntent | None = None
+        if memory_session is not None:
+            retrieval = await memory_session.prefetch()
+            if retrieval is None:
+                retrieval = empty_retrieval()
+            persist_exposure = False
+            memory_intent = memory_session.prefetch_intent
+            if memory_intent is not None:
+                memory_mode = memory_intent.mode
         context = await self._context_assembler.assemble(
             inbound=inbound,
             identity=identity,
@@ -2670,29 +2735,18 @@ class ChatService:
             content=content,
             runtime=runtime,
             planner_intent="",
-            memory_mode=(
-                _automatic_memory_mode(
-                    planned_turn.plan.memory_context.access,
-                    planned_turn.plan.memory_context.mode,
-                )
-                if planned_turn is not None
-                else MemoryContextMode.LEXICAL
-            ),
-            self_recall=(
-                planned_turn.plan.memory_context.self_recall if planned_turn is not None else False
-            ),
-            memory_intent=(
-                planned_turn.plan.memory_context.to_query_intent()
-                if planned_turn is not None
-                else None
-            ),
-            requested_limit=(
-                planned_turn.plan.memory_context.requested_count
-                if planned_turn is not None
-                else None
-            ),
+            memory_mode=memory_mode,
+            self_recall=False,
+            memory_intent=memory_intent,
             turn_origin=turn_origin.value,
+            memory_retrieval=retrieval,
+            persist_memory_exposure=persist_exposure,
         )
+        if memory_session is not None:
+            memory_session.stage_prompt_selection(
+                context.injected_memory_ids,
+                context.memory_exposures,
+            )
         return (
             self._prompt_composer.compose(
                 inbound=inbound,

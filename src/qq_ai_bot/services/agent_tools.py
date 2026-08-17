@@ -25,7 +25,6 @@ from qq_ai_bot.domain.messages import ChatTool, InboundMessage
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureRegistry
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
-    MemoryAccessMode,
     MemoryContextMode,
     MemoryKind,
     MemoryRecallPurpose,
@@ -155,7 +154,7 @@ class ToolRuntime:
     memory_exposures: tuple[MemoryExposure, ...] = ()
     memory_exposure_registry: MemoryExposureRegistry | None = None
     memory_intent: MemoryQueryIntent | None = None
-    memory_access: MemoryAccessMode = MemoryAccessMode.AUTOMATIC
+    memory_session: object | None = None
     planner_fallback: bool = False
 
 

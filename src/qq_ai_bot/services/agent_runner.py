@@ -235,6 +235,10 @@ class AgentRunner:
             if no_progress_recovery and continuation is None:
                 definitions = ()
                 native_definitions = ()
+            if tools is not None:
+                confirm_exposure = getattr(tools, "confirm_memory_prompt_exposure", None)
+                if callable(confirm_exposure):
+                    await confirm_exposure()
             try:
                 response = await self._concurrency.run_llm(
                     runtime.conversation_key,
@@ -612,6 +616,21 @@ class AgentRunner:
                     )
                 else:
                     messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
+            if tools is not None:
+                terminal_reply = getattr(tools, "terminal_memory_reply", None)
+                if callable(terminal_reply):
+                    terminal_text = terminal_reply()
+                    if isinstance(terminal_text, str) and terminal_text.strip():
+                        return AgentRunResult(
+                            text=terminal_text,
+                            tool_calls_used=calls_used,
+                            model_requests=request_index + 1,
+                            web_was_used=web_was_used,
+                            native_tool_events=tuple(native_events),
+                            citations=tuple(citations),
+                            response_status=response_status,
+                            web_route=web_route,
+                        )
             if finalizing_commit_in_batch:
                 force_finalization = True
                 reusable_tool_results.clear()
@@ -727,6 +746,28 @@ class AgentRunner:
             unique_calls.append(call)
 
         if tools is not None:
+            write_calls = [call for call in unique_calls if call.function.name == "memory_change"]
+            if write_calls:
+                conflicting = [
+                    call
+                    for call in unique_calls
+                    if call.function.name != "memory_change"
+                    and self._is_side_effecting(tools, call, runtime)
+                ]
+                if conflicting:
+                    violation = json.dumps(
+                        {
+                            "ok": False,
+                            "error": "memory_mutation_exclusive_violation",
+                            "detail": "记忆写入批次不能夹带其他副作用工具。",
+                        },
+                        ensure_ascii=False,
+                    )
+                    return CoordinatedToolResult(
+                        calls=tuple((call, violation, False) for call in calls),
+                        executed_count=0,
+                        reused_count=0,
+                    )
             tools.begin_batch(tuple(unique_calls), runtime)
         coordinated = await self._tool_coordinator.execute_batch(
             tuple(unique_calls),

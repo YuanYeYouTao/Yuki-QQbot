@@ -26,7 +26,12 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.memory.enums import MemoryAccessMode
+from qq_ai_bot.memory.runtime.contract import MemoryReadPolicy
+from qq_ai_bot.memory.runtime.finalizer import (
+    MutationFinalizationInput,
+    finalize_mutation_text,
+    mutation_view_from_tool_result,
+)
 from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.chat import ChatService, _ChatAgentBackend
@@ -111,6 +116,63 @@ class _CandidateChatService(ChatService):
     ) -> ToolProviderRegistry:
         del web_was_used
         return self.registry
+
+
+class _FakeMemorySession:
+    def __init__(
+        self,
+        *,
+        exclusive_write: bool = False,
+        locator_open: bool = False,
+        eager_read: bool = False,
+        receipt_gated: bool = False,
+        mutation_terminal: bool = False,
+        mutation_text: str | None = None,
+    ) -> None:
+        self.exclusive_write = exclusive_write
+        self.locator_open = locator_open
+        self.receipt_gated = receipt_gated
+        self.mutation_terminal = mutation_terminal
+        self._mutation_text = mutation_text
+        if exclusive_write and locator_open:
+            read_policy = MemoryReadPolicy.LOCATOR_ONLY
+        elif eager_read:
+            read_policy = MemoryReadPolicy.EAGER
+        else:
+            read_policy = MemoryReadPolicy.DEFERRED
+        self.contract = SimpleNamespace(read_policy=read_policy)
+
+    def finalize_text(self) -> str | None:
+        return self._mutation_text
+
+    def request_exclusive_write(self) -> None:
+        self.exclusive_write = True
+
+    async def observe_tool_result(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def confirm_prompt_exposure(self) -> None:
+        return None
+
+
+def _exclusive_session(
+    *,
+    locator_open: bool = False,
+    result: dict[str, object] | None = None,
+) -> _FakeMemorySession:
+    if result is None:
+        text = finalize_mutation_text(MutationFinalizationInput(attempted=False))
+        terminal = False
+    else:
+        text = finalize_mutation_text(mutation_view_from_tool_result(result, attempted=True))
+        terminal = True
+    return _FakeMemorySession(
+        exclusive_write=True,
+        locator_open=locator_open,
+        receipt_gated=True,
+        mutation_terminal=terminal,
+        mutation_text=text,
+    )
 
 
 def _runtime() -> ToolRuntime:
@@ -351,7 +413,7 @@ def test_mutation_access_exposes_only_memory_write_capability_initially() -> Non
         _runtime(),
         actor_is_superuser=True,
         allow_admin_actions=True,
-        memory_access=MemoryAccessMode.MUTATION,
+        memory_session=_exclusive_session(),
         tool_groups=frozenset({"memory", "admin", "web"}),
         selected_tool_names=frozenset({"web_search"}),
     )
@@ -366,18 +428,20 @@ def test_mutation_access_exposes_only_memory_write_capability_initially() -> Non
     assert "admin_execute_action" not in names
     assert "web_search" not in names
 
-    backend._memory_locator_failed = True
+    backend._memory_session.locator_open = True  # type: ignore[union-attr]
     fallback_names = {
         tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)
     }
     assert "request_tools" in fallback_names
-    assert "get_person_memories" not in fallback_names
+    assert "memory_change" in fallback_names
+    assert "admin_execute_action" not in fallback_names
+    assert "web_search" not in fallback_names
 
     read_backend = _ChatAgentBackend(  # type: ignore[arg-type]
         _Service(registry),
         replace(
             runtime,
-            memory_access=MemoryAccessMode.TOOL,
+            memory_session=_FakeMemorySession(eager_read=True),
             selected_tool_names=None,
         ),
     )
@@ -394,7 +458,7 @@ def test_mutation_access_exposes_only_memory_write_capability_initially() -> Non
 async def test_mutation_access_rejects_early_request_tools_call() -> None:
     backend = _ChatAgentBackend(  # type: ignore[arg-type]
         _Service(_registry([])),
-        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
+        replace(_runtime(), memory_session=_exclusive_session()),
     )
     agent_runtime = SimpleNamespace()
     call = ToolCall(
@@ -418,10 +482,7 @@ async def test_mutation_access_rejects_early_request_tools_call() -> None:
     assert result["error"] == "capability_not_loaded"
 
 
-@pytest.mark.asyncio
-async def test_mutation_locator_failure_can_load_memory_read_without_widening_initial_path() -> (
-    None
-):
+def test_mutation_locator_failure_can_load_memory_read_without_widening_initial_path() -> None:
     async def execute(name: str, _arguments: str, _runtime: object) -> object:
         return {"ok": True, "data": {"called": name}}
 
@@ -441,7 +502,7 @@ async def test_mutation_locator_failure_can_load_memory_read_without_widening_in
         _Service(registry),
         replace(
             _runtime(),
-            memory_access=MemoryAccessMode.MUTATION,
+            memory_session=_exclusive_session(),
             tool_groups=frozenset({"memory"}),
             selected_tool_names=None,
         ),
@@ -451,42 +512,31 @@ async def test_mutation_locator_failure_can_load_memory_read_without_widening_in
         "memory_change"
     }
 
-    backend._memory_locator_failed = True
-    assert "request_tools" in {
+    backend._memory_session.locator_open = True  # type: ignore[union-attr]
+    locator_names = {
         tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)
     }
-    arguments = json.dumps({"query": "read person memories", "max_results": 1})
-    call = ToolCall(
-        id="locator-read-fallback",
-        function=ToolFunction(name=REQUEST_TOOLS_NAME, arguments=arguments),
-    )
-    backend.begin_batch((call,), agent_runtime)
-    loaded = json.loads(await backend.execute(REQUEST_TOOLS_NAME, arguments, agent_runtime))
-
-    assert loaded["ok"] is True
-    assert loaded["data"]["loaded_tools"][0]["name"] == "get_person_memories"
-    assert "get_person_memories" in {
-        tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)
-    }
+    assert locator_names == {"get_person_memories", "memory_change"}
 
 
 def test_mutation_completion_gate_uses_last_real_receipt() -> None:
     service = _Service(_registry([]))
     backend = _ChatAgentBackend(  # type: ignore[arg-type]
         service,
-        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
+        replace(_runtime(), memory_session=_exclusive_session()),
     )
 
     assert "未执行" in backend.finalize("已经改好了", SimpleNamespace())
-    backend._memory_mutation_attempted = True
-    backend._last_memory_mutation_result = {
-        "ok": True,
-        "mutation_committed": True,
-        "data": {
-            "applied_operation": "invalidate",
-            "outcome": "committed",
-        },
-    }
+    backend._memory_session = _exclusive_session(
+        result={
+            "ok": True,
+            "mutation_committed": True,
+            "data": {
+                "applied_operation": "invalidate",
+                "outcome": "committed",
+            },
+        }
+    )
 
     rendered = backend.finalize("已经永久删除", SimpleNamespace())
 
@@ -574,10 +624,8 @@ def test_mutation_completion_gate_renders_domain_outcomes(
 ) -> None:
     backend = _ChatAgentBackend(  # type: ignore[arg-type]
         _Service(_registry([])),
-        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
+        replace(_runtime(), memory_session=_exclusive_session(result=result)),
     )
-    backend._memory_mutation_attempted = True
-    backend._last_memory_mutation_result = result
 
     assert expected in backend.finalize("模型声称全部成功", SimpleNamespace())
 
@@ -585,24 +633,27 @@ def test_mutation_completion_gate_renders_domain_outcomes(
 def test_mutation_completion_gate_bounds_ambiguous_candidates() -> None:
     backend = _ChatAgentBackend(  # type: ignore[arg-type]
         _Service(_registry([])),
-        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
-    )
-    backend._memory_mutation_attempted = True
-    backend._last_memory_mutation_result = {
-        "ok": False,
-        "error_code": "memory_candidate_ambiguous",
-        "data": {
-            "candidates": [
-                {
-                    "fact_id": fact_id,
-                    "memory_ref": f"M{fact_id}",
-                    "key": f"test:{fact_id}",
-                    "content": f"candidate {fact_id}",
+        replace(
+            _runtime(),
+            memory_session=_exclusive_session(
+                result={
+                    "ok": False,
+                    "error_code": "memory_candidate_ambiguous",
+                    "data": {
+                        "candidates": [
+                            {
+                                "fact_id": fact_id,
+                                "memory_ref": f"M{fact_id}",
+                                "key": f"test:{fact_id}",
+                                "content": f"candidate {fact_id}",
+                            }
+                            for fact_id in range(1, 5)
+                        ]
+                    },
                 }
-                for fact_id in range(1, 5)
-            ]
-        },
-    }
+            ),
+        ),
+    )
 
     rendered = backend.finalize("任选一个就当成功", SimpleNamespace())
 

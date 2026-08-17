@@ -16,6 +16,7 @@ from qq_ai_bot.domain.messages import (
     OutboundMessage,
     SenderIdentity,
 )
+from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.models import (
     EmojiIntent,
     EmojiPlacement,
@@ -26,21 +27,19 @@ from qq_ai_bot.emoji.models import (
 )
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.enums import (
-    MemoryAccessMode,
-    MemoryContextMode,
-    MemoryRecallPurpose,
     MemoryScopeType,
     MemorySourceType,
 )
 from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
+from qq_ai_bot.memory.runtime.turn_session import apply_memory_tool_groups
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.planner import (
     DeliveryMode,
     FakePlannerProvider,
-    MemoryContextPlan,
     PlannerDecision,
     PlannerObservability,
     PlannerReasonCode,
@@ -49,11 +48,8 @@ from qq_ai_bot.planner import (
 )
 from qq_ai_bot.planner.models import ToolSelection
 from qq_ai_bot.planner.service import PlannerService
-from qq_ai_bot.services.chat import (
-    _automatic_memory_mode,
-    _initial_scopes_for_memory_access,
-    _with_memory_mutation_contract,
-)
+from qq_ai_bot.runtime.contracts import MemoryCapabilityView
+from qq_ai_bot.services.chat import _with_memory_mutation_contract
 from qq_ai_bot.services.processor import MENTION_ONLY_CONTEXT, _vision_failure_message
 
 
@@ -80,51 +76,47 @@ def inbound(
     )
 
 
-def test_memory_access_strictly_controls_first_round_scope_and_automatic_recall() -> None:
+def test_capability_view_owns_first_round_memory_scope() -> None:
     requested = frozenset({"memory", "memory.read", "web"})
+    passive = MemoryCapabilityView(
+        eager_namespaces=(),
+        requestable_namespaces=("memory.state.write",),
+        hidden_namespaces=(),
+        exclusive_namespace=None,
+        transition_revision=1,
+    )
+    eager = MemoryCapabilityView(
+        eager_namespaces=("memory.person.read",),
+        requestable_namespaces=("memory.state.write",),
+        hidden_namespaces=(),
+        exclusive_namespace=None,
+        transition_revision=1,
+    )
+    exclusive = MemoryCapabilityView(
+        eager_namespaces=("memory.state.write",),
+        requestable_namespaces=(),
+        hidden_namespaces=(),
+        exclusive_namespace="memory.state.write",
+        transition_revision=1,
+    )
 
-    assert _initial_scopes_for_memory_access(
-        MemoryAccessMode.AUTOMATIC,
-        requested,
-    ) == frozenset({"web"})
-    assert _initial_scopes_for_memory_access(
-        MemoryAccessMode.NONE,
-        requested,
-    ) == frozenset({"web"})
-    assert _initial_scopes_for_memory_access(
-        MemoryAccessMode.TOOL,
-        frozenset({"web"}),
-    ) == frozenset({"memory", "web"})
-    assert _initial_scopes_for_memory_access(
-        MemoryAccessMode.MUTATION,
-        frozenset({"admin", "web"}),
-    ) == frozenset({"admin", "memory", "web"})
-    assert (
-        _automatic_memory_mode(MemoryAccessMode.AUTOMATIC, MemoryContextMode.HYBRID)
-        is MemoryContextMode.HYBRID
-    )
-    assert (
-        _automatic_memory_mode(MemoryAccessMode.TOOL, MemoryContextMode.NONE)
-        is MemoryContextMode.NONE
-    )
-    assert (
-        _automatic_memory_mode(MemoryAccessMode.MUTATION, MemoryContextMode.NONE)
-        is MemoryContextMode.NONE
+    assert apply_memory_tool_groups(passive, requested) == frozenset({"web"})
+    assert apply_memory_tool_groups(eager, frozenset({"web"})) == frozenset({"memory", "web"})
+    assert apply_memory_tool_groups(exclusive, frozenset({"admin", "web"})) == frozenset(
+        {"admin", "memory", "web"}
     )
 
 
 def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
     messages = (ChatMessage(role="user", content="更新测试配置"),)
 
-    mutation_messages = _with_memory_mutation_contract(messages, MemoryAccessMode.MUTATION)
+    mutation_messages = _with_memory_mutation_contract(messages, True)
 
     assert len(mutation_messages) == 2
     assert mutation_messages[-1].role == "system"
     assert "真实工具回执" in (mutation_messages[-1].content or "")
     assert "管理员能力" in (mutation_messages[-1].content or "")
-    assert _with_memory_mutation_contract(messages, MemoryAccessMode.AUTOMATIC) is messages
-    assert _with_memory_mutation_contract(messages, MemoryAccessMode.TOOL) is messages
-    assert _with_memory_mutation_contract(messages, MemoryAccessMode.NONE) is messages
+    assert _with_memory_mutation_contract(messages, False) is messages
 
 
 @pytest.mark.parametrize(
@@ -486,29 +478,16 @@ async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract
     provider = FakeLLMProvider(lambda _request: "已经撤回")
     harness = build_harness(database, make_settings(database.url), provider)
     harness.processor._chat._tools._memory_mutations = object()  # type: ignore[assignment]
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="撤回长期记忆",
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
-        tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
-        memory_context=MemoryContextPlan(
-            access=MemoryAccessMode.MUTATION,
-            mode=MemoryContextMode.NONE,
-            purpose=MemoryRecallPurpose.CORRECT,
-        ),
-        confidence=1.0,
-        reason_code=PlannerReasonCode.DIRECT_REQUEST,
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
-    )
     sender = MemorySender()
+    message = inbound("撤回一条测试配置", message_id="mutation-auto-write-only")
 
-    await harness.processor.handle(
-        inbound("撤回一条测试配置", message_id="mutation-auto-write-only"),
+    await harness.processor._chat.respond(
+        message,
+        ConversationIdentity.private("1001"),
+        UserProfileSnapshot(user_id="1001", scope_type=ScopeType.PRIVATE, nickname="tester"),
+        "撤回一条测试配置",
         sender,
+        structured_memory_command=MemoryStructuredCommand.WRITE,
     )
 
     assert len(provider.requests) == 1

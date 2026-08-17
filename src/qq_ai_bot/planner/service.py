@@ -9,10 +9,8 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode
-from qq_ai_bot.memory.enums import MemoryAccessMode, MemoryContextMode
 from qq_ai_bot.planner.models import (
     DeliveryMode,
-    MemoryContextReasonCode,
     PlannedTurn,
     PlannerDecision,
     PlannerInput,
@@ -182,9 +180,6 @@ class PlannerService:
                 "delivery_mode": plan.delivery_mode.value,
                 "desired_messages": plan.desired_messages,
                 "tool_mode": plan.tool_mode.value,
-                "memory_context_mode": plan.memory_context.mode.value,
-                "memory_context_reason": plan.memory_context.reason_code.value,
-                "memory_self_recall": plan.memory_context.self_recall,
                 "voice_mode": plan.voice.mode.value,
                 "voice_intent": plan.voice.intent.value,
                 "voice_tool_policy": plan.voice.agent_tool.value,
@@ -249,21 +244,6 @@ class PlannerService:
                 desired_messages=1,
                 tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
             )
-        memory_context = plan.memory_context
-        if not planner_input.memory.self_enabled:
-            memory_context = memory_context.model_copy(
-                update={
-                    "self_recall": False,
-                    "subjects": tuple(
-                        subject
-                        for subject in memory_context.subjects
-                        if subject.value != "current_self"
-                    ),
-                }
-            )
-        if memory_context.mode is MemoryContextMode.HYBRID and not runtime.memory.semantic_enabled:
-            memory_context = memory_context.model_copy(update={"mode": MemoryContextMode.LEXICAL})
-        updates["memory_context"] = memory_context
         emoji_plan = plan.emoji
         if not planner_input.emoji.available:
             emoji_plan = emoji_plan.model_copy(
@@ -303,15 +283,6 @@ class PlannerService:
             # An effect-only reply is fully executable by the delivery layer.
             # No Agent tool scope or memory context may be attached to the same turn.
             updates["tool_selection"] = ToolSelection(mode=ToolMode.NONE)
-            updates["memory_context"] = plan.memory_context.model_copy(
-                update={
-                    "access": MemoryAccessMode.NONE,
-                    "mode": MemoryContextMode.NONE,
-                    "reason_code": MemoryContextReasonCode.EFFECT_ONLY,
-                    "self_recall": False,
-                    "subjects": (),
-                }
-            )
         updates["emoji"] = emoji_plan
         speech_allowed = (
             runtime.speech.enabled
