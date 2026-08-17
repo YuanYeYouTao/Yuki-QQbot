@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from logging.config import fileConfig
 
 from alembic import context
@@ -14,7 +15,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.persistence.metadata import Base
 
 config = context.config
-if config.config_file_name is not None:
+if config.config_file_name is not None and not logging.getLogger().handlers:
     fileConfig(config.config_file_name)
 
 settings = Settings()

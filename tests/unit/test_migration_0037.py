@@ -25,6 +25,11 @@ def test_0037_adds_nullable_correlation_and_observations_round_trip(tmp_path: Pa
     _migrate(path, "0036")
     now = datetime.now(UTC).isoformat(sep=" ")
     with sqlite3.connect(path) as connection:
+        pre_tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "runtime_turn_observations" not in pre_tables
         # Pre-0037 rows must survive the upgrade with NULL correlation.
         connection.execute(
             """

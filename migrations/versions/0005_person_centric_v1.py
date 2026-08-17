@@ -119,6 +119,8 @@ def upgrade() -> None:
             "plugin_media_artifacts",
             "plugin_notification_outbox",
             "plugin_background_turn_jobs",
+            "runtime_turn_observations",
+            "reply_effect_events",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

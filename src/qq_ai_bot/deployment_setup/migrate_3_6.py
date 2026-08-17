@@ -186,17 +186,11 @@ def _export_runtime_baseline_if_needed(
     if database is None:
         return BaselineExportResult(output=None, skipped="database_missing")
     try:
-        tables = _sqlite_tables(database)
+        skipped = _baseline_skip_reason(database)
     except sqlite3.Error as exc:
         raise SetupValidationError(f"无法读取 SQLite 表清单: {exc}") from exc
-    if "planner_runs" not in tables:
-        return BaselineExportResult(output=None, skipped="planner_runs_absent")
-    missing = [name for name in _EXPORT_REQUIRED_TABLES if name not in tables]
-    if missing:
-        return BaselineExportResult(
-            output=None,
-            skipped="pre_0037_correlation:" + ",".join(missing),
-        )
+    if skipped is not None:
+        return BaselineExportResult(output=None, skipped=skipped)
     output = baseline_output or (
         paths.root
         / ".yuki/backups/upgrade-3.6"
@@ -227,13 +221,37 @@ def _deployment_sqlite(paths: SetupPaths) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def _sqlite_tables(path: Path) -> set[str]:
-    uri = f"file:{path.as_posix()}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as connection:
-        return {
+def _baseline_skip_reason(path: Path) -> str | None:
+    """Skip export unless 0037 correlation tables and columns are present."""
+
+    with _connect_sqlite_readonly(path) as connection:
+        tables = {
             str(row[0])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
+        if "planner_runs" not in tables:
+            return "planner_runs_absent"
+        missing = [name for name in _EXPORT_REQUIRED_TABLES if name not in tables]
+        for table in (
+            "planner_runs",
+            "model_invocations",
+            "tool_invocations",
+            "memory_recall_receipts",
+        ):
+            if table not in tables:
+                continue
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if "runtime_turn_id" not in columns:
+                missing.append(f"{table}.runtime_turn_id")
+        if missing:
+            return "pre_0037_correlation:" + ",".join(missing)
+    return None
+
+
+def _connect_sqlite_readonly(path: Path) -> sqlite3.Connection:
+    uri = path.resolve().as_uri()
+    separator = "&" if "?" in uri else "?"
+    return sqlite3.connect(f"{uri}{separator}mode=ro", uri=True)
 
 
 def _source_git_root() -> Path | None:

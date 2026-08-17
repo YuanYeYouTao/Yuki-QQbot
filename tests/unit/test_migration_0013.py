@@ -39,6 +39,10 @@ _TOOL_KERNEL_TABLES = {
     "tool_artifacts",
     "tool_invocations",
 }
+_RUNTIME_36_TABLES = {
+    "runtime_turn_observations",
+    "reply_effect_events",
+}
 
 
 def _alembic_config(database_url: str, monkeypatch: pytest.MonkeyPatch) -> Config:
@@ -64,7 +68,7 @@ def test_0005_does_not_create_0013_tables_early(
 
     command.upgrade(config, "0005")
 
-    assert not ((_NEW_TABLES | _EMOJI_TABLES) & _tables(path))
+    assert not ((_NEW_TABLES | _EMOJI_TABLES | _RUNTIME_36_TABLES) & _tables(path))
 
 
 def test_0013_non_destructively_upgrades_0012(

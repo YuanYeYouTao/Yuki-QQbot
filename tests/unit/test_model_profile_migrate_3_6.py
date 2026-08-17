@@ -229,3 +229,30 @@ def test_migrate_3_6_skips_baseline_when_planner_runs_absent(tmp_path) -> None:
     )
     assert result.baseline.skipped == "planner_runs_absent"
     assert not (tmp_path / "baseline-v1.json").exists()
+
+
+def test_migrate_3_6_skips_baseline_when_correlation_columns_are_absent(tmp_path) -> None:
+    import sqlite3
+
+    root = tmp_path / "deploy"
+    (root / "data").mkdir(parents=True)
+    with sqlite3.connect(root / "data/qq_ai_bot.db") as connection:
+        for table in (
+            "runtime_turn_observations",
+            "planner_runs",
+            "model_invocations",
+            "tool_invocations",
+            "memory_recall_receipts",
+        ):
+            connection.execute(f"CREATE TABLE {table} (id INTEGER)")
+        connection.commit()
+
+    result = migrate_deployment_3_6(
+        SetupPaths(root),
+        baseline_output=tmp_path / "baseline-v1.json",
+        repo_root=tmp_path / "not-a-git-repo",
+    )
+    assert result.baseline.skipped is not None
+    assert result.baseline.skipped.startswith("pre_0037_correlation:")
+    assert "model_invocations.runtime_turn_id" in result.baseline.skipped
+    assert not (tmp_path / "baseline-v1.json").exists()

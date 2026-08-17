@@ -153,7 +153,11 @@ try {
         foreach ($Pair in $SnapshotPairs) {
             if (Test-Path -LiteralPath $Pair.Source -PathType Leaf) {
                 [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Pair.Target)) | Out-Null
-                Copy-Item -LiteralPath $Pair.Source -Destination $Pair.Target -Force
+                try {
+                    Copy-Item -LiteralPath $Pair.Source -Destination $Pair.Target -Force -ErrorAction Stop
+                } catch {
+                    Fail "Unable to snapshot $($Pair.Source)"
+                }
             }
         }
         $Digest = ""
