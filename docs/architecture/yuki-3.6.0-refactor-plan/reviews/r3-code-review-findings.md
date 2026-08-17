@@ -1,10 +1,13 @@
 # R3 开工前代码审阅结论（r3-code-review-findings）
 
-> 基线：当前分支 `codex/refactor-3.6-runtime`（R1/R2 已合入；产品版本仍为 Yuki `3.5.3`，Alembic head `0037`）。
+> 基线（开工前）：分支 `codex/refactor-3.6-runtime`（R1/R2 已合入；当时产品版本仍为 Yuki `3.5.3`，Alembic head `0037`）。
 > 对照任务书：`03-R3-CAPABILITY-NAMESPACE-RUNTIME.md`，已按 `main@2695484` 与本分支实码核对。
 > 审阅范围：任务书第 1 节列出的 capabilities / chat / agent / mcp / plugin_host / SDK 文件，
 > 外加 `planner/models.py`、`planner/prompt.py`、`planner/provider.py`、`model_runtime/models.py`、
 > `memory/runtime/capability_view.py`、`tests/unit/test_runtime_dependency_boundaries.py`。
+>
+> 复检（2026-08-18）：产品已是 Yuki `3.6.0`，Alembic head `0040`。下文第 1–10 节保留开工前结论；
+> 第 11 节记录按 R3 §14 十一刀全量复检后的缺口与收口。
 
 R1 已冻结 `CapabilityNamespace`、`CapabilitySearchIndex`、`CapabilityRuntime`、
 `CapabilityExposurePlanner`、`CapabilitySchemaValidator` 的 Protocol 形状，但生产编排
@@ -209,3 +212,35 @@ Native Web 与 function `web_search` 共用 capability id `web_search` 与 names
 8. R2 的 `MemoryCapabilityView` / exclusive write / 禁止 Planner 添加 memory 继续有效。
 9. `capabilities` 不得 import `planner`（R1 边界 allowlist 本轮清零）。
 10. 不向 DeepSeek 发送 `tool_choice`，不依赖 `tool_choice=required`。
+
+---
+
+## 11. 2026-08-18 按 §14 十一刀复检
+
+对照任务书逐条核对生产热路径，而不是对照 3.5.3 基线假装尚未开工。
+当时已经切到 Capability Runtime，但首轮曝光仍按旧 Planner `prepare_scopes()` 行事：
+水合到的 MCP server 或任意一条 MCP FTS 命中，就会把该 `provider_id` 下的工具静默倒进
+`mcp_tool_limit`。这不是 Bundle（选中后整包必开，超预算显式失败），所以「等待」一类弱查询
+也能带上八个麦当劳工具。搜索文档曾写入最长 4000 字的远端菜单；`request_tools` 在
+`definitions()` 里可能重复追加；超级管理员被 Host 常驻钉上 `call_onebot_api`；
+`web_search` 未选中时 Native Web 仍随 `allowed_capabilities={"web"}` 发送。
+
+| §14 提交 | 复检结论 |
+|---|---|
+| 1 `add semantic namespaces` | CORE 叶 namespace 与 MCP per-tool `namespace/aliases/useWhen/tags` 已补齐 |
+| 2 `add revision-cached FTS5 search index` | 文档体改为 compact 400 字；短中文不再靠 2-gram 误中肥菜单；alias 按 term 命中 |
+| 3 `add authority-first exposure runtime` | 删除 provider dump；水合只刷新索引再搜；Bundle 全开或 `bundle_exceeds_schema_budget`；Native 仅在 `web_search` 已选中后绑定；`call_onebot_api` 不再 Host 常驻 |
+| 4 `unify prefetch and request_tools search` | 删除第二套 `match_requestable_tools`；两条路径只走 `CapabilitySearchIndex` |
+| 5 `add monotonic exposure ledger` | `request_tools` 去重；无副作用 schema 冲突可重建 chain；有副作用 fail closed |
+| 6 `add central schema validation` | 锁定 Draft 2020-12；拒绝远端 `$ref`、未知 dialect、超限与嵌套量词正则 |
+| 7 `release API 2.0 namespace metadata` | 已在 SDK/`ToolMetadata`/adapter 落地，本轮无空提交 |
+| 8 `revoke legacy planner signal approvals` | `0038` 与回归已在库中，本轮无空提交 |
+| 9 `remove planner scopes and flash reranker` | 删除 `ToolCandidateSelector` / `ToolSelectionMode` / `mcp/selector.py` 与 `planner_scope_explicit` 指标。`FlashToolReranker` 与 `ModelTask.TOOL_SELECTION` 此前已不在 `src` |
+| 10 `add search quality and responses suites` | 保留 ≥300 语料与 P50/P95；补首轮「等待」不曝光麦当劳、以及 Responses ledger 合同 |
+| 11 本文 | 记录上述复检，不改写第 1–10 节开工前事实 |
+
+仍属后续轮次、不得塞进 R3 的项：
+
+- `src/qq_ai_bot/planner/` 整包删除是 R5，不是本轮。
+- `automation_create` 目录不再塞进 description 的热修、以及文档里残留的 Planner 用语，不混入上述十一刀。
+- Namespace 仍不是权限，也不是硬过滤。
