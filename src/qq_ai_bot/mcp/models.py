@@ -29,6 +29,10 @@ class MCPLifecycle(StrEnum):
 class MCPToolAnnotationOverride(_StrictModel):
     """Operator-supplied MCP annotation hints keyed by the remote tool name."""
 
+    namespace: str = ""
+    aliases: tuple[str, ...] = ()
+    use_when: tuple[str, ...] = Field(default=(), alias="useWhen")
+    tags: tuple[str, ...] = ()
     read_only_hint: bool | None = Field(default=None, alias="readOnlyHint")
     destructive_hint: bool | None = Field(default=None, alias="destructiveHint")
     idempotent_hint: bool | None = Field(default=None, alias="idempotentHint")

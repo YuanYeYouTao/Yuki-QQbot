@@ -108,12 +108,12 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         CapabilityRisk.READ,
     ),
     "set_voice_preference": (
-        "speech.preference.write",
+        "reply.voice.preference.write",
         CapabilityEffect.WRITE_STATE,
         CapabilityRisk.MUTATE,
     ),
     "decline_reply": (
-        "reply.decline",
+        "reply.admission.decline",
         CapabilityEffect.REPLY_EFFECT,
         CapabilityRisk.READ,
     ),

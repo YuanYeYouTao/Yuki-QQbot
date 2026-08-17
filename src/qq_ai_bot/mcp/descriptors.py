@@ -46,6 +46,26 @@ def mcp_capability_namespace(server_id: str, config: MCPServerConfig) -> str:
     return fallback if is_valid_namespace_id(fallback) else "mcp"
 
 
+def mcp_tool_namespace(
+    server_id: str,
+    config: MCPServerConfig,
+    remote_tool_name: str,
+) -> str:
+    """Resolve one tool's primary namespace; bundles stay additional scopes."""
+
+    override = config.yuki.tool_annotations.get(remote_tool_name)
+    if override is not None and is_valid_namespace_id(override.namespace.strip()):
+        return override.namespace.strip()
+    matching = [
+        bundle
+        for bundle in config.yuki.tool_bundles.values()
+        if remote_tool_name in bundle.include_tools and is_valid_namespace_id(bundle.scope)
+    ]
+    if len(matching) == 1:
+        return matching[0].scope
+    return mcp_capability_namespace(server_id, config)
+
+
 def host_annotation_policy(
     override: MCPToolAnnotationOverride | None,
 ) -> MCPHostAnnotationPolicy:
@@ -87,8 +107,9 @@ def descriptor_from_mcp_tool(
     config = manager.server_config(item.server_id)
     if config is None:
         raise ValueError(f"unknown MCP server: {item.server_id}")
-    namespace = mcp_capability_namespace(item.server_id, config)
-    policy = host_annotation_policy(config.yuki.tool_annotations.get(item.remote_tool_name))
+    override = config.yuki.tool_annotations.get(item.remote_tool_name)
+    namespace = mcp_tool_namespace(item.server_id, config, item.remote_tool_name)
+    policy = host_annotation_policy(override)
     bundles = tuple(
         bundle
         for bundle in config.yuki.tool_bundles.values()
@@ -98,6 +119,7 @@ def descriptor_from_mcp_tool(
     aliases = tuple(
         dict.fromkeys(
             (
+                *(override.aliases if override is not None else ()),
                 *config.yuki.tags,
                 item.remote_tool_name,
                 item.remote_tool_name.replace("-", " "),
@@ -109,6 +131,7 @@ def descriptor_from_mcp_tool(
         dict.fromkeys(
             value
             for value in (
+                *(override.use_when if override is not None else ()),
                 config.yuki.summary,
                 *(bundle.summary for bundle in bundles),
             )
@@ -142,6 +165,7 @@ def descriptor_from_mcp_tool(
         tags=tuple(
             dict.fromkeys(
                 (
+                    *(override.tags if override is not None else ()),
                     *config.yuki.tags,
                     *(
                         name

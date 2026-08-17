@@ -7,10 +7,14 @@ from pydantic import ValidationError
 
 from qq_ai_bot.application.provider_registry import ProviderRegistry
 from qq_ai_bot.capabilities.namespace import (
+    NAMESPACE_BY_ID,
     NAMESPACE_ID_MAX_LENGTH,
     CapabilityNamespace,
     is_valid_namespace_id,
 )
+from qq_ai_bot.capabilities.provider import _CORE_METADATA
+from qq_ai_bot.mcp.descriptors import mcp_tool_namespace
+from qq_ai_bot.mcp.models import MCPServerConfig
 from qq_ai_bot.capabilities.validation import CapabilityValidationResult
 from qq_ai_bot.runtime.errors import (
     ProviderRegistryFrozenError,
@@ -83,6 +87,64 @@ class TestCapabilityNamespace:
         namespace = CapabilityNamespace(id="web.search", display_name="x")
         with pytest.raises(ValidationError):
             namespace.id = "web.read"  # type: ignore[misc]
+
+
+_FROZEN_CORE_NAMESPACES = {
+    "web_search": "web.search",
+    "read_webpage": "web.read",
+    "get_recent_chat_history": "memory.history.recent",
+    "search_chat_history": "memory.history.search",
+    "get_person_memories": "memory.person.read",
+    "get_self_memories": "memory.self.read",
+    "get_group_memories": "memory.group.read",
+    "get_memory_fact": "memory.fact.read",
+    "get_memory_evidence": "memory.evidence.read",
+    "memory_change": "memory.state.write",
+    "get_relationship": "relationship.read",
+    "call_onebot_api": "qq.platform.mutate",
+    "send_voice": "reply.voice",
+    "set_voice_preference": "reply.voice.preference.write",
+    "send_emoji": "reply.emoji",
+    "set_reply_layout": "reply.layout",
+    "set_reply_target": "reply.target",
+    "decline_reply": "reply.admission.decline",
+    "read_tool_artifact": "kernel.artifact.read",
+    "get_my_capabilities": "kernel.authority.read",
+}
+
+
+class TestFrozenCoreNamespaces:
+    def test_every_core_tool_uses_a_registered_namespace(self) -> None:
+        for name, expected in _FROZEN_CORE_NAMESPACES.items():
+            assert _CORE_METADATA[name][0] == expected
+            assert expected in NAMESPACE_BY_ID
+        for name, (namespace, _effect, _risk) in _CORE_METADATA.items():
+            assert namespace in NAMESPACE_BY_ID, name
+
+
+class TestMcpToolNamespace:
+    def test_prefers_per_tool_then_single_bundle_then_server(self) -> None:
+        config = MCPServerConfig.model_validate(
+            {
+                "url": "https://example.test/mcp",
+                "yuki": {
+                    "scope": "food.mcdonalds",
+                    "toolBundles": {
+                        "coupons": {
+                            "scope": "food.mcdonalds.coupons",
+                            "summary": "查询可用优惠券",
+                            "includeTools": ["available-coupons"],
+                        }
+                    },
+                    "toolAnnotations": {
+                        "create-order": {"namespace": "food.mcdonalds.order"},
+                    },
+                },
+            }
+        )
+        assert mcp_tool_namespace("mcd", config, "create-order") == "food.mcdonalds.order"
+        assert mcp_tool_namespace("mcd", config, "available-coupons") == "food.mcdonalds.coupons"
+        assert mcp_tool_namespace("mcd", config, "now-time-info") == "food.mcdonalds"
 
 
 class TestValidationResult:
