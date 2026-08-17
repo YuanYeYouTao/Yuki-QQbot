@@ -1,10 +1,10 @@
 id = "com.example.echo"
 name = "Echo Example"
 version = "0.1.0"
-description = "Yuki Plugin API v1 的无网络 Echo 示例插件"
+description = "Yuki Plugin API v2 的无网络 Echo 示例插件"
 entrypoint = "echo_plugin:EchoPlugin"
 
-plugin_api = "1.0"
+plugin_api = "2.0"
 yuki_requires = ">=1.6.0,<4.0"
 
 permissions = [
