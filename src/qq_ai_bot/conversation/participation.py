@@ -194,16 +194,9 @@ class LocalAutonomousParticipationPolicy:
         folded = text.casefold()
         reasons: list[str] = []
         relevance = 0
-        if features.scope_type is ScopeType.PRIVATE:
-            relevance += 30
-            reasons.append("private_scope")
-        if features.reply_target_is_bot:
-            relevance += 55
-            reasons.append("reply_to_bot")
-        if features.mentions_bot:
-            relevance += 50
-            reasons.append("mentions_bot")
-        elif any(alias in folded for alias in self._bot_aliases):
+        # Direct private / @ / reply-to-bot never enter this scorer. Do not keep
+        # the 3.5.3 forced-adjacent bonuses; they would inflate leaked flags.
+        if any(alias in folded for alias in self._bot_aliases):
             relevance += 32
             reasons.append("names_bot")
         if features.continuation:

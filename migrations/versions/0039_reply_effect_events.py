@@ -12,10 +12,19 @@ Create Date: 2026-08-17
 
 from __future__ import annotations
 
+import hashlib
+from collections import defaultdict
 from collections.abc import Sequence
 
 from alembic import op
 from sqlalchemy import inspect, text
+
+
+def _identifier_hash(value: str, *, kind: str) -> str:
+    """Same payload as ``hash_planner_identifier`` / cadence hashes."""
+
+    payload = f"yuki-planner-v1\0{kind}\0{value}".encode("utf-8", errors="replace")
+    return hashlib.sha256(payload).hexdigest()
 
 revision: str = "0039"
 down_revision: str | None = "0038"
@@ -60,52 +69,49 @@ def upgrade() -> None:
         )
     if "planner_runs" not in tables:
         return
-    connection.exec_driver_sql(
+    rows = connection.exec_driver_sql(
         """
-        INSERT OR IGNORE INTO reply_effect_events (
-            conversation_key_hash,
-            runtime_turn_id,
-            source_event_hash,
-            text_sent,
-            voice_sent,
-            emoji_sent,
-            voice_cadence_eligible,
-            voice_request_basis,
-            source,
-            occurred_at,
-            recorded_at
-        )
-        SELECT
-            conversation_key_hash,
-            runtime_turn_id,
-            lower(hex(id)),
-            CASE WHEN voice_mode IN ('text', 'text_and_voice') THEN 1 ELSE 0 END,
-            CASE WHEN voice_mode IN ('voice', 'text_and_voice', 'optional') THEN 1 ELSE 0 END,
-            0,
-            1,
-            'none',
-            'migrated_planner',
-            COALESCE(finished_at, created_at),
-            CURRENT_TIMESTAMP
-        FROM (
-            SELECT
-                id,
+        SELECT id, conversation_key_hash, runtime_turn_id, voice_mode,
+               COALESCE(finished_at, created_at)
+        FROM planner_runs
+        WHERE planner_decision = 'reply'
+          AND voice_intent = 'neutral'
+        ORDER BY conversation_key_hash, created_at DESC, id DESC
+        """
+    ).fetchall()
+    kept: dict[str, int] = defaultdict(int)
+    for run_id, conversation_hash, runtime_turn_id, voice_mode, occurred_at in rows:
+        if kept[conversation_hash] >= 20:
+            continue
+        kept[conversation_hash] += 1
+        voice_sent = voice_mode in {"voice", "text_and_voice", "optional"}
+        text_sent = voice_mode in {"text", "text_and_voice"}
+        connection.exec_driver_sql(
+            """
+            INSERT OR IGNORE INTO reply_effect_events (
                 conversation_key_hash,
                 runtime_turn_id,
-                voice_mode,
-                finished_at,
-                created_at,
-                ROW_NUMBER() OVER (
-                    PARTITION BY conversation_key_hash
-                    ORDER BY created_at DESC, id DESC
-                ) AS rn
-            FROM planner_runs
-            WHERE planner_decision = 'reply'
-              AND voice_intent = 'neutral'
-        ) ranked
-        WHERE rn <= 20
-        """
-    )
+                source_event_hash,
+                text_sent,
+                voice_sent,
+                emoji_sent,
+                voice_cadence_eligible,
+                voice_request_basis,
+                source,
+                occurred_at,
+                recorded_at
+            ) VALUES (?, ?, ?, ?, ?, 0, 1, ?, 'migrated_planner', ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                conversation_hash,
+                runtime_turn_id,
+                _identifier_hash(f"migrated_planner:{run_id}", kind="reply-effect"),
+                int(text_sent),
+                int(voice_sent),
+                "agent_initiated" if voice_sent else "none",
+                occurred_at,
+            ),
+        )
 
 
 def downgrade() -> None:

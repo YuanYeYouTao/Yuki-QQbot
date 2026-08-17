@@ -2715,7 +2715,7 @@ class ChatService:
             current_group_id=event.group_id,
             runtime_config=runtime,
             origin=TurnOrigin.PLUGIN_BACKGROUND,
-            tools_closed=False,
+            tools_closed=True,
             read_only=True,
             turn_token=turn_token,
             selection_query=event.content,

@@ -28,6 +28,8 @@ _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
     "decline_reply": _AUTONOMOUS_ORIGIN,
     "set_voice_preference": _DIRECT_ORIGINS,
     "set_reply_layout": _REPLY_LAYOUT_ORIGINS,
+    "send_voice": _REPLY_LAYOUT_ORIGINS,
+    "send_emoji": _REPLY_LAYOUT_ORIGINS,
 }
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {

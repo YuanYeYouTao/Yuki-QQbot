@@ -908,6 +908,8 @@ class AgentToolService:
         config = runtime.runtime_config
         if config is None or runtime.reply_effects is None or not config.speech.enabled:
             return False
+        if runtime.origin is TurnOrigin.PLUGIN_BACKGROUND:
+            return False
         if not config.speech.agent_effects_enabled:
             return False
         return (
@@ -920,6 +922,8 @@ class AgentToolService:
     def _emoji_available_for_turn(runtime: ToolRuntime) -> bool:
         config = runtime.runtime_config
         if config is None or runtime.reply_effects is None:
+            return False
+        if runtime.origin is TurnOrigin.PLUGIN_BACKGROUND:
             return False
         return bool(config.emoji.enabled)
 

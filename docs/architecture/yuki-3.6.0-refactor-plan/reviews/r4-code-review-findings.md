@@ -220,3 +220,24 @@ R4 新增/升级（不得当成 R3 已有工具漏建）：
 Alembic head 针：`release_check.py`、`release_validate.py`、`release_smoke.py`、`test_memory_migration_matrix.py`、`test_memory_quality_governance.py`、`test_user_profiles.py`、`test_versioned_docker_release.py` 从 `0038` 改为 `0039`。
 
 `tests/conftest.py` 与集成测试不得再给普通聊天注入 `FakePlannerProvider` / `planned_turn`。
+Processor 构造函数在 R5 删除 `planner/` 前仍接收 `PlannerService`（只为接线，主路径不调用）。`conftest.build_harness` 因此仍构造一个空转 Planner，但不得用它驱动聊天行为。
+
+---
+
+## 8. 实现复核（2026-08-18）
+
+对照 `04-R4`、`06`、`07-PLAN` §3.3/§5 R4 段与本 findings，已纠正的较大偏差：
+
+1. **0039 回填**：`source_event_hash` 改为与 Runtime 相同的 `yuki-planner-v1` salt + `migrated_planner:{planner_run_id}`；有语音行 `voice_request_basis=agent_initiated`（R5 §4.2 / 任务书 §5.3）。不再使用 `lower(hex(id))` 或一律 `none`。
+2. **自主评分**：删除 scorer 内 private / @ / reply-to-bot 加分。这些轮次由 inbound 直达，不得再当 necessity forced。
+3. **集成测试**：`test_message_flow` / `test_mcd_order_flow` 不再给普通聊天注入 `FakePlannerProvider`。
+4. **工具文案**：`set_reply_target` / `send_voice` / `CORE_CONTRACT` 已去掉“Planner 已决定”类句子（07-PLAN §3.3）。
+5. **Plugin background**：`generate_external_reply` 改为 `tools_closed=True`（仍 `read_only`）。`read_only` 只挡 write，挡不住 `EXTERNAL_READ` / `REPLY_EFFECT`，否则后台轮次会拿到 web/history/emoji/voice，违反 §12 tool-free。`send_voice` / `send_emoji` 的 allowed_origins 收为 USER_MESSAGE + AUTONOMOUS_GROUP。
+
+仍按 findings §6 接受、不在本轮返工的项：
+
+- 生产入口是 `handle_turn` → `ChatService.respond()`，不把 `conversation/host.py` 写成第二份巨型 ChatService；`begin_turn` 不实现。
+- 不删除 `src/qq_ai_bot/planner/`；Processor / Autonomous 仍借 `PlannerContextBuilder.admission_features` 取本地特征，但不调用 Planner LLM。
+- `send_emoji` 任务书 schema 无 `request_basis`，因此不发明短语分类器去区分自发/显式；可用性门看 emoji feature，频率门留给有 basis 的 voice。
+- 第 14/17 节回放性能门槛与 600 条语料是发布门，不是这次切换的阻塞项。
+- 第 16 节 11 笔提交切分未做（已一次落地）。

@@ -620,27 +620,28 @@ def test_planner_messages_use_the_shared_chat_message_shape() -> None:
     assert "trusted_history_event_ids" not in payload
 
 
-def test_private_message_has_base_relevance_but_is_not_forced() -> None:
-    result = ReplyNecessityScorer().score(
-        ReplyNecessityFeatures(scope_type=ScopeType.PRIVATE, text="在吗")
-    )
-    assert result.relevance_score > 0
-    assert "private_scope" in result.reasons
-    assert not result.should_participate
-
-
-def test_mention_and_reply_to_yuki_add_relevance_without_forcing_entry() -> None:
+def test_direct_admission_flags_do_not_boost_autonomous_score() -> None:
     scorer = ReplyNecessityScorer()
-    mention = scorer.score(
-        ReplyNecessityFeatures(scope_type=ScopeType.GROUP, text="嗯", mentions_bot=True)
+    plain = scorer.score(
+        ReplyNecessityFeatures(scope_type=ScopeType.GROUP, text="请帮我查一下")
     )
-    reply = scorer.score(
-        ReplyNecessityFeatures(scope_type=ScopeType.GROUP, text="嗯", reply_target_is_bot=True)
+    mentioned = scorer.score(
+        ReplyNecessityFeatures(
+            scope_type=ScopeType.GROUP,
+            text="请帮我查一下",
+            mentions_bot=True,
+            reply_target_is_bot=True,
+        )
     )
-    assert mention.relevance_score >= 50
-    assert reply.relevance_score >= 50
-    assert not mention.should_participate
-    assert not reply.should_participate
+    private = scorer.score(
+        ReplyNecessityFeatures(scope_type=ScopeType.PRIVATE, text="请帮我查一下")
+    )
+    assert mentioned.score == plain.score
+    assert mentioned.relevance_score == plain.relevance_score
+    assert "private_scope" not in private.reasons
+    assert "mentions_bot" not in mentioned.reasons
+    assert "reply_to_bot" not in mentioned.reasons
+    assert not private.should_participate
 
 
 def test_low_value_reaction_scores_below_question_request_and_opinion() -> None:

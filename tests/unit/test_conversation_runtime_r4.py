@@ -40,12 +40,14 @@ from qq_ai_bot.emoji.models import (
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner.repository import hash_planner_identifier
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.agent_tools import _RUNTIME_SNAPSHOT, AgentToolService, ToolRuntime
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.policies import evaluate_message, replies_to_bot
+from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.time.models import TimeContext
 
@@ -89,6 +91,22 @@ def test_disabled_group_is_rejected() -> None:
     )
     assert not decision.should_respond
     assert decision.reason == "group_disabled"
+
+
+def test_autonomous_scorer_ignores_direct_admission_flags() -> None:
+    scorer = LocalAutonomousParticipationPolicy()
+    plain = scorer.evaluate(AdmissionFeatures(scope_type=ScopeType.GROUP, text="请帮我查一下"))
+    boosted = scorer.evaluate(
+        AdmissionFeatures(
+            scope_type=ScopeType.GROUP,
+            text="请帮我查一下",
+            mentions_bot=True,
+            reply_target_is_bot=True,
+        )
+    )
+    assert plain.score == boosted.score
+    assert "mentions_bot" not in boosted.reasons
+    assert "reply_to_bot" not in boosted.reasons
 
 
 def test_low_value_group_observation_does_not_participate() -> None:
@@ -373,6 +391,55 @@ async def test_ordinary_text_uses_exactly_one_agent_request_and_zero_planner(
     assert sender.messages[0].text == "你好呀"
     assert harness.processor._planner._provider.inputs == []
     assert provider.requests[0].tool_choice != "required"
+
+
+@pytest.mark.asyncio
+async def test_plugin_background_reply_exposes_no_business_tools(database: Database) -> None:
+    seen: list[tuple[str, ...]] = []
+
+    def responder(request: object) -> ChatResponse:
+        tools = getattr(request, "tools", ())
+        seen.append(tuple(tool.name for tool in tools))
+        return ChatResponse(content="该喝水了", latency_seconds=0)
+
+    harness = build_harness(database, make_settings(database.url), FakeLLMProvider(responder))
+    chat = harness.processor._chat
+    runtime = await chat._runtime_config.snapshot(user_id="1001")
+    result = await chat.generate_external_reply(
+        event=EventRecord(
+            id=1,
+            bot_user_id="9999",
+            platform_message_id="ext-1",
+            scope_type=ScopeType.PRIVATE,
+            sender_user_id="1001",
+            direction="inbound",
+            content="插件提醒：该喝水了",
+            visual_summary="",
+            segments=(),
+            occurred_at=datetime.now(UTC),
+            private_peer_user_id="1001",
+            origin="plugin_background",
+            event_kind="external_event",
+            source_plugin_id="demo",
+            external_source="plugin",
+            external_event_type="reminder",
+        ),
+        authorization_user_id="1001",
+        conversation_key="private:1001",
+        runtime=runtime,
+        agent_intent="提醒用户喝水",
+        turn_token=TurnToken(
+            conversation_key="private:1001",
+            version=1,
+            origin=TurnOrigin.PLUGIN_BACKGROUND,
+        ),
+    )
+    assert result.text == "该喝水了"
+    assert seen
+    names = {name for batch in seen for name in batch}
+    assert names.isdisjoint(
+        {"web_search", "send_emoji", "send_voice", "memory_change", "request_tools"}
+    )
 
 
 @pytest.mark.asyncio

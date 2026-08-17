@@ -28,15 +28,6 @@ from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ToolCall, ToolF
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.planner.fake import FakePlannerProvider
-from qq_ai_bot.planner.models import (
-    DeliveryMode,
-    PlannerDecision,
-    PlannerReasonCode,
-    TurnPlan,
-)
-from qq_ai_bot.planner.observability import PlannerObservability
-from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.models import WebMode, WebSearchResponse, WebSearchSource
@@ -187,11 +178,7 @@ async def test_future_task_success_claim_is_blocked_without_create_tool_result(
 
 
 @pytest.mark.asyncio
-async def test_automation_hint_adds_scope_without_replacing_planner_web_scope(
-    database: Database,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level("INFO")
+async def test_automation_hint_keeps_web_search_available(database: Database) -> None:
     calls = 0
 
     def responder(request: ChatRequest) -> ChatResponse:
@@ -252,19 +239,6 @@ async def test_automation_hint_adds_scope_without_replacing_planner_web_scope(
         web_provider=web,
     )
     repository, _registry = _attach_test_automation(database, harness, settings)
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="联网查询当前文档",
-        target_user_ids=("1001",),
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
-        confidence=1.0,
-        reason_code=PlannerReasonCode.DIRECT_REQUEST,
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
-    )
     sender = MemorySender()
 
     result = await harness.processor.handle(
@@ -287,8 +261,6 @@ async def test_automation_hint_adds_scope_without_replacing_planner_web_scope(
     assert len(sender.messages) == 1
     assert sender.messages[0].text.startswith("已根据当前网页总结三项功能。")
     assert "DeepSeek Responses API" in sender.messages[0].text
-    assert "agent_tools_exposed" in caplog.text
-    assert "web_search" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -402,19 +374,6 @@ async def test_capability_runtime_keeps_authority_tool_discovery(
         make_settings(database.url),
         FakeLLMProvider(responder),
     )
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="回答当前用户",
-        target_user_ids=("1001",),
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
-        confidence=1.0,
-        reason_code=PlannerReasonCode.DIRECT_REQUEST,
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
-    )
 
     result = await harness.processor.handle(
         normalize_event(private_event(Message("你能做什么"), message_id=106)),
@@ -437,19 +396,6 @@ async def test_user_query_can_expose_memory_write_without_planner_scopes(
         database,
         make_settings(database.url),
         FakeLLMProvider(responder),
-    )
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="处理当前用户的记忆请求",
-        target_user_ids=("1001",),
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
-        confidence=1.0,
-        reason_code=PlannerReasonCode.DIRECT_REQUEST,
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
     )
 
     result = await harness.processor.handle(

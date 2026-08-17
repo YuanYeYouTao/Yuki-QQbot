@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 from tests.unit.test_migration_0035 import _downgrade, _migrate
 
+from qq_ai_bot.conversation.cadence import source_event_hash
+
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
@@ -50,9 +52,11 @@ def test_0039_creates_table_backfills_and_is_idempotent(tmp_path: Path) -> None:
         }.issubset(columns)
         row = connection.execute(
             "SELECT text_sent, voice_sent, emoji_sent, voice_cadence_eligible, "
-            "voice_request_basis, source FROM reply_effect_events"
+            "voice_request_basis, source, source_event_hash FROM reply_effect_events"
         ).fetchone()
-        assert row == (1, 1, 0, 1, "none", "migrated_planner")
+        run_id = connection.execute("SELECT id FROM planner_runs").fetchone()[0]
+        assert row[:6] == (1, 1, 0, 1, "agent_initiated", "migrated_planner")
+        assert row[6] == source_event_hash(source="migrated_planner", raw=str(run_id))
         indexes = {
             item[1]
             for item in connection.execute(
@@ -70,7 +74,7 @@ def test_0039_creates_table_backfills_and_is_idempotent(tmp_path: Path) -> None:
     _migrate(path, "0039")
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM reply_effect_events").fetchone() == (1,)
-        source_event_hash = connection.execute(
+        existing_hash = connection.execute(
             "SELECT source_event_hash FROM reply_effect_events"
         ).fetchone()[0]
         with pytest.raises(sqlite3.IntegrityError):
@@ -84,7 +88,7 @@ def test_0039_creates_table_backfills_and_is_idempotent(tmp_path: Path) -> None:
                     'other', ?, 0, 0, 0, 1, 'none', 'migrated_planner', ?, ?
                 )
                 """,
-                (source_event_hash, now, now),
+                (existing_hash, now, now),
             )
 
     _downgrade(path, "0038")

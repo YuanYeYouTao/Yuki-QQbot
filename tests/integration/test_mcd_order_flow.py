@@ -19,15 +19,6 @@ from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.mcp.provider import MCPToolProvider
 from qq_ai_bot.mcp.repository import MCPRepository, ToolArtifactRepository
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.planner.fake import FakePlannerProvider
-from qq_ai_bot.planner.models import (
-    DeliveryMode,
-    PlannerDecision,
-    PlannerReasonCode,
-    TurnPlan,
-)
-from qq_ai_bot.planner.observability import PlannerObservability
-from qq_ai_bot.planner.service import PlannerService
 
 _REMOTE_SEQUENCE = (
     "query-store",
@@ -369,19 +360,6 @@ async def test_bundled_mcd_order_flow_commits_once_and_preserves_payment_url(
     )
     harness.processor._chat.register_tool_provider(
         MCPToolProvider(manager, gateway_enabled=True, selection_mode="catalog")
-    )
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="创建麦辣鸡腿堡待支付订单并返回支付链接",
-        target_user_ids=("1001",),
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
-        confidence=1.0,
-        reason_code=PlannerReasonCode.DIRECT_REQUEST,
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
     )
     sender = MemorySender()
     try:
