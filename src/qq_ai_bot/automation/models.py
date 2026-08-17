@@ -8,6 +8,10 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# TurnOrigin moved to the neutral runtime layer in 3.6.0-R1; this re-export
+# keeps the pre-existing import sites working until they migrate.
+from qq_ai_bot.runtime.origin import TurnOrigin as TurnOrigin
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -121,15 +125,6 @@ class RunStatus(StrEnum):
     MISSED = "missed"
     UNCERTAIN = "uncertain"
     BLOCKED = "blocked"
-
-
-class TurnOrigin(StrEnum):
-    USER_MESSAGE = "user_message"
-    AUTONOMOUS_GROUP = "autonomous_group"
-    SCHEDULED_AUTOMATION = "scheduled_automation"
-    SYSTEM_TASK = "system_task"
-    PLUGIN_SESSION = "plugin_session"
-    PLUGIN_BACKGROUND = "plugin_background"
 
 
 class RiskClass(StrEnum):

@@ -18,16 +18,14 @@ class PromptStage(StrEnum):
     MEMORY = "memory"
     VISUAL_CONTEXT = "visual_context"
     WEB_POLICY = "web_policy"
-    PLANNER_PLAN = "planner_plan"
     PLUGIN_CONTEXT = "plugin_context"
     TOOL_GUIDANCE = "tool_guidance"
     FINAL_CONSTRAINTS = "final_constraints"
 
 
 class PromptTarget(StrEnum):
-    PLANNER = "planner"
     AGENT = "agent"
-    BOTH = "both"
+    PLUGIN_SESSION = "plugin_session"
 
 
 class TrustedLevel(StrEnum):
@@ -143,7 +141,7 @@ class PromptRegistry:
                 raise ValueError(f"duplicate prompt fragment: {fragment.id}")
             ids.add(fragment.id)
         ordered = sorted(
-            (fragment for fragment in fragments if fragment.target in {target, PromptTarget.BOTH}),
+            (fragment for fragment in fragments if fragment.target is target),
             key=lambda item: (_STAGE_ORDER[item.stage], -item.priority, item.id),
         )
         rendered: list[str] = []

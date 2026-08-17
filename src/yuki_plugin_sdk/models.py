@@ -63,16 +63,13 @@ class PromptStage(StrEnum):
     MEMORY = "memory"
     VISUAL_CONTEXT = "visual_context"
     WEB_POLICY = "web_policy"
-    PLANNER_PLAN = "planner_plan"
     PLUGIN_CONTEXT = "plugin_context"
     TOOL_GUIDANCE = "tool_guidance"
     FINAL_CONSTRAINTS = "final_constraints"
 
 
 class PromptTarget(StrEnum):
-    PLANNER = "planner"
     AGENT = "agent"
-    BOTH = "both"
     PLUGIN_SESSION = "plugin_session"
 
 
@@ -97,7 +94,7 @@ class PromptFragment(StrictModel):
     cache_key: str | None = Field(default=None, max_length=256)
 
 
-class PlannerSignal(StrictModel):
+class AdmissionSignal(StrictModel):
     source_plugin_id: str
     score_delta: int = Field(ge=-10, le=10)
     reason_code: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
@@ -118,7 +115,7 @@ class CurrentMessage(StrictModel):
     received_at: datetime
 
 
-class PlannerSignalContext(StrictModel):
+class AdmissionSignalContext(StrictModel):
     """Current trusted envelope plus untrusted message text for one signal callback."""
 
     conversation_key: str = Field(min_length=1, max_length=256)

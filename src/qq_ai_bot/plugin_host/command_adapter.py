@@ -15,7 +15,6 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ConversationIdentity
 from qq_ai_bot.domain.messages import InboundMessage
-from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.plugin_host.direct_command_router import (
     DirectCommandMatch,
     DirectCommandRouter,
@@ -197,7 +196,7 @@ class PluginCommandAdapter:
             mentioned_user_ids=message.mentioned_user_ids,
             runtime_config=runtime,
             origin=TurnOrigin.USER_MESSAGE,
-            tool_mode=ToolMode.NONE,
+            tools_closed=True,
         )
         try:
             async with asyncio.timeout(registration.metadata.timeout_seconds):

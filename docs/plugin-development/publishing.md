@@ -1,11 +1,11 @@
 # 发布插件
 
-Plugin API v1 没有在线市场或自动下载。发布物是管理员手动审阅并复制到本地 `plugins/<id>/` 的源码目录。
+Plugin API 2.0 没有在线市场或自动下载。发布物是管理员手动审阅并复制到本地 `plugins/<id>/` 的源码目录。
 
 ## 发布前清单
 
 1. `plugin.toml` 的目录、ID、版本、入口和权限准确。
-2. `yuki_requires` 使用支持范围，`plugin_api = "1.0"`。
+2. `yuki_requires` 使用支持范围，`plugin_api = "2.0"`。
 3. 权限最小化，高风险权限写明必要性和目标范围。
 4. 不包含 `.env`、Token、Cookie、数据库、日志或用户数据。
 5. 插件代码只依赖公开 SDK，不导入 `qq_ai_bot` 或 `_` 内部对象。

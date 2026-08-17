@@ -29,8 +29,8 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
-_ALEMBIC_HEAD = "0036"
-_EXPECTED_RELEASE_VERSION = "3.5.3"
+_ALEMBIC_HEAD = "0040"
+_EXPECTED_RELEASE_VERSION = "3.6.0"
 
 
 class MemoryReleaseCheck:
@@ -206,6 +206,10 @@ class MemoryReleaseCheck:
             "0034_memory_dream_quality_and_evidence_provenance.py",
             "0035_adaptive_memory_lifecycle.py",
             "0036_async_memory_attribution.py",
+            "0037_runtime_turn_correlation.py",
+            "0038_revoke_legacy_planner_signal_approvals.py",
+            "0039_reply_effect_events.py",
+            "0040_drop_planner_persistence.py",
         }
         missing = sorted(required - versions)
         return self._item(
@@ -229,12 +233,12 @@ class MemoryReleaseCheck:
                 compatible = bool(requires) and SpecifierSet(requires).contains(__version__)
             except InvalidSpecifier:
                 compatible = False
-            if raw.get("plugin_api") not in {"1.0", "1.1"} or not compatible:
+            if raw.get("plugin_api") != "2.0" or not compatible:
                 incompatible.append(path.parent.name)
         return self._item(
             "plugin_api_compatibility",
             not incompatible,
-            f"{len(manifests)} manifests declare Plugin API 1.0/1.1 compatibility"
+            f"{len(manifests)} manifests declare Plugin API 2.0 compatibility"
             if not incompatible
             else f"incompatible manifests: {','.join(sorted(incompatible))}",
         )

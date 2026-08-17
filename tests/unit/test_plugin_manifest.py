@@ -18,7 +18,7 @@ name = "Echo"
 version = "0.1.0"
 description = "Echo test plugin"
 entrypoint = "echo_plugin:EchoPlugin"
-plugin_api = "1.0"
+plugin_api = "2.0"
 yuki_requires = ">=1.6.0,<2.0"
 permissions = ["tool.register", "network.http.allowlisted"]
 
@@ -38,6 +38,18 @@ def _plugin_dir(tmp_path: Path, plugin_id: str = "com.example.echo") -> Path:
     root.mkdir()
     (root / "plugin.toml").write_text(_manifest_text(plugin_id), encoding="utf-8")
     return root
+
+
+def test_manifest_rejects_plugin_api_1x(tmp_path: Path) -> None:
+    root = _plugin_dir(tmp_path)
+    text = (root / "plugin.toml").read_text(encoding="utf-8")
+    (root / "plugin.toml").write_text(
+        text.replace('plugin_api = "2.0"', 'plugin_api = "1.1"'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ManifestValidationError, match="incompatible"):
+        load_manifest(root, yuki_version="1.6.0")
 
 
 def test_manifest_is_strict_compatible_and_hash_stable(tmp_path: Path) -> None:
@@ -126,3 +138,16 @@ def test_discovery_isolates_invalid_plugin(tmp_path: Path) -> None:
     statuses = {item.record.directory.name: item.record.status for item in records}
     assert statuses[valid.name] is PluginStatus.DISCOVERED
     assert statuses[invalid.name] is PluginStatus.INVALID
+
+
+def test_plugin_api_20_docs_replace_planner_signals() -> None:
+    docs = Path(__file__).resolve().parents[2] / "docs" / "plugin-development"
+    assert not (docs / "planner-signals.md").exists()
+    index = (docs / "index.md").read_text(encoding="utf-8")
+    migration = (docs / "api-2.0-migration.md").read_text(encoding="utf-8")
+    admission = (docs / "admission-signals.md").read_text(encoding="utf-8")
+    assert "Yuki Plugin API 2.0" in index
+    assert "register_admission_signal" in admission
+    assert "admission.signal.register" in admission
+    assert 'plugin_api = "2.0"' in migration
+    assert "planner-signals.md" not in index

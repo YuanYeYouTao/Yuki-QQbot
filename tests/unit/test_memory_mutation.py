@@ -1334,7 +1334,7 @@ async def test_fact_id_tool_operation_infers_target_and_defaults_reason(
 
 
 @pytest.mark.asyncio
-async def test_autonomous_group_turn_can_create_self_memory_from_current_event(
+async def test_user_message_turn_can_create_self_memory_from_current_event(
     database: Database,
 ) -> None:
     service, facts, ledger, _processor = _service(database, self_memory_enabled=True)
@@ -1373,7 +1373,7 @@ async def test_autonomous_group_turn_can_create_self_memory_from_current_event(
         trigger_message_id=event.platform_message_id,
         actor_user_id=event.sender_user_id,
         current_group_id=event.group_id,
-        origin=TurnOrigin.AUTONOMOUS_GROUP,
+        origin=TurnOrigin.USER_MESSAGE,
     )
 
     definition = next(tool for tool in tools.definitions(runtime) if tool.name == "memory_change")
@@ -1453,6 +1453,70 @@ async def test_autonomous_group_turn_can_create_self_memory_from_current_event(
     serialized = json.dumps(listed["data"], ensure_ascii=False)
     assert "visibility_user_id" not in serialized
     assert "visibility_group_id" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_autonomous_group_turn_cannot_change_memory(database: Database) -> None:
+    mutations, facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    event = await _event(
+        ledger,
+        message_id="autonomous-group-no-write",
+        sender_user_id="1001",
+        group_id="3001",
+        content="请把刚才的讨论记下来",
+    )
+    settings = make_settings(
+        "sqlite+aiosqlite:///:memory:",
+        self_memory_enabled=True,
+    )
+    tools = AgentToolService(
+        settings=settings,
+        ledger=ledger,
+        memories=facts,
+        memory_mutations=mutations,
+        actions=AgentActionRepository(database),
+    )
+    inbound = InboundMessage(
+        message_id=event.platform_message_id,
+        event_type="message",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id=event.sender_user_id),
+        text=event.content,
+        bot_user_id=event.bot_user_id,
+        group_id=event.group_id,
+    )
+    runtime = ToolRuntime(
+        inbound=inbound,
+        gateway=None,
+        allow_generic_onebot=False,
+        conversation_key="group:3001:user:1001",
+        trigger_message_id=event.platform_message_id,
+        actor_user_id=event.sender_user_id,
+        current_group_id=event.group_id,
+        origin=TurnOrigin.AUTONOMOUS_GROUP,
+    )
+    assert "memory_change" not in {tool.name for tool in tools.definitions(runtime)}
+    rejected = json.loads(
+        await tools.execute(
+            "memory_change",
+            json.dumps(
+                {
+                    "operation": "create",
+                    "target": {"subject_ref": "self", "scope_type": "self"},
+                    "visibility": "current_scope",
+                    "new_content": "自主群聊不应写入记忆",
+                    "memory_key": "episode:should_not_write",
+                    "category": "self_episode",
+                    "kind": "episode",
+                    "reason": "autonomous write must stay denied",
+                },
+                ensure_ascii=False,
+            ),
+            runtime,
+        )
+    )
+    assert not rejected["ok"]
+    assert rejected["error"] == "memory_change_unavailable"
 
 
 @pytest.mark.asyncio

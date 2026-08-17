@@ -11,8 +11,8 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.conversation.delivery import ReplySequenceSpec
 from qq_ai_bot.domain.messages import OutboundMessage, OutboundSendReceipt
-from qq_ai_bot.planner.models import DeliveryMode, TurnPlan
 from qq_ai_bot.services.renderer import split_qq_message
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
@@ -30,9 +30,7 @@ _CHAT_LINE_BREAK = re.compile(r"\n+")
 _STRUCTURED_CHAT_OUTPUT = re.compile(
     r"(?m)^[ \t]*(?:```|~~~|[-*+]\s+|\d+[.)、]\s+|>\s+|#{1,6}\s+|\|.*\|[ \t]*$)"
 )
-_CHAT_DELIVERY_MODES = frozenset(
-    {DeliveryMode.SINGLE, DeliveryMode.CONCISE, DeliveryMode.NATURAL_MULTI}
-)
+_SENTENCE_BREAK = re.compile(r"(?<=[。！？!?；;])")
 
 
 class OutboundSender(Protocol):
@@ -73,19 +71,19 @@ class ReplySequenceManager:
         self,
         text: str,
         *,
-        plan: TurnPlan,
+        spec: ReplySequenceSpec,
         runtime: RuntimeConfigSnapshot,
     ) -> tuple[str, ...]:
-        hard_max = runtime.reply.plan_hard_max_messages
-        split_chat_lines = (
-            plan.delivery_mode in _CHAT_DELIVERY_MODES
-            and _STRUCTURED_CHAT_OUTPUT.search(text) is None
-        )
-        messages = (
-            self._split_chat_line_sections(text, max_messages=hard_max)
-            if split_chat_lines
-            else (text,)
-        )
+        hard_max = min(spec.max_messages, runtime.reply.hard_max_messages)
+        structured = _STRUCTURED_CHAT_OUTPUT.search(text) is not None
+        if spec.split_hint == "paragraph":
+            messages = self._split_chat_line_sections(text, max_messages=hard_max)
+        elif spec.split_hint == "sentence":
+            messages = self._split_sentences(text, max_messages=hard_max)
+        elif structured:
+            messages = (text,)
+        else:
+            messages = self._split_chat_line_sections(text, max_messages=hard_max)
         chunks = tuple(
             chunk
             for message in messages
@@ -119,11 +117,23 @@ class ReplySequenceManager:
         # breaks keep the merged overflow readable without dropping content.
         return tuple("\n".join(group) for group in groups if group)
 
+    @staticmethod
+    def _split_sentences(text: str, *, max_messages: int) -> tuple[str, ...]:
+        parts = tuple(part.strip() for part in _SENTENCE_BREAK.split(text) if part.strip())
+        if len(parts) < 2:
+            return (text,) if text else ()
+        if len(parts) <= max_messages:
+            return parts
+        return ReplySequenceManager._split_chat_line_sections(
+            "\n".join(parts),
+            max_messages=max_messages,
+        )
+
     async def send(
         self,
         *,
         text: str,
-        plan: TurnPlan,
+        spec: ReplySequenceSpec,
         runtime: RuntimeConfigSnapshot,
         token: TurnToken,
         sender: OutboundSender,
@@ -136,7 +146,7 @@ class ReplySequenceManager:
         suppress_text: bool = False,
         reply_to_message_id: str | None = None,
     ) -> ReplySequenceResult:
-        chunks = () if suppress_text else self.render(text, plan=plan, runtime=runtime)
+        chunks = () if suppress_text else self.render(text, spec=spec, runtime=runtime)
         outbound_messages = [*before_messages]
         outbound_messages.extend(OutboundMessage(text=chunk) for chunk in chunks)
         outbound_messages.extend(after_messages)

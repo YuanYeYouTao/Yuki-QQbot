@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "养鲲、对战、BOSS、拍卖与群小游戏的确定性 QQ 群游戏插件"
 entrypoint = "plugin:KunGamePlugin"
 
-plugin_api = "1.0"
+plugin_api = "2.0"
 yuki_requires = ">=3.1.0,<4.0"
 
 permissions = [

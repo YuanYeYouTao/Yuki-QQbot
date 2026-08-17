@@ -17,7 +17,7 @@ class Plugin:
 
 ## `register`
 
-只声明工具、命令、通知 Hook、Prompt Fragment、自动化 Action、PlannerSignal、配置 Schema 和后台服务。不得在此阶段：
+只声明工具、命令、通知 Hook、Prompt Fragment、自动化 Action、AdmissionSignal、配置 Schema 和后台服务。不得在此阶段：
 
 - 使用 LLM、网络、QQ、用户资料或 KV；
 - 启动 `asyncio.Task`；
@@ -43,5 +43,5 @@ class Plugin:
 - 插件启动失败：仅禁用该插件。
 - 持久用户计划：必须使用 Automation，而不是后台 Task。
 
-插件系统默认关闭；`PLUGIN_SYSTEM_ENABLED=false` 时 Host 不扫描外部目录，维持 1.5.2 行为。
+插件系统默认关闭；`PLUGIN_SYSTEM_ENABLED=false` 时 Host 不扫描外部目录。
 

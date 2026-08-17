@@ -35,7 +35,17 @@ def metadata_from_sdk_tool(
     annotation_values = dict(annotations) if isinstance(annotations, dict) else {}
     override = config.yuki.tool_annotations.get(name)
     if override is not None:
-        annotation_values.update(override.model_dump(mode="json", by_alias=True, exclude_none=True))
+        for key, value in override.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        ).items():
+            if key in {
+                "readOnlyHint",
+                "destructiveHint",
+                "idempotentHint",
+                "openWorldHint",
+                "finalizeAfterCommit",
+            }:
+                annotation_values[key] = value
     raw = {
         "name": name,
         "description": description,

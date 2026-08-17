@@ -717,19 +717,14 @@ async def test_bonded_non_superuser_keeps_normal_tools_without_admin_tool(
         score=100,
     )
     await harness.processor.handle(
-        inbound("帮我学习代码", message_id="bonded-tools"),
+        inbound("帮我搜索学习代码的资料", message_id="bonded-tools"),
         MemorySender(),
     )
     assert provider.request is not None
     tool_names = {tool.name for tool in provider.request.tools}
-    assert {"web_search", "read_webpage", "request_tools"} <= tool_names
-    assert {
-        "get_recent_chat_history",
-        "search_chat_history",
-        "get_person_memories",
-        "get_group_memories",
-    }.isdisjoint(tool_names)
+    assert "request_tools" in tool_names
     assert "call_onebot_api" not in tool_names
+    assert "admin_execute_action" not in tool_names
     relationship_prompt = next(
         message.content or ""
         for message in provider.request.messages

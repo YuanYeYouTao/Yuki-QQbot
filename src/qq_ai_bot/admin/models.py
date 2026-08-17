@@ -202,32 +202,24 @@ class MemoryRetrievalRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversationRuntimeConfig:
+    """Effective autonomous-conversation policy for one turn."""
+
+    autonomous_enabled: bool
+    autonomous_debounce_seconds: float
+    autonomous_admission_threshold: int
+    autonomous_batch_limit: int
+    autonomous_presence_window_seconds: int
+    interrupt_autonomous_on_new_message: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ReplyRuntimeConfig:
     delay_min_seconds: float
     delay_max_seconds: float
     max_qq_message_chars: int
     cancel_on_new_message: bool
-    plan_hard_max_messages: int
-
-
-@dataclass(frozen=True, slots=True)
-class PlannerRuntimeConfig:
-    """One effective Planner policy snapshot for a real turn."""
-
-    direct_enabled: bool
-    group_enabled: bool
-    temperature: float
-    max_output_tokens: int
-    timeout_seconds: float
-    confidence_threshold: float
-    reply_necessity_threshold: int
-    max_pending_messages: int
-    recent_presence_window_seconds: int
-    max_wait_seconds: int
-    interrupt_autonomous_on_new_message: bool
-    record_runs: bool
-    group_debounce_seconds: float = 8.0
-    preferred_messages: int = 3
+    hard_max_messages: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,7 +264,6 @@ class ToolingRuntimeConfig:
 class MCPRuntimeConfig:
     enabled: bool
     gateway_enabled: bool
-    tool_selection_mode: str
     metadata_cache_ttl_seconds: int
     connect_timeout_seconds: float
     request_timeout_seconds: float
@@ -361,7 +352,7 @@ class SpeechRuntimeConfig:
     root: str
     genie_data_dir: str
     default_profile: str
-    planner_enabled: bool
+    agent_effects_enabled: bool
     default_mode: str
     split_sentence: bool
     max_synthesis_characters: int | None
@@ -379,7 +370,6 @@ class SpeechRuntimeConfig:
 class RuntimeConfigSnapshot:
     """One internally consistent runtime view for an incoming message."""
 
-    planner: PlannerRuntimeConfig
     plugins: PluginRuntimeConfig
     context: ContextRuntimeConfig
     memory: MemoryRetrievalRuntimeConfig
@@ -391,5 +381,11 @@ class RuntimeConfigSnapshot:
     vision: VisionRuntimeConfig
     emoji: EmojiRuntimeConfig
     speech: SpeechRuntimeConfig
+    conversation: ConversationRuntimeConfig
     tooling: ToolingRuntimeConfig | None = None
     mcp: MCPRuntimeConfig | None = None
+
+    def conversation_policy(self) -> ConversationRuntimeConfig:
+        """Return the autonomous-conversation policy for this snapshot."""
+
+        return self.conversation

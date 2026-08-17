@@ -9,7 +9,7 @@
 <p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.5.3"><img src="https://img.shields.io/badge/Version-3.5.3-orange" alt="Version 3.5.3"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.6.0"><img src="https://img.shields.io/badge/Version-3.6.0-orange" alt="Version 3.6.0"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2 and OneBot v11">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -34,10 +34,10 @@
 ---
 
 Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCatQQ 和 NoneBot2 为通信入口，使用
-一次 Planner 决策、受控 Agent 工具循环、身份隔离的 Memory V2、持久化自动化和插件系统，
+Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份隔离的 Memory V2、持久化自动化和插件系统，
 让一个可自托管的 QQ 角色能够长期对话、记住人与共同经历，并安全地执行外部操作。
 
-项目主要通过 Codex 协作开发，当前稳定版本为 **3.5.3**。它适合愿意自行维护模型配置、QQ
+项目主要通过 Codex 协作开发，当前稳定版本为 **3.6.0**。它适合愿意自行维护模型配置、QQ
 登录态和本地数据的个人用户；不是面向多租户的托管机器人平台。
 
 ## 项目概览
@@ -57,7 +57,12 @@ Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCatQQ �
                                                        |
                                                        v
                     +------------+    +----------------+----------------+
-                    | Memory V2  | <- | Planner + Context Assembler     |
+                    | Memory V2  | <- | Conversation + Memory Runtime   |
+                    +------------+    +----------------+----------------+
+                                                       |
+                                                       v
+                    +------------+    +----------------+----------------+
+                    | Capability | <- | Local FTS search + Tool Kernel  |
                     +------------+    +----------------+----------------+
                                                        |
                                                        v
@@ -77,8 +82,8 @@ Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCatQQ �
 关键边界：
 
 - QQ 事件先标准化、准入、去重并写入事件账本，再进入对话编排。
-- 管理命令和静态插件绑定可走确定性入口；普通聊天只进行一次 Planner 调用。
-- Planner 只表达语义意图和能力范围，不能直接发送消息、修改数据或授予身份权限。
+- 管理命令和静态插件绑定可走确定性入口；普通聊天在本地 Runtime 准备后只进入 Main Agent。
+- Conversation Runtime 只做准入与自主群评分，不能直接发送消息、修改数据或授予身份权限。
 - 主 Agent 只能看到本轮被授权的工具；数据库、OneBot、插件和外部服务都由后端执行。
 - 只有 NapCat 返回真实发送回执后，系统才把回复视为已投递，并启动相应后台工作。
 
@@ -86,12 +91,12 @@ Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCatQQ �
 
 | 模块 | 当前能力 |
 | --- | --- |
-| 对话编排 | 私聊、群聊、回复与 @ 元数据、多轮历史、回复必要性判断、Planner-first 路由 |
+| 对话编排 | 私聊、群聊、回复与 @ 元数据、多轮历史、Conversation Runtime 准入与自主群评分 |
 | Main Agent | OpenAI-compatible Chat Completions / Responses、思考模型、有界工具循环、输出清理与分段发送 |
 | Memory V2 | 身份隔离、自动提炼、混合召回、结构化意图重排、自然衰减、使用强化、冲突与版本链 |
 | Tool Kernel | Core、Admin、Automation、Plugin、MCP、Web 能力统一注册、筛选、授权、预算和审计 |
 | 自动化 | 通过自然语言创建提醒与周期任务，保存真实创建者、作用域、权限和投递结果 |
-| 插件系统 | Plugin API 1.1、独立 SDK、命令、工具、事件、Prompt、Planner Signal、后台服务和持久通知 |
+| 插件系统 | Plugin API 2.0、独立 SDK、命令、工具、事件、Prompt、AdmissionSignal、后台服务和持久通知 |
 | MCP Client | stdio 与 Streamable HTTP、动态发现、Schema 预算、并发控制、结果 Artifact |
 | 联网搜索 | DeepSeek 原生搜索、Tavily 或受控降级链路，最终回答可携带来源 |
 | 多模态 | 可选 Qwen 图片理解、持久化表情包系统、本地 Genie-TTS 语音回复 |
@@ -150,17 +155,16 @@ Memory V2 是 Yuki 规模最大、边界最多的模块。它不是一张“聊�
 | `group` | 当前群共享的事实 | 群规则、共同事件 |
 | `self` | Yuki 对自身与共同经历的记忆 | 自我经历、角色连续性 |
 
-Planner 给出的 `subjects` 只是软排序提示。真实发送者、当前群、回复对象、被 @ 成员和 SELF
+模型给出的 `subjects` 只是软排序提示。真实发送者、当前群、回复对象、被 @ 成员和 SELF
 可见性始终由后端解析；模型不能凭名字创造新目标，也不能把一个人的记忆补给另一个人。
 
 ### 四条访问路径
 
-Planner 在一次既有调用中输出 `MemoryQueryIntent`，其中包含访问方式、召回目的、主体提示、实体、
-绝对时间范围、偏好类型和期望数量。`memory.access` 是首轮记忆编排的唯一入口：
+Memory Runtime 按当前真实事件决定访问方式、召回目的和合法目标。`memory.access` 是首轮记忆编排的唯一入口：
 
 ```text
                          +------------------+
-                         | Planner          |
+                         | Memory Runtime   |
                          | memory.access    |
                          +---------+--------+
                                    |
@@ -196,7 +200,7 @@ Planner 在一次既有调用中输出 `MemoryQueryIntent`，其中包含访问�
 [Trusted Reply / Mention Metadata]
        |
        v
-[Planner: MemoryQueryIntent]
+[Memory Runtime: MemoryQueryIntent]
        |
        v
 [Backend Target Resolution]
@@ -296,7 +300,7 @@ Recall Receipt 记录 `candidate -> selected -> injected -> used -> reinforced` 
 [Create / Correct / Invalidate / Restore]
                     |
                     v
-          [Planner: mutation]
+          [Memory Runtime: mutation]
                     |
                     v
        [memory/write_state only]
@@ -357,15 +361,18 @@ release check。更多细节见 [Memory V2 架构](docs/architecture/memory-v2.m
 
 ## Agent 与工具系统
 
-Planner 与 Main Agent 职责分离：Planner 决定是否回复、记忆访问方式、能力 scope 与媒体效果；
-Main Agent 负责回答和实际工具调用。工具内核再按 origin、scope、effect、risk、创建者身份、当前
+Conversation Runtime 负责准入与自主群评分；Capability Runtime 用本地 FTS 决定首批工具；
+Main Agent 负责回答和实际工具调用。工具内核再按 origin、namespace、effect、risk、创建者身份、当前
 群权限和轮次预算做最终治理。
 
 ```text
-[Planner Plan]
+[Conversation Runtime]
       |
       v
-[Capability Catalog]
+[Memory Runtime]
+      |
+      v
+[Capability Catalog + Local Search]
       |
       v
 [Policy + Permission + Budget]
@@ -386,11 +393,11 @@ MCP Gateway、自动化 Scheduler 和后台通知最终都回到同一能力目�
 
 ## 扩展能力
 
-### Plugin API 1.1
+### Plugin API 2.0
 
-插件可以注册命令、工具、事件处理器、Prompt 片段、Planner Signal、后台服务和受控 Agent
+插件可以注册命令、工具、事件处理器、Prompt 片段、AdmissionSignal、后台服务和受控 Agent
 Session，也可以使用存储、网络、媒体、Memory Facade、Automation Facade 与 Notification
-Outbox。插件运行前需通过 Manifest、版本、权限和管理员批准检查。
+Outbox。插件运行前需通过 Manifest、版本、权限和管理员批准检查。声明 1.x 的插件会被拒绝。
 
 - [插件快速开始](docs/plugin-development/quickstart.md)
 - [Plugin API 文档](docs/plugin-development/index.md)
@@ -402,7 +409,7 @@ MCP Client 支持 stdio 和 Streamable HTTP，包含动态发现、元数据缓�
 限制和大型结果 Artifact。示例包括麦当劳、网易云音乐和 Miniflux。
 
 - [MCP 配置](docs/mcp/configuration.md)
-- [Planner 与 Agent 路由](docs/mcp/planner-and-agent.md)
+- [能力检索与 Agent](docs/mcp/planner-and-agent.md)
 - [故障排查](docs/mcp/troubleshooting.md)
 
 ### 图片、表情与语音
@@ -418,12 +425,12 @@ MCP Client 支持 stdio 和 Streamable HTTP，包含动态发现、元数据缓�
 
 - Docker Engine / Docker Desktop 与 Docker Compose
 - 一个可登录 NapCatQQ 的 QQ 账号
-- 一个 OpenAI-compatible 模型接口；推荐为 Planner 配置低延迟 Flash 模型
+- 一个 OpenAI-compatible 模型接口；后台结构化任务可另配低延迟 Flash 模型
 - 只有本地开发才需要 Python 3.12、[uv](https://docs.astral.sh/uv/) 和完整源码
 
 ### 1. 运行引导安装器
 
-从 [Yuki 3.5.3 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.5.3)
+从 [Yuki 3.6.0 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.6.0)
 下载对应安装器。它会校验部署包、拉取正式镜像，并在一次性容器中启动彩色向导；宿主机不需要
 Python、uv 或源码。
 
@@ -487,8 +494,9 @@ docker compose up -d
 ```
 
 版本镜像不可变；`docker compose pull` 只拉取 `.env` 当前指定的版本。不要用新部署包直接覆盖
-旧目录，保留现有 `config/`、`plugins/`、`data/` 和 `napcat-*`。完整步骤见
-[3.5.3 发布与升级说明](docs/releases/v3.5.3.md)。
+旧目录，保留现有 `config/`、`plugins/`、`data/` 和 `napcat-*`。从 3.5.3 升级必须走安装器
+快照与 `setup migrate-3-6`，见 [3.6.0 发布与升级说明](docs/releases/v3.6.0.md) 和
+[3.6.0 升级指南](docs/upgrade-3.6.0.md)。
 
 停止全部服务：
 
@@ -504,7 +512,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 ### 4. 可选 Pro / Flash 路由
 
-不提供模型档案时，全部任务使用 `LLM_*` 主配置。若要把聊天交给 Pro、把 Planner 和后台结构化
+不提供模型档案时，全部任务使用 `LLM_*` 主配置。若要把聊天交给 Pro、把后台结构化
 任务交给 Flash：
 
 ```powershell
@@ -520,8 +528,8 @@ LLM_FLASH_API_KEY=你的Flash密钥
 LLM_FLASH_MODEL=你的Flash模型名称
 ```
 
-示例路由中，`chat_agent`、`automation_agent`、`plugin_agent_session` 使用 Pro；Planner、Memory
-Extraction、Self Reflection、Consolidation、Attribution、Relationship、Emoji 和工具选择等结构化
+示例路由中，`chat_agent`、`automation_agent`、`plugin_agent_session` 使用 Pro；Memory
+Extraction、Self Reflection、Consolidation、Attribution、Relationship 和 Emoji 等结构化
 任务使用 Flash。TOML 只引用环境变量名，不保存密钥。
 
 ## 配置与运行
@@ -563,7 +571,7 @@ Yuki 使用 SQLite 保存事件、身份、关系、记忆、自动化、插件�
 - 不要提交 `.env`、数据库、QQ 登录数据、语音模型或第三方密钥。
 - `LOG_MESSAGE_CONTENT=false` 时常规日志不记录消息正文；质量报告和记忆指标采用无正文设计。
 - `SUPERUSERS`、群准入、能力权限、插件审批和工具风险策略是不同层级，不应互相替代。
-- 升级前先备份 `data/` 与当前镜像，再替换容器；Alembic 迁移由 Bot 启动脚本自动执行。
+- 升级前先备份 `data/` 与当前镜像。从 3.5.3 升到 3.6.0 必须走安装器快照与 `setup migrate-3-6`，见 [3.6.0 升级指南](docs/upgrade-3.6.0.md)。
 - 从 2.x 升级到 3.x 前必须阅读 [Memory V2 升级指南](docs/upgrade-memory-v2.md)。
 
 ## 项目结构
@@ -572,10 +580,9 @@ Yuki 使用 SQLite 保存事件、身份、关系、记忆、自动化、插件�
 Yuki-QQbot/
 +-- src/qq_ai_bot/
 |   +-- application/     # application wiring and runtime modules
-|   +-- planner/         # turn planning and structured intent
-|   +-- conversation/    # turn coordination and agent loop
+|   +-- conversation/    # admission, autonomous scoring and turn coordination
 |   +-- memory/          # Memory V2, retrieval, mutation and workers
-|   +-- capabilities/    # unified capability catalog and policy
+|   +-- capabilities/    # unified capability catalog, FTS search and policy
 |   +-- plugins/         # built-in NoneBot entrypoints
 |   +-- plugin_host/     # Plugin API host runtime
 |   +-- automation/      # persistent schedules and execution
@@ -598,7 +605,7 @@ Yuki-QQbot/
 |   +-- container.py     # dependency composition root
 |   +-- main.py          # NoneBot / FastAPI entrypoint
 |   +-- cli.py           # administration CLI
-+-- src/yuki_plugin_sdk/ # standalone Plugin API 1.1 SDK
++-- src/yuki_plugin_sdk/ # standalone Plugin API 2.0 SDK
 +-- migrations/          # Alembic migrations
 +-- plugins/             # installed local plugins
 +-- services/            # isolated auxiliary workers
@@ -633,6 +640,10 @@ GitHub Actions 还会验证 Docker Compose、运行时镜像、隔离的 Genie-T
 ## 文档
 
 - [完整使用帮助](docs/help.md)
+- [3.6.0 运行时架构](docs/architecture/yuki-3.6.0-runtime.md)
+- [3.6.0 发布与升级说明](docs/releases/v3.6.0.md)
+- [从 3.5.3 升级到 3.6.0](docs/upgrade-3.6.0.md)
+- [3.6.0 Runtime 性能报告](docs/performance/3.6.0-runtime-report.md)
 - [3.5.3 发布与升级说明](docs/releases/v3.5.3.md)
 - [3.5.2 发布与升级说明](docs/releases/v3.5.2.md)
 - [Memory V2 架构](docs/architecture/memory-v2.md)

@@ -1,6 +1,6 @@
 # Versioned Docker Release 运维说明
 
-Yuki 3.5.3 的正式镜像只由 `.github/workflows/release.yml` 发布，目标平台为
+Yuki 3.6.0 的正式镜像只由 `.github/workflows/release.yml` 发布，目标平台为
 `linux/amd64`。本地开发镜像不属于发布合同。
 
 ## 首次 GHCR Bootstrap

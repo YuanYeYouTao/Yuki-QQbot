@@ -16,11 +16,11 @@ from yuki_plugin_sdk.events import EventEnvelope, EventName
 from yuki_plugin_sdk.models import CurrentMessage, PromptFragment, PromptStage
 from yuki_plugin_sdk.plugin import Plugin
 from yuki_plugin_sdk.registrar import (
+    AdmissionSignalRegistration,
     AutomationActionRegistration,
     BackgroundServiceRegistration,
     CommandRegistration,
     EventHookRegistration,
-    PlannerSignalRegistration,
     ToolRegistration,
 )
 from yuki_plugin_sdk.testing import FakePluginContext, run_plugin_contract_tests
@@ -37,7 +37,7 @@ class RecordingRegistrar:
         self.event_hooks: list[EventHookRegistration] = []
         self.prompt_fragments: list[PromptFragment] = []
         self.automation_actions: list[AutomationActionRegistration] = []
-        self.planner_signals: list[PlannerSignalRegistration] = []
+        self.admission_signals: list[AdmissionSignalRegistration] = []
         self.config_schemas: list[type[BaseModel]] = []
         self.background_services: list[BackgroundServiceRegistration] = []
 
@@ -56,8 +56,8 @@ class RecordingRegistrar:
     def register_automation_action(self, registration: AutomationActionRegistration) -> None:
         self.automation_actions.append(registration)
 
-    def register_planner_signal(self, registration: PlannerSignalRegistration) -> None:
-        self.planner_signals.append(registration)
+    def register_admission_signal(self, registration: AdmissionSignalRegistration) -> None:
+        self.admission_signals.append(registration)
 
     def register_config_schema(self, schema: type[BaseModel]) -> None:
         self.config_schemas.append(schema)

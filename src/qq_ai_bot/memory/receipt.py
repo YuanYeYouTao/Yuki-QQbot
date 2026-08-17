@@ -12,6 +12,7 @@ from sqlalchemy import delete, func, select, update
 from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryRetrievalHit, MemoryRetrievalResult
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import MemoryRecallItemModel, MemoryRecallReceiptModel
+from qq_ai_bot.runtime.observability import claim_runtime_turn_id
 
 
 def hashed_identifier(value: str) -> str:
@@ -51,6 +52,7 @@ class MemoryRecallRepository:
         async with self._database.sessions() as session, session.begin():
             receipt = MemoryRecallReceiptModel(
                 turn_id=turn_id,
+                runtime_turn_id=claim_runtime_turn_id(),
                 conversation_hash=hashed_identifier(conversation_key),
                 trigger_hash=hashed_identifier(trigger_message_id),
                 origin=origin[:32],

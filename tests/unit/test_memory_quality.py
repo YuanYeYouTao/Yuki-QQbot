@@ -238,10 +238,10 @@ async def test_baseline_round_trip_and_regression_detection(tmp_path: Path) -> N
     assert compare_baseline(degraded, baseline, gates) == ("recall_at_k:drop=0.1000",)
 
 
-def test_contract_snapshot_freezes_plugin_api_v1() -> None:
+def test_contract_snapshot_freezes_plugin_api_v2() -> None:
     catalog = contract_catalog(ROOT / "config/memory_contracts.toml")
     assert catalog["plugin_api"] == {
-        "version": "1.0",
+        "version": "2.0",
         "memory_facade_methods": [
             "add",
             "delete",

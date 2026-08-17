@@ -1,16 +1,16 @@
-# 从内部扩展迁移到 Plugin API v1
+# 从内部扩展迁移到 Plugin API 2.0
 
-1.6.0 不会把记忆、关系、权限、视觉、联网、自动化核心或 AgentRunner 改成插件。只迁移真正可选、边界清晰的本地扩展。
+Yuki 不会把记忆、关系、权限、视觉、联网、自动化核心或 AgentRunner 改成插件。只迁移真正可选、边界清晰的本地扩展。从 Plugin API 1.x 升级见 [API 2.0 迁移](api-2.0-migration.md)。
 
 ## 映射
 
-| 旧做法 | Plugin API v1 |
+| 旧做法 | Plugin API 2.0 |
 |---|---|
 | 直接注册 NoneBot matcher | 确定性 `CommandRegistration` 或 Agent `ToolRegistration` |
 | 导入 `ApplicationContainer` | `PluginContext` 的最小 Facade |
 | 直接读 Repository/SQLite | `storage`、`config` 或对应业务 Facade |
 | 拼接系统提示词 | `plugin_context`/`tool_guidance` Fragment |
-| 自行决定群里插话 | 有界 `PlannerSignal` |
+| 自行决定群里插话 | 有界 `AdmissionSignal`（仅自主群评分） |
 | 裸 `asyncio.create_task` | Background Service / `ctx.scheduler` |
 | 自建 cron 表 | Automation Action |
 | 在主历史里保存游戏上下文 | `ctx.agent_sessions` 独立会话 |
@@ -29,7 +29,7 @@
 
 ## 数据迁移
 
-Host 的 Alembic `0013` 非破坏性创建 Planner、插件安装/配置/KV/审计和独立 AI 会话表，保留 1.5.2 人物、聊天、记忆、关系、视觉、联网与自动化数据。插件自己的 KV 迁移应使用版本键和 CAS，保持可回滚；不要从插件运行代码执行任意 DDL。
+插件安装/配置/KV/审计和独立 AI 会话表由 Host Alembic 管理。插件自己的 KV 迁移应使用版本键和 CAS，保持可回滚；不要从插件运行代码执行任意 DDL。
 
 升级前备份 `data/`：
 
@@ -40,4 +40,4 @@ docker compose pull
 docker compose up -d
 ```
 
-首次升级可设置 `PLUGIN_SYSTEM_ENABLED=false`，先检查数据库和普通聊天，再逐项启用插件。Planner 是普通聊天的固定调度边界，不再提供旧流程回退开关。
+首次升级可设置 `PLUGIN_SYSTEM_ENABLED=false`，先检查数据库和普通聊天，再逐项启用插件。主聊天由 Conversation Runtime 准入后进入单一 Main Agent，不再提供旧 Planner 流程回退开关。

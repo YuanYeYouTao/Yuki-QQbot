@@ -55,14 +55,10 @@ class MemoryQueryBuilder:
         inbound: InboundMessage,
         content: str,
         runtime: RuntimeConfigSnapshot,
-        planner_intent: str = "",
         memory_mode: MemoryContextMode = MemoryContextMode.HYBRID,
         self_recall: bool = False,
         memory_intent: MemoryQueryIntent | None = None,
     ) -> MemoryQuery:
-        # Kept only as a source-compatible input. Generic TurnPlan.intent must not
-        # affect memory retrieval.
-        del planner_intent
         intent = memory_intent or MemoryQueryIntent(
             mode=memory_mode,
             purpose=MemoryRecallPurpose.BACKGROUND,
@@ -131,7 +127,7 @@ class MemoryQueryBuilder:
             else memory.context_limit_per_entity
         )
         try:
-            return MemoryQuery(
+            query = MemoryQuery(
                 text=text[:1200],
                 normalized_text=normalize_query_text(text),
                 mode=mode,
@@ -162,3 +158,9 @@ class MemoryQueryBuilder:
             )
         except ValidationError as exc:
             raise MemoryRetrievalError("memory_query_invalid") from exc
+        if intent is not None and intent.mode in {
+            MemoryContextMode.LEXICAL,
+            MemoryContextMode.OVERVIEW,
+        }:
+            return query.model_copy(update={"semantic_enabled": False})
+        return query

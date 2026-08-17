@@ -1,4 +1,4 @@
-"""Conversation, Planner, context, and memory-worker application module."""
+"""Conversation, context, and memory-worker application module."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from qq_ai_bot.application.modules.model_runtime import ModelRuntimeBundle
 from qq_ai_bot.application.modules.persistence import PersistenceBundle
 from qq_ai_bot.capabilities import ToolArtifactWriter
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.cadence import ReplyEffectRepository
+from qq_ai_bot.conversation.features import AdmissionFeatureBuilder
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.memory.attribution import MemoryAttributionWorker
 from qq_ai_bot.memory.auditing import (
@@ -38,10 +40,6 @@ from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
 from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.model_runtime.models import ModelTask
-from qq_ai_bot.planner.context import PlannerContextBuilder
-from qq_ai_bot.planner.observability import PlannerObservability
-from qq_ai_bot.planner.provider import LLMPlannerProvider
-from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.plugin_host.agent_backend import PluginAgentToolBackend
 from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService, ToolInvocationRecorder
@@ -70,10 +68,7 @@ from qq_ai_bot.web.base import WebSearchProvider
 @dataclass(frozen=True, slots=True)
 class ConversationBundle:
     prompt_registry: PromptRegistry
-    planner_observability: PlannerObservability
-    planner_provider: LLMPlannerProvider
-    planner: PlannerService
-    planner_context: PlannerContextBuilder
+    admission_features: AdmissionFeatureBuilder
     reply_sequence: ReplySequenceManager
     relationship_evaluator: RelationshipEvaluator
     deduplication: DeduplicationService
@@ -142,32 +137,9 @@ class ConversationModule:
             max_characters_per_plugin=settings.plugin_max_prompt_characters_per_plugin,
             max_total_plugin_characters=settings.plugin_max_total_prompt_characters,
         )
-        planner_observability = PlannerObservability()
-        planner_provider = LLMPlannerProvider(
-            model_executor=models,
-            temperature=settings.planner_temperature,
-            max_output_tokens=settings.planner_max_output_tokens,
-            timeout_seconds=settings.planner_timeout_seconds,
-            hard_max_messages=settings.reply_plan_hard_max_messages,
-            max_wait_seconds=settings.planner_max_wait_seconds,
-            observability=planner_observability,
-            prompt_registry=prompt_registry,
-            bot_display_name=settings.bot_display_name,
-        )
-        planner = PlannerService(
-            provider=planner_provider,
-            observability=planner_observability,
-            repository=persistence.planner_runs,
-        )
-        planner_context = PlannerContextBuilder(
+        admission_features = AdmissionFeatureBuilder(
             ledger=persistence.ledger,
             relationships=persistence.relationships,
-            speech=self._speech,
-            voice_preferences=persistence.voice_preferences,
-            planner_runs=persistence.planner_runs,
-            bot_display_name=settings.bot_display_name,
-            bot_aliases=settings.bot_aliases,
-            timezone=settings.default_timezone,
         )
         reply_sequence = ReplySequenceManager(self._turns)
         _route, chat_profile = self._model_runtime.router.route(ModelTask.CHAT_AGENT)
@@ -233,6 +205,7 @@ class ConversationModule:
             web_sources=persistence.web_sources,
             runtime_config=self._runtime_config,
             permission_catalog=self._permission_catalog,
+            voice_preferences=self._voice_preferences,
         )
         plugin_agent_tools = PluginAgentToolBackend(agent_tools)
         memory_attribution_worker = MemoryAttributionWorker(
@@ -262,6 +235,8 @@ class ConversationModule:
             reply_sequence=reply_sequence,
             emoji_effects=self._emoji_effects,
             speech_effects=self._speech_effects,
+            reply_effects=ReplyEffectRepository(persistence.database),
+            voice_preferences=self._voice_preferences,
             tool_artifacts=self._tool_artifacts,
             tool_invocations=self._tool_invocations,
         )
@@ -341,10 +316,7 @@ class ConversationModule:
         )
         return ConversationBundle(
             prompt_registry,
-            planner_observability,
-            planner_provider,
-            planner,
-            planner_context,
+            admission_features,
             reply_sequence,
             relationship_evaluator,
             deduplication,

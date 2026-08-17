@@ -58,7 +58,6 @@ class MCPModule:
         provider = MCPToolProvider(
             manager,
             gateway_enabled=settings.mcp_gateway_enabled,
-            selection_mode=settings.mcp_tool_selection_mode,
         )
         self._lifecycle.register("mcp", start=manager.start, close=manager.close)
         return MCPBundle(repository, artifacts, manager, provider)

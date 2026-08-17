@@ -36,7 +36,7 @@ from qq_ai_bot.persistence.repositories import (
     UserProfileRepository,
     WebSearchSourceRepository,
 )
-from qq_ai_bot.planner.repository import PlannerRepository
+from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
 from qq_ai_bot.speech.preference_repository import VoicePreferenceRepository
 from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfileRepository
 
@@ -64,12 +64,12 @@ class PersistenceBundle:
     media_analyses: MediaAnalysisRepository
     emoji_descriptions: EmojiDescriptionRepository
     emoji_repository: EmojiRepository
-    planner_runs: PlannerRepository
     voice_preferences: VoicePreferenceRepository
     voice_profiles: VoiceProfileRepository
     speech_generations: SpeechGenerationRepository
     relationships: RelationshipRepository
     relationship_jobs: RelationshipJobRepository
+    turn_observations: RuntimeTurnObservationRepository
 
 
 class PersistenceModule:
@@ -167,7 +167,6 @@ class PersistenceModule:
             media_analyses=MediaAnalysisRepository(database),
             emoji_descriptions=EmojiDescriptionRepository(database),
             emoji_repository=EmojiRepository(database),
-            planner_runs=PlannerRepository(database),
             voice_preferences=VoicePreferenceRepository(database),
             voice_profiles=VoiceProfileRepository(database),
             speech_generations=SpeechGenerationRepository(database),
@@ -182,4 +181,5 @@ class PersistenceModule:
                 database,
                 max_attempts=settings.relationship_max_attempts,
             ),
+            turn_observations=RuntimeTurnObservationRepository(database),
         )

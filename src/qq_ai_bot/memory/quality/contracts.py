@@ -96,7 +96,7 @@ def contract_catalog(version_path: Path) -> dict[str, object]:
         "schemas": schemas,
         "enums": enums,
         "plugin_api": {
-            "version": "1.0",
+            "version": "2.0",
             "memory_facade_methods": facade_methods,
             "forbidden_capabilities": [
                 "raw_vectors",

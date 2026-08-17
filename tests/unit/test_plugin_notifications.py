@@ -32,7 +32,7 @@ async def _running_plugin(database: Database) -> None:
         plugin_id=PLUGIN_ID,
         name="Test",
         version="1.0.0",
-        plugin_api="1.1",
+        plugin_api="2.0",
         yuki_requires=">=3.4",
         manifest_hash="a" * 64,
         entrypoint="plugin:Plugin",

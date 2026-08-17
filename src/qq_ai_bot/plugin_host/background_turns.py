@@ -4,23 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.planner.context import PlannerContextBuilder
-from qq_ai_bot.planner.models import PlannerDecision
-from qq_ai_bot.planner.provider import (
-    PlannerInterruptedError as ProviderPlannerInterruptedError,
-)
-from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.plugin_host.notification_repository import (
     BackgroundTurnJobRecord,
     PluginNotificationRepository,
 )
+from qq_ai_bot.runtime.observability import (
+    RuntimeTurnCorrelation,
+    TurnObservationRecorder,
+    bind_runtime_turn,
+    build_turn_observation,
+    new_runtime_turn_id,
+    record_observation_safely,
+)
+from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
-    PlannerInterruptedError,
+    TurnInterruptedError,
     TurnSupersededError,
 )
 
@@ -36,18 +40,16 @@ class PluginBackgroundTurnWorker:
         repository: PluginNotificationRepository,
         ledger: EventLedgerRepository,
         runtime_config: RuntimeConfigService,
-        planner_context: PlannerContextBuilder,
-        planner: PlannerService,
         chat: ChatService,
         turns: ConversationTurnCoordinator,
+        turn_observations: TurnObservationRecorder | None = None,
     ) -> None:
         self._repository = repository
         self._ledger = ledger
         self._runtime_config = runtime_config
-        self._planner_context = planner_context
-        self._planner = planner
         self._chat = chat
         self._turns = turns
+        self._turn_observations = turn_observations
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -83,6 +85,38 @@ class PluginBackgroundTurnWorker:
             await self._execute(job)
 
     async def _execute(self, job: BackgroundTurnJobRecord) -> None:
+        """Bind one fresh runtime turn correlation per background job attempt."""
+
+        started = time.perf_counter()
+        correlation = RuntimeTurnCorrelation(
+            turn_id=new_runtime_turn_id(),
+            origin=TurnOrigin.PLUGIN_BACKGROUND,
+        )
+        error_category: str | None = None
+        conversation_key = (
+            f"group:{job.target_id}" if job.target_type == "group" else f"private:{job.target_id}"
+        )
+        with bind_runtime_turn(correlation):
+            try:
+                await self._execute_admitted(job)
+            except BaseException as exc:
+                error_category = type(exc).__name__
+                raise
+            finally:
+                if correlation.touched or error_category is not None:
+                    observation = build_turn_observation(
+                        correlation,
+                        scope_type=job.target_type,
+                        conversation_key=conversation_key,
+                        admission_outcome="plugin_background",
+                        handled=error_category is None,
+                        sent_messages=0,
+                        error_category=error_category,
+                        total_latency_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                    await record_observation_safely(self._turn_observations, observation)
+
+    async def _execute_admitted(self, job: BackgroundTurnJobRecord) -> None:
         creator = await self._repository.grant_creator(
             plugin_id=job.plugin_id,
             target_type=job.target_type,
@@ -125,34 +159,10 @@ class PluginBackgroundTurnWorker:
         self._turns.configure_policy(
             cancel_replies_on_new_message=runtime.reply.cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
-                runtime.planner.interrupt_autonomous_on_new_message
+                runtime.conversation_policy().interrupt_autonomous_on_new_message
             ),
         )
-        run_id: int | None = None
         try:
-            planner_input = await self._planner_context.build_external(
-                event=event,
-                authorization_user_id=context_user_id,
-                conversation_key=conversation_key,
-                runtime=runtime,
-                agent_intent=job.agent_intent,
-            )
-            async with self._turns.track(token, "planner"):
-                outcome = await self._planner.plan(
-                    planner_input,
-                    runtime=runtime,
-                    turn_version=token.version,
-                )
-            run_id = outcome.run_id
-            if outcome.planned_turn.plan.decision is not PlannerDecision.REPLY:
-                await self._repository.finish_turn(
-                    job.id,
-                    text="",
-                    tool_calls_used=0,
-                    model_requests=0,
-                )
-                await self._planner.record_delivery(run_id, messages_sent=0)
-                return
             async with self._turns.track(token, "generation"):
                 result = await self._chat.generate_external_reply(
                     event=event,
@@ -160,7 +170,6 @@ class PluginBackgroundTurnWorker:
                     conversation_key=conversation_key,
                     runtime=runtime,
                     agent_intent=job.agent_intent,
-                    planned_turn=outcome.planned_turn,
                     turn_token=token,
                 )
             await self._repository.finish_turn(
@@ -168,10 +177,6 @@ class PluginBackgroundTurnWorker:
                 text=result.text,
                 tool_calls_used=result.tool_calls_used,
                 model_requests=result.model_requests,
-            )
-            await self._planner.record_delivery(
-                run_id,
-                messages_sent=1 if result.text else 0,
             )
             logger.info(
                 "plugin_background_turn_completed plugin_id=%s event_id=%d "
@@ -182,8 +187,7 @@ class PluginBackgroundTurnWorker:
                 result.model_requests,
             )
         except (
-            PlannerInterruptedError,
-            ProviderPlannerInterruptedError,
+            TurnInterruptedError,
             TurnSupersededError,
         ):
             if job.attempts >= 2:
@@ -197,11 +201,6 @@ class PluginBackgroundTurnWorker:
                     error_category="interrupted_by_user",
                     delay_seconds=5,
                 )
-            await self._planner.record_delivery(
-                run_id,
-                messages_sent=0,
-                interrupted=True,
-            )
         except asyncio.CancelledError:
             await self._repository.defer_turn(
                 job.id,
@@ -219,10 +218,5 @@ class PluginBackgroundTurnWorker:
             )
             await self._repository.fail_turn(
                 job.id,
-                error_category=type(exc).__name__,
-            )
-            await self._planner.record_delivery(
-                run_id,
-                messages_sent=0,
                 error_category=type(exc).__name__,
             )

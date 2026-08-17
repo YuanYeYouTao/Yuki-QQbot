@@ -417,7 +417,7 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
         chat_event_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(chat_events)").fetchall()
         }
-    assert revision == ("0036",)
+    assert revision == ("0040",)
     assert "visual_summary" in chat_event_columns
     assert "conversations" not in tables
     assert {
@@ -452,7 +452,7 @@ def test_0024_downgrade_refuses_active_rebuild_then_preserves_memory_tables(
     database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
     monkeypatch.setenv("DATABASE_URL", database_url)
     config = Config("alembic.ini")
-    command.upgrade(config, "head")
+    command.upgrade(config, "0039")
     now = "2026-08-01T00:00:00+00:00"
     with sqlite3.connect(database_path) as connection:
         connection.execute(
@@ -531,4 +531,4 @@ def test_0007_non_destructively_backfills_existing_people(
             """
         ).fetchone() == (50, 50)
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0036",)
+    assert revision == ("0040",)

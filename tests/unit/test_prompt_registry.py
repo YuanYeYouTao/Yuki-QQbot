@@ -51,13 +51,13 @@ def test_plugin_prompt_is_untrusted_budgeted_and_cannot_use_core_stage() -> None
         )
 
 
-def test_prompt_target_filters_planner_from_agent() -> None:
+def test_prompt_target_filters_plugin_session_from_agent() -> None:
     registry = PromptRegistry()
-    planner_only = PromptFragment(
-        "planner-only",
+    session_only = PromptFragment(
+        "session-only",
         PromptStage.FINAL_CONSTRAINTS,
-        "plan",
-        target=PromptTarget.PLANNER,
+        "session",
+        target=PromptTarget.PLUGIN_SESSION,
     )
-    assert registry.render((planner_only,), target=PromptTarget.AGENT) == ()
-    assert registry.render((planner_only,), target=PromptTarget.PLANNER) == ("plan",)
+    assert registry.render((session_only,), target=PromptTarget.AGENT) == ()
+    assert registry.render((session_only,), target=PromptTarget.PLUGIN_SESSION) == ("session",)

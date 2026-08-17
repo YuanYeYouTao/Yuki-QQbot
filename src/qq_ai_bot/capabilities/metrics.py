@@ -12,7 +12,6 @@ class ToolKernelMetrics:
     refreshes: Counter[tuple[str, bool]] = field(default_factory=Counter)
     selected_for_turn: Counter[tuple[str, str]] = field(default_factory=Counter)
     schema_tokens: Counter[tuple[str, str]] = field(default_factory=Counter)
-    planner_scope_turns: Counter[bool] = field(default_factory=Counter)
     first_round_tool_hits: Counter[bool] = field(default_factory=Counter)
     tool_enabled_turns: int = 0
     request_tools_calls: int = 0
@@ -32,11 +31,10 @@ class ToolKernelMetrics:
         self.selected_for_turn[(provider_id, tool_name)] += 1
         self.schema_tokens[(provider_id, tool_name)] += max(0, schema_tokens)
 
-    def record_tool_enabled_turn(self, *, planner_scope_explicit: bool) -> None:
+    def record_tool_enabled_turn(self) -> None:
         """Count one tool-capable turn without retaining conversation identity."""
 
         self.tool_enabled_turns += 1
-        self.planner_scope_turns[planner_scope_explicit] += 1
 
     def record_request_tools(self) -> None:
         """Track one fallback discovery call."""

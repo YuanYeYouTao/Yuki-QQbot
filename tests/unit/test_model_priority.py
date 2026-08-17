@@ -85,7 +85,7 @@ async def test_foreground_preempts_running_background_provider() -> None:
 
     foreground = await asyncio.wait_for(
         executor.execute(
-            ModelTask.PLANNER,
+            ModelTask.CHAT_AGENT,
             ChatRequest(messages=(ChatMessage(role="user", content="foreground"),)),
         ),
         timeout=1,

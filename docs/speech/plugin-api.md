@@ -1,6 +1,6 @@
 # Plugin Speech API
 
-Plugin API v1 新增 `ctx.speech`：status、list/get profile、list styles、synthesize、
+Plugin API 2.0 提供 `ctx.speech`：status、list/get profile、list styles、synthesize、
 queue_reply_voice、send_private 和 send_group。权限为 `speech.profile.read`、
 `speech.generate`、`speech.reply_effect`、`speech.send`、`speech.manage` 和
 `speech.provider.register`。

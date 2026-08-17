@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext
-from qq_ai_bot.capabilities.models import AuthorityContext, CapabilityDescriptor
-from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
+from qq_ai_bot.capabilities.models import CapabilityDescriptor
+from qq_ai_bot.capabilities.policy import CapabilityPolicyEngine
 from qq_ai_bot.capabilities.results import (
     ToolExecutionResult,
     resolve_mutation_commit,
 )
+from qq_ai_bot.mcp.binding import mcp_policy_context
 from qq_ai_bot.mcp.descriptors import descriptor_from_mcp_tool
 from qq_ai_bot.mcp.manager import MCPManager
-from qq_ai_bot.planner.models import ToolMode, ToolSelection
 
 
 @dataclass(slots=True)
@@ -67,11 +66,11 @@ class MCPGatewayBinding:
             )
 
         if operation == "describe":
-            if not _scope_visible(descriptor, context.runtime):
+            if not self._policy_allows(context, descriptor):
                 return _result(
                     ok=False,
-                    error_code="mcp_scope_not_selected",
-                    public_message="当前轮次没有选择该 MCP 工具作用域",
+                    error_code="mcp_tool_policy_denied",
+                    public_message="当前轮次策略不允许查看该 MCP 工具",
                 )
             self._remember(context, descriptor)
             return _result(ok=True, data=metadata.model_dump(mode="json"))
@@ -151,10 +150,6 @@ class MCPGatewayBinding:
         context: ToolInvocationContext,
         descriptor: CapabilityDescriptor,
     ) -> bool:
-        runtime = context.runtime
-        selected_names = getattr(runtime, "selected_tool_names", None)
-        if selected_names is not None and descriptor.model_name in selected_names:
-            return True
         return (
             context.conversation_key,
             context.trigger_message_id,
@@ -167,29 +162,7 @@ class MCPGatewayBinding:
         context: ToolInvocationContext,
         descriptor: CapabilityDescriptor,
     ) -> bool:
-        runtime = context.runtime
-        metadata = context.provider_metadata or {}
-        selection = ToolSelection(
-            mode=getattr(runtime, "tool_mode", ToolMode.INHERIT),
-            scopes=tuple(sorted(getattr(runtime, "tool_groups", descriptor.scope_ids))),
-        )
-        return bool(
-            self.policy.visible(
-                (descriptor,),
-                CapabilityPolicyContext(
-                    authority=AuthorityContext(
-                        actor_user_id=(
-                            getattr(runtime, "actor_user_id", "") or context.actor_user_id
-                        ),
-                        is_superuser=bool(getattr(runtime, "actor_is_superuser", False)),
-                    ),
-                    origin=getattr(runtime, "origin", TurnOrigin.USER_MESSAGE),
-                    tool_selection=selection,
-                    contains_images=bool(metadata.get("contains_images", False)),
-                    web_was_used=bool(metadata.get("web_was_used", False)),
-                ),
-            )
-        )
+        return bool(self.policy.visible((descriptor,), mcp_policy_context(context)))
 
 
 def _operation(arguments: dict[str, object]) -> str:
@@ -201,14 +174,6 @@ def _operation(arguments: dict[str, object]) -> str:
     if arguments.get("describe"):
         return "describe"
     return "search"
-
-
-def _scope_visible(descriptor: CapabilityDescriptor, runtime: object) -> bool:
-    scopes = set(getattr(runtime, "tool_groups", descriptor.scope_ids))
-    explicit = bool(getattr(runtime, "planner_scopes_explicit", False))
-    if explicit and not scopes:
-        return False
-    return not scopes or bool(scopes.intersection(descriptor.scope_ids))
 
 
 def _result(

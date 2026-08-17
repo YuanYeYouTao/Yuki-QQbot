@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qq_ai_bot import __version__
 from qq_ai_bot.config import Settings
+from qq_ai_bot.deployment_setup.migrate_3_6 import migrate_deployment_3_6
 from qq_ai_bot.deployment_setup.service import (
     EnvironmentDocument,
     SetupConfiguration,
@@ -88,13 +89,25 @@ def add_setup_parser(
     setup.add_argument(
         "setup_action",
         nargs="?",
-        choices=("configure", "validate", "apply-pending", "verify"),
+        choices=("configure", "validate", "apply-pending", "verify", "migrate-3-6"),
         default="configure",
     )
     setup.add_argument("--deployment-root", type=Path, default=Path.cwd())
     setup.add_argument("--no-color", action="store_true")
     setup.add_argument("--health-url", default="http://127.0.0.1:8080/healthz")
     setup.add_argument("--timeout", type=float, default=180.0)
+    setup.add_argument(
+        "--baseline-output",
+        type=Path,
+        default=None,
+        help="Git-external path for the 3.6.0 runtime baseline JSON",
+    )
+    setup.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="Working tree used to reject in-repo baseline output",
+    )
 
 
 def run_setup_command(args: argparse.Namespace) -> int:
@@ -110,6 +123,42 @@ def run_setup_command(args: argparse.Namespace) -> int:
                 configuration, _document = _load_current_configuration(paths)
                 validate_configuration(paths, configuration)
             ui.success("配置通过本地严格验证；未发起任何计费 API 请求")
+            return 0
+        if action == "migrate-3-6":
+            result = migrate_deployment_3_6(
+                paths,
+                baseline_output=Path(args.baseline_output) if args.baseline_output else None,
+                repo_root=Path(args.repo_root) if args.repo_root else None,
+            )
+            profiles = result.profiles
+            if profiles.backup is not None:
+                ui.info(f"配置已备份到 {profiles.backup.relative_to(paths.root)}")
+            if profiles.materialized_attribution_from is not None:
+                ui.info(
+                    "已将 memory_attribution 显式写为 "
+                    f"{profiles.materialized_attribution_from} 档案"
+                )
+            if profiles.removed_routes:
+                ui.info("已删除路由：" + ", ".join(profiles.removed_routes))
+            if profiles.changed:
+                ui.success("model_profiles.toml 已迁移到 schema v3")
+            else:
+                ui.disabled("model_profiles.toml 已是 schema v3，无需改写")
+            if result.env.renamed:
+                ui.info(
+                    "已重命名环境变量："
+                    + ", ".join(f"{old}->{new}" for old, new in result.env.renamed)
+                )
+            if result.env.deleted:
+                ui.info("已删除环境变量：" + ", ".join(result.env.deleted))
+            if result.env.changed:
+                ui.success(".env 已按 Conversation Runtime 映射改写")
+            else:
+                ui.disabled(".env 无需改写")
+            if result.baseline.output is not None:
+                ui.success(f"runtime baseline 已写入 {result.baseline.output}")
+            elif result.baseline.skipped:
+                ui.disabled(f"跳过 runtime baseline：{result.baseline.skipped}")
             return 0
         if action == "apply-pending":
             with _working_directory(paths.root):
@@ -313,7 +362,7 @@ def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     if draft.protocol == "responses":
         ui.info("DeepSeek Responses 可使用原生搜索；请求不会发送 tool_choice 字段。")
     else:
-        ui.warning("主模型必须支持 Function Calling 才能运行 Planner 和 Agent 工具。")
+        ui.warning("主模型必须支持 Function Calling 才能运行 Agent 工具。")
     environment["LLM_BASE_URL"] = ui.ask(
         "主模型 Base URL",
         default=_real_value(environment.get("LLM_BASE_URL", "")),
@@ -335,7 +384,7 @@ def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
 def _page_flash(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     del paths
     environment = draft.environment
-    ui.info("Flash 用于 Planner 和后台结构化任务，会增加一个模型连接。")
+    ui.info("Flash 用于后台结构化任务，会增加一个模型连接。")
     draft.flash_enabled = ui.confirm("启用 Flash 模型？", default=draft.flash_enabled)
     if not draft.flash_enabled:
         return
@@ -756,7 +805,7 @@ def _select_plugins(
     *,
     initial: bool,
 ) -> tuple[str, ...]:
-    discovery = PluginDiscovery(paths.root / "plugins", yuki_version=__version__, plugin_api="1.1")
+    discovery = PluginDiscovery(paths.root / "plugins", yuki_version=__version__, plugin_api="2.0")
     selected: list[str] = []
     found = discovery.discover()
     valid = tuple(item.manifest for item in found if item.manifest is not None)

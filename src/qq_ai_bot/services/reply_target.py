@@ -12,14 +12,14 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 
 @dataclass(slots=True)
 class ReplyTargetControl:
-    """One bounded main-Agent override over the Planner's reply target."""
+    """One bounded main-Agent override over the default (no-quote) reply target."""
 
     visible_event_ids: frozenset[int]
     override_applied: bool = False
     event_id: int | None = None
 
     def apply(self, event_id: int | None) -> tuple[bool, str]:
-        """Apply one valid override; omitting the event clears the Planner target."""
+        """Apply one valid override; omitting the event clears the quote target."""
 
         if self.override_applied:
             return False, "reply_target_already_selected"

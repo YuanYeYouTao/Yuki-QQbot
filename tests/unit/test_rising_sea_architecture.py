@@ -19,7 +19,7 @@ from qq_ai_bot.capabilities.models import (
     CapabilityTrustSource,
 )
 from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
-from qq_ai_bot.cli import _prompt_comparison
+from qq_ai_bot.cli import _prompt_comparison, _prompt_diagnostic
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.messages import (
@@ -50,7 +50,6 @@ from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.planner.models import ToolGroup, ToolMode, ToolSelection
 from qq_ai_bot.prompting import (
     PromptChannel,
     PromptCompiler,
@@ -66,7 +65,7 @@ def _profile_document(routes: dict[str, str] | None = None) -> str:
     route_values = routes or {task.value: "pro" for task in ModelTask}
     route_text = "\n".join(f'{name} = "{profile}"' for name, profile in route_values.items())
     return (
-        "schema_version = 1\n"
+        "schema_version = 3\n"
         "[profiles.pro]\n"
         'provider = "openai_compatible"\n'
         'base_url_env = "PRO_URL"\n'
@@ -151,12 +150,23 @@ def test_legacy_profiles_route_attribution_to_utility_structured(tmp_path: Path)
 
 
 def test_prompt_benchmark_meets_declared_reduction_targets() -> None:
-    settings = Settings(_env_file=None, llm_provider="fake", llm_model="fake")
+    settings = Settings(
+        _env_file=None,
+        llm_provider="fake",
+        llm_model="fake",
+        model_profiles_file=Path("__no_model_profiles__.toml"),
+    )
     comparison = _prompt_comparison(settings)
     scenarios = comparison["scenarios"]
     assert isinstance(scenarios, dict)
     assert scenarios["direct-text"]["character_reduction_percent"] >= 30
-    assert scenarios["autonomous-group"]["character_reduction_percent"] >= 30
+    autonomous = _prompt_diagnostic(settings, "autonomous-group")
+    mention = _prompt_diagnostic(settings, "group-mention")
+    assert autonomous["route_task"] == ModelTask.CHAT_AGENT.value
+    assert "core.contract" in autonomous["contribution_ids"]
+    assert "core.persona" in autonomous["contribution_ids"]
+    assert autonomous["history_characters"] == mention["history_characters"]
+    assert autonomous["current_message_characters"] == mention["current_message_characters"]
 
 
 @pytest.mark.asyncio
@@ -197,7 +207,7 @@ async def test_model_invocation_stats_group_usage_without_content(database: Data
         error_category=None,
     )
     await repository.record(
-        task=ModelTask.PLANNER,
+        task=ModelTask.UTILITY_STRUCTURED,
         profile_id="flash",
         provider="fake",
         model="flash-model",
@@ -231,16 +241,16 @@ class _StructuredExecutor:
         self.requests: list[ChatRequest] = []
 
     async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
-        assert task is ModelTask.PLANNER
+        assert task is ModelTask.UTILITY_STRUCTURED
         self.requests.append(request)
         return self.response
 
     def model_name(self, task: ModelTask) -> str:
-        assert task is ModelTask.PLANNER
+        assert task is ModelTask.UTILITY_STRUCTURED
         return "flash"
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
-        assert task is ModelTask.PLANNER
+        assert task is ModelTask.UTILITY_STRUCTURED
         return self.mode
 
 
@@ -254,7 +264,7 @@ class _SequencedStructuredExecutor(_StructuredExecutor):
         self.responses = list(responses)
 
     async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
-        assert task is ModelTask.PLANNER
+        assert task is ModelTask.UTILITY_STRUCTURED
         self.requests.append(request)
         return self.responses.pop(0)
 
@@ -275,7 +285,7 @@ async def test_structured_runner_uses_schema_channel_and_rejects_extra_text() ->
         StructuredOutputMode.FUNCTION_TOOL,
     )
     result = await StructuredTaskRunner(executor).run(
-        task=ModelTask.PLANNER,
+        task=ModelTask.UTILITY_STRUCTURED,
         instruction="Return one result.",
         structured_input={"input": 1},
         output_model=_Output,
@@ -292,7 +302,7 @@ async def test_structured_runner_uses_schema_channel_and_rejects_extra_text() ->
     )
     with pytest.raises(StructuredTaskError):
         await StructuredTaskRunner(invalid).run(
-            task=ModelTask.PLANNER,
+            task=ModelTask.UTILITY_STRUCTURED,
             instruction="Return one result.",
             structured_input={},
             output_model=_Output,
@@ -331,7 +341,7 @@ async def test_structured_runner_repairs_one_invalid_function_result() -> None:
     )
 
     result = await StructuredTaskRunner(executor).run(
-        task=ModelTask.PLANNER,
+        task=ModelTask.UTILITY_STRUCTURED,
         instruction="Return one result.",
         structured_input={"input": 1},
         output_model=_Output,
@@ -365,7 +375,7 @@ async def test_structured_runner_reports_exhausted_validation_reason() -> None:
 
     with pytest.raises(StructuredTaskError) as captured:
         await StructuredTaskRunner(executor).run(
-            task=ModelTask.PLANNER,
+            task=ModelTask.UTILITY_STRUCTURED,
             instruction="Return one result.",
             structured_input={},
             output_model=_Output,
@@ -452,7 +462,7 @@ async def test_structured_function_channel_does_not_require_agent_tool_capabilit
                 profile_id="flash",
                 required_capabilities=(
                     frozenset({ModelCapability.STRUCTURED_OUTPUT})
-                    if task is ModelTask.PLANNER
+                    if task is ModelTask.UTILITY_STRUCTURED
                     else frozenset()
                 ),
             )
@@ -467,7 +477,7 @@ async def test_structured_function_channel_does_not_require_agent_tool_capabilit
     schema_tool = ChatTool(name="emit_result", description="result", parameters={})
 
     await executor.execute(
-        ModelTask.PLANNER,
+        ModelTask.UTILITY_STRUCTURED,
         ChatRequest(
             messages=(ChatMessage(role="user", content="{}"),),
             tools=(schema_tool,),
@@ -478,7 +488,7 @@ async def test_structured_function_channel_does_not_require_agent_tool_capabilit
     assert provider.requests[0].structured_output
     with pytest.raises(ValueError, match="does not support: tools"):
         await executor.execute(
-            ModelTask.PLANNER,
+            ModelTask.UTILITY_STRUCTURED,
             ChatRequest(
                 messages=(ChatMessage(role="user", content="call a business tool"),),
                 tools=(schema_tool,),
@@ -578,7 +588,8 @@ def _descriptor(name: str, effect: CapabilityEffect) -> CapabilityDescriptor:
     return CapabilityDescriptor(
         canonical_name=f"test.{name}",
         model_name=name,
-        group=ToolGroup.MEMORY.value,
+        group="memory",
+        namespace="memory.test",
         input_schema={"type": "object"},
         output_schema={"type": "object"},
         effect=effect,
@@ -602,10 +613,7 @@ def test_capability_policy_uses_effect_metadata_not_tool_name() -> None:
         CapabilityPolicyContext(
             authority=AuthorityContext(actor_user_id="1", is_superuser=False),
             origin=TurnOrigin.USER_MESSAGE,
-            tool_selection=ToolSelection(
-                mode=ToolMode.READ_ONLY,
-                groups=(ToolGroup.MEMORY,),
-            ),
+            read_only=True,
         ),
     )
     assert visible == (renamed_read,)

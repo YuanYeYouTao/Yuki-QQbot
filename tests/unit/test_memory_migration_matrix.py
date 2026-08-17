@@ -76,8 +76,10 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
     assert "memory_activation_states" in expected_names
     assert "memory_recall_receipts" in expected_names
     assert "memory_recall_items" in expected_names
+    assert "reply_effect_events" in expected_names
+    assert "planner_runs" not in expected_names
     with sqlite3.connect(fresh) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0036",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0040",)
 
     for label, revision in MATRIX.items():
         database = tmp_path / f"{label}.db"
@@ -87,11 +89,11 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
         assert names == expected_names, label
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0036",
+                "0040",
             )
             assert connection.execute("SELECT COUNT(*) FROM memory_rebuild_runs").fetchone() == (0,)
 
 
 def test_async_memory_attribution_is_the_current_production_migration() -> None:
     versions = sorted((ROOT / "migrations/versions").glob("*.py"))
-    assert versions[-1].name == "0036_async_memory_attribution.py"
+    assert versions[-1].name == "0040_drop_planner_persistence.py"

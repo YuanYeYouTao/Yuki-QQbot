@@ -52,7 +52,7 @@ class ExamplePlugin:
             if _events is not None:
                 await _events.publish(
                     EventEnvelope(
-                        name=EventName.PLANNER_ENTERED,
+                        name=EventName.TURN_ADMITTED,
                         payload={"observed": event.name.value},
                     )
                 )
@@ -176,7 +176,7 @@ name = "{plugin_id}"
 version = "{version}"
 description = "PluginManager test plugin"
 entrypoint = "{entrypoint}"
-plugin_api = "1.0"
+plugin_api = "2.0"
 yuki_requires = ">=1.6.0,<2.0"
 permissions = [{quoted_permissions}]
 

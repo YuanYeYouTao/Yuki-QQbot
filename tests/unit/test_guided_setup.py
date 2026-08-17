@@ -41,7 +41,7 @@ from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
 
 def _base_environment() -> dict[str, str]:
     return {
-        "YUKI_VERSION": "3.5.3",
+        "YUKI_VERSION": "3.6.0",
         "ONEBOT_ACCESS_TOKEN": "onebot-test-token",
         "NAPCAT_WEBUI_TOKEN": "napcat-test-token",
         "SUPERUSERS": "12345678",
@@ -221,7 +221,7 @@ def test_first_run_generates_safe_all_disabled_configuration(tmp_path: Path) -> 
 
     assert _configure(paths, ui) == 0
     environment = EnvironmentDocument.load(paths).values()
-    assert environment["YUKI_VERSION"] == "3.5.3"
+    assert environment["YUKI_VERSION"] == "3.6.0"
     assert len(environment["ONEBOT_ACCESS_TOKEN"]) >= 43
     assert len(environment["NAPCAT_WEBUI_TOKEN"]) >= 43
     assert environment["ONEBOT_ACCESS_TOKEN"] != environment["NAPCAT_WEBUI_TOKEN"]
@@ -476,7 +476,8 @@ def test_model_profiles_route_all_tasks_and_keep_agents_on_main() -> None:
     with_flash = tomllib.loads(build_model_profiles(main_protocol="responses", flash_enabled=True))
     assert with_flash["profiles"]["main"]["provider"] == "deepseek"
     assert "native_web_search" in with_flash["profiles"]["main"]["capabilities"]
-    assert with_flash["routes"]["planner"] == "flash"
+    assert "planner" not in with_flash["routes"]
+    assert with_flash["schema_version"] == 3
     assert with_flash["routes"]["memory_attribution"] == "flash"
     assert with_flash["routes"]["relationship_evaluation"] == "flash"
     assert with_flash["routes"]["emoji_replacement"] == "flash"
@@ -666,7 +667,7 @@ def test_atomic_commit_backs_up_and_does_not_rewrite_unselected_files(tmp_path: 
         paths,
         document,
         SetupConfiguration(
-            environment={**document.values(), "YUKI_VERSION": "3.5.3"},
+            environment={**document.values(), "YUKI_VERSION": "3.6.0"},
             model_profiles="ignored replacement\n",
             mcp_document={"mcpServers": {"ignored": {}}},
             pending_plugins=("example.guided",),
@@ -730,7 +731,7 @@ name = "Guided Test"
 version = "1.0.0"
 description = "Manifest-only guided setup test."
 entrypoint = "plugin:Plugin"
-plugin_api = "1.1"
+plugin_api = "2.0"
 yuki_requires = ">=3.5.3,<4"
 permissions = ["message.current.read"]
 """,
@@ -746,6 +747,7 @@ permissions = ["message.current.read"]
         {
             "database_url": database_url,
             "plugin_directory": plugin.parent,
+            "plugin_api_version": "2.0",
             "llm_provider": "fake",
             "llm_model": "fake",
         }
@@ -899,7 +901,7 @@ name = "Guided Test"
 version = "1.0.0"
 description = "Manifest-only guided setup test."
 entrypoint = "plugin:Plugin"
-plugin_api = "1.1"
+plugin_api = "2.0"
 yuki_requires = ">=3.5.3,<4"
 permissions = ["message.current.read"]
 """,
@@ -915,6 +917,7 @@ permissions = ["message.current.read"]
         {
             "database_url": database_url,
             "plugin_directory": plugin.parent,
+            "plugin_api_version": "2.0",
             "llm_provider": "fake",
             "llm_model": "fake",
         }

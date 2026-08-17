@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import tarfile
 import zipfile
@@ -28,14 +29,14 @@ from scripts.release_validate import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "3.5.3"
+VERSION = "3.6.0"
 
 
 def test_release_identity_matches_all_version_surfaces() -> None:
-    assert validate_release_identity(ROOT, "v3.5.3") == VERSION
+    assert validate_release_identity(ROOT, "v3.6.0") == VERSION
 
 
-@pytest.mark.parametrize("tag", ["3.5.3", "v3.5", "v3.5.3-rc1", "v03.5.3", "latest"])
+@pytest.mark.parametrize("tag", ["3.6.0", "v3.5", "v3.5.3-rc1", "v03.5.3", "latest"])
 def test_release_identity_rejects_non_final_tags(tag: str) -> None:
     with pytest.raises(ReleaseValidationError, match=r"vX\.Y\.Z"):
         validate_release_identity(ROOT, tag)
@@ -66,7 +67,7 @@ def test_bundle_allowlist_requires_persona() -> None:
     tracked = {
         "docker-compose.yml",
         ".env.example",
-        "docs/releases/v3.5.3.md",
+        "docs/releases/v3.6.0.md",
         "install.sh",
         "install.ps1",
         "config/memory_contracts.toml",
@@ -81,22 +82,22 @@ def test_bundle_allowlist_requires_persona() -> None:
 
 
 def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Path) -> None:
-    tracked = tracked_files(ROOT) | {"docs/releases/v3.5.3.md", "install.sh", "install.ps1"}
+    tracked = tracked_files(ROOT) | {"docs/releases/v3.6.0.md", "install.sh", "install.ps1"}
     assets = build_release_bundle(ROOT, tmp_path, VERSION, tracked=tracked)
     assert {path.name for path in assets} == {
-        "yuki-3.5.3-deploy.zip",
-        "yuki-3.5.3-deploy.tar.gz",
+        "yuki-3.6.0-deploy.zip",
+        "yuki-3.6.0-deploy.tar.gz",
         "docker-compose.yml",
         ".env.example",
-        "Yuki-3.5.3-Upgrade.md",
+        "Yuki-3.6.0-Upgrade.md",
         "install.sh",
         "install.ps1",
         "SHA256SUMS",
     }
-    with zipfile.ZipFile(tmp_path / "yuki-3.5.3-deploy.zip") as archive:
+    with zipfile.ZipFile(tmp_path / "yuki-3.6.0-deploy.zip") as archive:
         names = set(archive.namelist())
-        shell_mode = archive.getinfo("yuki-3.5.3-deploy/install.sh").external_attr >> 16
-    prefix = "yuki-3.5.3-deploy/"
+        shell_mode = archive.getinfo("yuki-3.6.0-deploy/install.sh").external_attr >> 16
+    prefix = "yuki-3.6.0-deploy/"
     assert f"{prefix}docker-compose.yml" in names
     assert f"{prefix}.env.example" in names
     assert f"{prefix}config/persona.md" in names
@@ -112,7 +113,7 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}.mcp.json" not in names
     assert f"{prefix}config/system_prompt.md" not in names
     assert f"{prefix}config/model_profiles.toml" not in names
-    with tarfile.open(tmp_path / "yuki-3.5.3-deploy.tar.gz", "r:gz") as archive:
+    with tarfile.open(tmp_path / "yuki-3.6.0-deploy.tar.gz", "r:gz") as archive:
         assert archive.getmember(f"{prefix}install.sh").mode & 0o111
     checksum_lines = (tmp_path / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
     checksums = {
@@ -153,7 +154,7 @@ def test_oci_revision_label_does_not_invalidate_system_dependency_layers(
 
 
 def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> None:
-    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.3\n", encoding="utf-8")
+    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.6.0\n", encoding="utf-8")
 
     sentinels = prepare_deployment(tmp_path)
 
@@ -164,10 +165,11 @@ def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> 
     assert hubert_sentinel.read_text(encoding="utf-8") == "offline-directory"
     assert speaker_sentinel.read_text(encoding="utf-8") == "offline-file-sentinel"
     assert (tmp_path / ".mcp.json").read_text(encoding="utf-8") == '{"mcpServers": {}}\n'
+    assert "PLUGIN_SYSTEM_ENABLED=true" in (tmp_path / ".env").read_text(encoding="utf-8")
 
 
 def test_release_smoke_sentinels_are_idempotent_and_conflict_safe(tmp_path: Path) -> None:
-    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.3\n", encoding="utf-8")
+    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.6.0\n", encoding="utf-8")
     sentinels = prepare_deployment(tmp_path)
 
     assert prepare_deployment(tmp_path) == sentinels
@@ -219,19 +221,75 @@ def test_release_smoke_reads_alembic_version_inside_container(
     class FakeCompose:
         def run(self, *arguments: str, capture: bool = False) -> str:
             calls.append(arguments)
-            if "urllib.request" in arguments[-1]:
-                return '{"status":"ok","version":"3.5.3","database":"ok"}'
-            if "SELECT version_num FROM alembic_version" in arguments[-1]:
-                return "0036"
+            if arguments[:4] == ("exec", "-T", "bot", "python"):
+                if "urllib.request" in arguments[-1]:
+                    return (
+                        '{"status":"ok","version":"3.6.0","database":"ok",'
+                        '"plugin_system_enabled":true,"plugin_running_count":0}'
+                    )
+                if "SELECT version_num FROM alembic_version" in arguments[-1]:
+                    return "0040"
+            if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
+                return ""
+            if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
+                return ""
             raise AssertionError(arguments)
 
     monkeypatch.setattr("scripts.release_smoke.wait_healthy", lambda *args: "container-id")
 
     verify_bot(FakeCompose(), tmp_path, VERSION)  # type: ignore[arg-type]
 
-    assert len(calls) == 2
-    assert all(call[:4] == ("exec", "-T", "bot", "python") for call in calls)
+    assert [call[:5] for call in calls] == [
+        ("exec", "-T", "bot", "python", "-c"),
+        ("exec", "-T", "bot", "python", "-c"),
+        ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"),
+        ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"),
+    ]
+    pending = json.loads((tmp_path / "data/setup/pending.json").read_text(encoding="utf-8"))
+    assert pending == {"schema_version": 1, "selected_plugins": []}
     assert not (tmp_path / "data/qq_ai_bot.db").exists()
+
+
+def test_release_smoke_applies_builtin_plugin_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin_root = tmp_path / "plugins/io.github.yuanyeyoutao.kun-game"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.toml").write_text(
+        'id = "io.github.yuanyeyoutao.kun-game"\n', encoding="utf-8"
+    )
+    calls: list[tuple[str, ...]] = []
+    health_payloads = iter(
+        (
+            '{"status":"ok","version":"3.6.0","database":"ok",'
+            '"plugin_system_enabled":true,"plugin_running_count":0}',
+            '{"status":"ok","version":"3.6.0","database":"ok",'
+            '"plugin_system_enabled":true,"plugin_running_count":1}',
+        )
+    )
+
+    class FakeCompose:
+        def run(self, *arguments: str, capture: bool = False) -> str:
+            calls.append(arguments)
+            if arguments[:4] == ("exec", "-T", "bot", "python"):
+                if "urllib.request" in arguments[-1]:
+                    return next(health_payloads)
+                return "0040"
+            if arguments[:3] == ("up", "-d", "--no-deps"):
+                return ""
+            if arguments[3:5] == ("qq-ai-bot-cli", "plugin"):
+                return "discovered: io.github.yuanyeyoutao.kun-game"
+            if arguments[3:6] == ("qq-ai-bot-cli", "setup", "apply-pending"):
+                return "applied"
+            raise AssertionError(arguments)
+
+    monkeypatch.setattr("scripts.release_smoke.wait_healthy", lambda *args: "container-id")
+
+    verify_bot(FakeCompose(), tmp_path, VERSION)  # type: ignore[arg-type]
+
+    pending = json.loads((tmp_path / "data/setup/pending.json").read_text(encoding="utf-8"))
+    assert pending["selected_plugins"] == ["io.github.yuanyeyoutao.kun-game"]
+    assert ("up", "-d", "--no-deps", "--force-recreate", "bot") in calls
 
 
 def test_release_smoke_cleans_root_owned_permission_fixture_in_container(
@@ -305,7 +363,20 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
         assert "speech-action" in installer
         assert "Yuki-$VERSION-Upgrade.md" in installer or "Yuki-$Version-Upgrade.md" in installer
         assert "Updated release-managed deployment files" in installer
+        assert "upgrade-3.6" in installer
+        assert "migrate-3-6" in installer
+        assert "qq_ai_bot.db" in installer
+        assert "qq_ai_bot.db-wal" in installer
+        assert "qq_ai_bot.db-shm" in installer
     assert '--user "$(id -u):$(id -g)"' in shell
+    assert shell.index("docker pull") < shell.index("upgrade-3.6")
+    assert shell.index("upgrade-3.6") < shell.index("migrate-3-6")
+    assert shell.index("migrate-3-6") < shell.index("docker compose config")
+    assert "docker compose stop bot" in shell
+    assert "docker compose stop bot" in powershell
+    assert powershell.index("docker pull") < powershell.index("upgrade-3.6")
+    assert powershell.index("upgrade-3.6") < powershell.index("migrate-3-6")
+    assert powershell.index("migrate-3-6") < powershell.index("docker compose config")
     assert "wait_for_service genie-tts-worker" in shell
     assert shell.index('download "$base/$archive"') < shell.index('if [ "$existing" = false ]')
     assert "icacls" in powershell

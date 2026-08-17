@@ -5,7 +5,7 @@ MCP 是 Tool Kernel 的一个 Provider，不是第二套 Agent。配置、连接
 `binding.py`、`result_normalizer.py` 和 `admin.py` 负责。
 
 配置启用的 Server 被视为可信工具来源，不需要 MCP Tool 逐项审批；远程返回内容仍是外部资料，
-不会授予权限。MCP Tool 与 Plugin Tool 使用同一个 Planner、能力策略、AgentRunner、调用协调器和
+不会授予权限。MCP Tool 与 Plugin Tool 使用同一个 Capability Runtime、能力策略、AgentRunner、调用协调器和
 结果预算器。
 
 持久化自动化通过 `mcp/automation.py` 的通用桥接层接入。只有 Server 配置中

@@ -1,4 +1,4 @@
-"""Administrative CLI for migrations, NapCat config, and local Plugin API v1."""
+"""Administrative CLI for migrations, NapCat config, and local Plugin API 2.0."""
 
 from __future__ import annotations
 
@@ -48,7 +48,6 @@ from qq_ai_bot.model_runtime import (
     load_model_profile_catalog,
 )
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.planner.prompt import PLANNER_SYSTEM_PROMPT
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from qq_ai_bot.plugin_host.manifest import load_manifest
 from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
@@ -114,7 +113,7 @@ def _render_napcat_config(settings: Settings, output: Path) -> None:
 
 
 def _add_plugin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    plugin = subparsers.add_parser("plugin", help="管理本地可信 Plugin API v1 插件")
+    plugin = subparsers.add_parser("plugin", help="管理本地可信 Plugin API 2.0 插件")
     commands = plugin.add_subparsers(dest="plugin_command", required=True)
     commands.add_parser("list")
     commands.add_parser("discover")
@@ -190,6 +189,14 @@ def _add_diagnostics_parsers(
     model_commands.add_parser("profiles")
     model_commands.add_parser("stats")
 
+    runtime = subparsers.add_parser("runtime", help="只读 Runtime / Capability / Memory 诊断")
+    runtime_commands = runtime.add_subparsers(dest="runtime_command", required=True)
+    runtime_commands.add_parser("snapshot")
+    search = runtime_commands.add_parser("capability-search")
+    search.add_argument("query")
+    search.add_argument("--limit", type=int, default=8)
+    runtime_commands.add_parser("memory-session")
+
 
 def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     memory = subparsers.add_parser("memory", help="Memory V2 质量、审计与显式治理")
@@ -259,7 +266,7 @@ def _model_catalog(settings: Settings) -> ModelProfileCatalog:
 
 def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
     catalog = _model_catalog(settings)
-    task = ModelTask.PLANNER if scenario == "autonomous-group" else ModelTask.CHAT_AGENT
+    task = ModelTask.CHAT_AGENT
     route, profile = catalog.routes[task], catalog.profiles[catalog.routes[task].profile_id]
     dynamic_payloads: dict[str, object] = {
         "time": {"timezone": "Asia/Shanghai", "local": "2000-01-01T12:00:00+08:00"},
@@ -273,42 +280,28 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
         dynamic_payloads["speech"] = {"available": True, "requested": True}
     if scenario == "plugin":
         dynamic_payloads["plugins"] = [{"id": "example", "data": "synthetic"}]
-    if scenario != "autonomous-group":
-        dynamic_payloads["plan"] = {"decision": "reply"}
+    dynamic_payloads["plan"] = {"decision": "reply"}
 
-    if scenario == "autonomous-group":
-        contributions = [
-            PromptContribution(
-                id="planner.contract",
-                channel=PromptChannel.INVARIANT,
-                trust=PromptTrust.CORE,
-                priority=100,
-                stability=PromptStability.STATIC,
-                content=PLANNER_SYSTEM_PROMPT,
-                required=True,
-            )
-        ]
-    else:
-        contributions = [
-            PromptContribution(
-                id="core.persona",
-                channel=PromptChannel.PERSONA,
-                trust=PromptTrust.CORE,
-                priority=100,
-                stability=PromptStability.STATIC,
-                content=settings.system_prompt,
-                required=True,
-            ),
-            PromptContribution(
-                id="core.contract",
-                channel=PromptChannel.INVARIANT,
-                trust=PromptTrust.CORE,
-                priority=90,
-                stability=PromptStability.STATIC,
-                content=CORE_CONTRACT,
-                required=True,
-            ),
-        ]
+    contributions = [
+        PromptContribution(
+            id="core.persona",
+            channel=PromptChannel.PERSONA,
+            trust=PromptTrust.CORE,
+            priority=100,
+            stability=PromptStability.STATIC,
+            content=settings.system_prompt,
+            required=True,
+        ),
+        PromptContribution(
+            id="core.contract",
+            channel=PromptChannel.INVARIANT,
+            trust=PromptTrust.CORE,
+            priority=90,
+            stability=PromptStability.STATIC,
+            content=CORE_CONTRACT,
+            required=True,
+        ),
+    ]
     contributions.extend(
         PromptContribution(
             id=f"runtime.{key}",
@@ -320,23 +313,13 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
         )
         for key, value in dynamic_payloads.items()
     )
-    history = (
-        ()
-        if scenario == "autonomous-group"
-        else (
-            ChatMessage(role="user", content="这是脱敏的历史消息。"),
-            ChatMessage(role="assistant", content="这是脱敏的历史回复。"),
-        )
-    )
-    current_message = (
-        None
-        if scenario == "autonomous-group"
-        else ChatMessage(role="user", content="请回应当前合成场景。")
-    )
     compiled = PromptCompiler().compile(
         PromptProgram(contributions=tuple(contributions)),
-        history=history,
-        current_message=current_message,
+        history=(
+            ChatMessage(role="user", content="这是脱敏的历史消息。"),
+            ChatMessage(role="assistant", content="这是脱敏的历史回复。"),
+        ),
+        current_message=ChatMessage(role="user", content="请回应当前合成场景。"),
     )
     tools, groups = _scenario_tools(scenario)
     tool_metrics = measure_tool_schemas(tools, groups=groups)
@@ -637,6 +620,62 @@ async def _speech_command(settings: Settings, args: argparse.Namespace) -> int:
         await database.close()
 
 
+def _capability_search_hits(query: str, *, limit: int) -> list[dict[str, object]]:
+    from qq_ai_bot.capabilities.models import CapabilityTrustSource
+    from qq_ai_bot.capabilities.provider import _CORE_METADATA, _CORE_SEARCH_TAGS, _CORE_USE_WHEN
+    from qq_ai_bot.capabilities.search_document import CapabilitySearchDocument
+    from qq_ai_bot.capabilities.search_index import FtsCapabilitySearchIndex
+
+    documents = tuple(
+        CapabilitySearchDocument(
+            capability_id=name,
+            model_name=name,
+            canonical_name=name,
+            namespace_id=namespace,
+            description=(_CORE_USE_WHEN.get(name) or (name,))[0],
+            aliases=_CORE_SEARCH_TAGS.get(name, ()),
+            use_when=_CORE_USE_WHEN.get(name, ()),
+            trust_source=CapabilityTrustSource.CORE,
+            effect=effect,
+            risk=risk,
+        )
+        for name, (namespace, effect, risk) in _CORE_METADATA.items()
+    )
+    index = FtsCapabilitySearchIndex()
+    index.rebuild(revision="cli-core", documents=documents)
+    return [
+        {
+            "capability_id": hit.capability_id,
+            "namespace_id": hit.namespace_id,
+            "score": hit.score,
+        }
+        for hit in index.search(query, limit=limit)
+    ]
+
+
+async def _runtime_diagnostics(settings: Settings, args: argparse.Namespace) -> int:
+    database = Database(settings.database_url)
+    try:
+        snapshot = await _runtime_snapshot(settings, database)
+        command = str(args.runtime_command)
+        if command == "snapshot":
+            payload: dict[str, object] = asdict(snapshot)
+        elif command == "memory-session":
+            payload = {
+                "memory": asdict(snapshot.memory),
+                "conversation": asdict(snapshot.conversation),
+            }
+        else:
+            payload = {
+                "query": str(args.query),
+                "hits": _capability_search_hits(str(args.query), limit=int(args.limit)),
+            }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    finally:
+        await database.close()
+
+
 async def _runtime_snapshot(settings: Settings, database: Database) -> RuntimeConfigSnapshot:
     from qq_ai_bot.admin.config_service import RuntimeConfigService
 
@@ -658,11 +697,11 @@ async def _plugin_command(settings: Settings, args: argparse.Namespace) -> int:
             print(report.model_dump_json(indent=2))
             return 0 if report.passed else 1
         await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
-        target = path / "plugin-api-v1-reference.md"
+        target = path / "plugin-api-v2-reference.md"
         await asyncio.to_thread(
             target.write_text,
             (
-                "# Yuki Plugin API v1\n\n"
+                "# Yuki Plugin API 2.0\n\n"
                 "由 `qq-ai-bot-cli plugin docs` 生成。完整手册位于 "
                 "`docs/plugin-development/`。\n"
             ),
@@ -998,6 +1037,8 @@ def main() -> None:
                 for profile_id, profile in catalog.profiles.items()
             }
         print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "runtime":
+        raise SystemExit(asyncio.run(_runtime_diagnostics(settings, args)))
     elif args.command == "memory":
         raise SystemExit(asyncio.run(_memory_command(settings, args)))
 

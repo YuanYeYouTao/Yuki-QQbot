@@ -21,8 +21,10 @@ from qq_ai_bot.automation.registry import (
     CapabilityResult,
 )
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext
+from qq_ai_bot.capabilities.models import CapabilityRisk
 from qq_ai_bot.capabilities.results import ToolResultBudgeter
 from qq_ai_bot.mcp.binding import MCPPolicyRuntime, MCPToolBinding
+from qq_ai_bot.mcp.descriptors import host_annotation_policy
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.mcp.models import MCPToolMetadata
 
@@ -164,12 +166,11 @@ class MCPAutomationBridge:
         config = self._manager.server_config(tool.server_id)
         if config is None:
             raise ValueError("MCP server disappeared during automation registration")
-        annotations = tool.annotations
-        destructive = bool(annotations.get("destructiveHint", False))
-        read_only = bool(annotations.get("readOnlyHint", False))
+        policy = host_annotation_policy(config.yuki.tool_annotations.get(tool.remote_tool_name))
+        read_only = policy.read_only
         risk = (
             RiskClass.DESTRUCTIVE
-            if destructive
+            if policy.risk is CapabilityRisk.DESTRUCTIVE
             else RiskClass.READ
             if read_only
             else RiskClass.MUTATE

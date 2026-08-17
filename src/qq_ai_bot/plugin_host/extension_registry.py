@@ -11,15 +11,15 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from yuki_plugin_sdk.errors import PluginPermissionError, RegistrationError
-from yuki_plugin_sdk.models import PromptFragment, PromptStage, TrustedLevel
+from yuki_plugin_sdk.models import PromptFragment, PromptStage, PromptTarget, TrustedLevel
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import (
+    AdmissionSignalRegistration,
     AutomationActionRegistration,
     BackgroundServiceRegistration,
     CommandRegistration,
     EmojiSelectionSignalRegistration,
     EventHookRegistration,
-    PlannerSignalRegistration,
     PluginRegistrar,
     ToolRegistration,
     TTSProviderRegistration,
@@ -53,7 +53,7 @@ class ExtensionKind(StrEnum):
     EVENT_HOOK = "event_hook"
     PROMPT_FRAGMENT = "prompt_fragment"
     AUTOMATION_ACTION = "automation_action"
-    PLANNER_SIGNAL = "planner_signal"
+    ADMISSION_SIGNAL = "admission_signal"
     EMOJI_SELECTION_SIGNAL = "emoji_selection_signal"
     CONFIG_SCHEMA = "config_schema"
     BACKGROUND_SERVICE = "background_service"
@@ -209,6 +209,8 @@ class BoundPluginRegistrar(PluginRegistrar):
             raise RegistrationError(
                 "third-party plugins may only register plugin_context or tool_guidance"
             )
+        if fragment.target not in {PromptTarget.AGENT, PromptTarget.PLUGIN_SESSION}:
+            raise RegistrationError("third-party plugins may only target agent or plugin_session")
         if fragment.plugin_id not in {None, self._plugin_id}:
             raise RegistrationError("prompt fragment plugin_id does not match registrar")
         normalized = fragment.model_copy(
@@ -235,13 +237,13 @@ class BoundPluginRegistrar(PluginRegistrar):
             registration=registration,
         )
 
-    def register_planner_signal(self, registration: PlannerSignalRegistration) -> None:
-        self._require(PluginPermission.PLANNER_SIGNAL_REGISTER)
+    def register_admission_signal(self, registration: AdmissionSignalRegistration) -> None:
+        self._require(PluginPermission.ADMISSION_SIGNAL_REGISTER)
         if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", registration.name) is None:
-            raise RegistrationError("invalid planner signal name")
+            raise RegistrationError("invalid admission signal name")
         self._registry._add(
             plugin_id=self._plugin_id,
-            kind=ExtensionKind.PLANNER_SIGNAL,
+            kind=ExtensionKind.ADMISSION_SIGNAL,
             local_name=registration.name,
             registration=registration,
         )

@@ -19,21 +19,31 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.delivery import ReplyControlState, ReplySequenceSpec
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
+from qq_ai_bot.emoji.models import (
+    EmojiPlacement,
+    EmojiReplyMode,
+    PendingReplyEffect,
+)
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureRegistry
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
-    MemoryAccessMode,
+    MemoryContextMode,
+    MemoryKind,
+    MemoryRecallPurpose,
     MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
+    MemoryTemporalConstraint,
+    MemoryTemporalIntentMode,
     SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent
+from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent, MemoryTemporalIntent
 from qq_ai_bot.memory.mutation.models import (
     SELF_MEMORY_CATEGORIES,
     MemoryDecisionActorType,
@@ -44,6 +54,12 @@ from qq_ai_bot.memory.mutation.models import (
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.retrieval import MemoryRetriever
+from qq_ai_bot.memory.runtime.query_plane import (
+    MemoryQueryPlane,
+    MemoryReadConsumer,
+    MemoryReadRequest,
+    ResolvedReadScope,
+)
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.targets import MemoryTargetResolver
@@ -54,9 +70,10 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
-from qq_ai_bot.planner.models import ToolGroup, ToolMode
 from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
+from qq_ai_bot.speech.models import VoiceMode, VoicePreferenceMode
+from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.time.formatting import local_iso
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
@@ -73,7 +90,25 @@ _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
 _HISTORY_TEXT_MAX = 4000
 _HISTORY_SEGMENT_MAX = 100
-_MEMORY_CHANGE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
+_MEMORY_CHANGE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE})
+_MEMORY_INTENT_PROPERTIES = {
+    "purpose": {
+        "type": "string",
+        "enum": ["background", "continuation", "recall", "verify", "correct"],
+    },
+    "entities": {
+        "type": "array",
+        "maxItems": 5,
+        "items": {"type": "string", "maxLength": 64},
+    },
+    "preferred_kinds": {
+        "type": "array",
+        "maxItems": 3,
+        "items": {"type": "string", "enum": ["fact", "preference", "episode"]},
+    },
+    "start_at": {"type": "string", "description": "ISO-8601 绝对时间范围起点"},
+    "end_at": {"type": "string", "description": "ISO-8601 绝对时间范围终点"},
+}
 _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
     "agent_tool_runtime_snapshot",
     default=None,
@@ -107,17 +142,14 @@ class ToolRuntime:
     mentioned_user_ids: tuple[str, ...] = ()
     runtime_config: RuntimeConfigSnapshot | None = None
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
-    tool_mode: ToolMode = ToolMode.INHERIT
-    tool_groups: frozenset[str] = frozenset(group.value for group in ToolGroup)
+    tools_closed: bool = False
+    read_only: bool = False
     turn_token: TurnToken | None = None
     reply_effects: list[ReplyEffect] | None = None
     reply_target_control: ReplyTargetControl | None = None
-    voice_tool_authorized: bool = False
-    planner_scopes_explicit: bool = False
-    planner_tool_groups: frozenset[str] | None = None
+    reply_control: ReplyControlState | None = None
+    voice_spontaneous_allowed: bool = True
     selection_query: str = ""
-    planner_intent: str = ""
-    selected_tool_names: frozenset[str] | None = None
     scheduled_automation_intent: bool = False
     max_model_requests_override: int | None = None
     native_web_fallback: bool = False
@@ -126,8 +158,7 @@ class ToolRuntime:
     memory_exposures: tuple[MemoryExposure, ...] = ()
     memory_exposure_registry: MemoryExposureRegistry | None = None
     memory_intent: MemoryQueryIntent | None = None
-    memory_access: MemoryAccessMode = MemoryAccessMode.AUTOMATIC
-    planner_fallback: bool = False
+    memory_session: object | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +213,7 @@ class AgentToolService:
         web_sources: WebSearchSourceRepository | None = None,
         runtime_config: RuntimeConfigService | None = None,
         permission_catalog: PermissionCatalogService | None = None,
+        voice_preferences: VoicePreferenceService | None = None,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
@@ -211,6 +243,7 @@ class AgentToolService:
             settings=settings,
             config_registry=self._runtime_config.registry,
         )
+        self._voice_preferences = voice_preferences
 
     def definitions(self, runtime: ToolRuntime) -> tuple[ChatTool, ...]:
         bot_name = self._settings.bot_display_name
@@ -340,8 +373,12 @@ class AgentToolService:
                             "description": "兼容字段；用户手输的 QQ 号，必须是当前群成员",
                         },
                         "query": {"type": "string", "maxLength": 400},
-                        "mode": {"type": "string", "enum": ["relevant", "overview"]},
+                        "mode": {
+                            "type": "string",
+                            "enum": ["relevant", "lexical", "hybrid", "overview"],
+                        },
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        **_MEMORY_INTENT_PROPERTIES,
                     }
                 ),
             ),
@@ -352,8 +389,12 @@ class AgentToolService:
                     {
                         "group_id": {"type": "string"},
                         "query": {"type": "string", "maxLength": 400},
-                        "mode": {"type": "string", "enum": ["relevant", "overview"]},
+                        "mode": {
+                            "type": "string",
+                            "enum": ["relevant", "lexical", "hybrid", "overview"],
+                        },
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        **_MEMORY_INTENT_PROPERTIES,
                     },
                     required=("group_id",),
                 ),
@@ -399,9 +440,10 @@ class AgentToolService:
                             },
                             "mode": {
                                 "type": "string",
-                                "enum": ["relevant", "overview"],
+                                "enum": ["relevant", "lexical", "hybrid", "overview"],
                             },
                             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                            **_MEMORY_INTENT_PROPERTIES,
                         }
                     ),
                 )
@@ -412,7 +454,6 @@ class AgentToolService:
                     name="memory_change",
                     description=(
                         f"{bot_name} 唯一的长期记忆变更工具。只能根据当前用户这条真实入站消息"
-                        "（包括由当前群消息触发的自主回应）"
                         "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
                         f"不能把 {bot_name} 自己的输出当证据，也不能传 QQ 号、群号或事件 ID。"
                         "target.subject_ref 可使用 current_speaker、current_group、"
@@ -662,19 +703,126 @@ class AgentToolService:
                 ChatTool(
                     name="send_voice",
                     description=(
-                        "Planner 已确认当前用户在本轮明确索要语音。调用此工具为本轮最终回复"
-                        "选择可选的语气和语言，因此本轮必须调用一次；是否发送文字、语音"
-                        "或二者由 Planner 决定，"
-                        "本工具不能覆盖。不能指定 profile、模型、参考音频、文件或路径。"
+                        "为本轮最终回复生成语音。mode 选择只发语音或文字加语音；"
+                        "request_basis 只用于频率与审计归类，不扩大权限。"
+                        "是否发送由后端校验功能、音色和发送回执后决定。"
+                        "不能指定 profile、模型、参考音频、文件或路径。"
                     ),
                     parameters=_object_schema(
                         {
+                            "mode": {
+                                "type": "string",
+                                "enum": ["voice_only", "text_and_voice"],
+                            },
+                            "request_basis": {
+                                "type": "string",
+                                "enum": ["user_requested", "agent_initiated"],
+                            },
                             "style_hint": {"type": "string", "maxLength": 128},
                             "language": {
                                 "type": "string",
                                 "enum": ["auto", "zh", "jp"],
                             },
-                        }
+                        },
+                        required=("mode", "request_basis"),
+                    ),
+                )
+            )
+        if self._emoji_available_for_turn(runtime):
+            tools.append(
+                ChatTool(
+                    name="send_emoji",
+                    description=(
+                        "为本轮最终回复发送一张已采用表情。mode=emoji_only 表示表情就是全部"
+                        "可见输出；with_text 表示配合正文。placement 决定相对正文的位置。"
+                        "不要在正文里用占位符假装已经发表情。"
+                    ),
+                    parameters=_object_schema(
+                        {
+                            "mode": {
+                                "type": "string",
+                                "enum": ["emoji_only", "with_text"],
+                            },
+                            "placement": {
+                                "type": "string",
+                                "enum": ["before_text", "after_text", "only"],
+                            },
+                            "goal": {"type": "string", "maxLength": 300},
+                            "emotion": {"type": "string", "maxLength": 100},
+                        },
+                        required=("mode", "placement", "goal"),
+                    ),
+                )
+            )
+        if (
+            self._voice_available_for_turn(runtime)
+            and not runtime.read_only
+            and runtime.origin is TurnOrigin.USER_MESSAGE
+        ):
+            tools.append(
+                ChatTool(
+                    name="set_voice_preference",
+                    description=(
+                        "把当前用户的长期语音偏好写入数据库。一次性用语音请调用 send_voice，"
+                        "不要用本工具。必须在回执确认写入后才能声称偏好已保存。"
+                    ),
+                    parameters=_object_schema(
+                        {
+                            "mode": {
+                                "type": "string",
+                                "enum": ["text_only", "auto", "prefer_voice"],
+                            }
+                        },
+                        required=("mode",),
+                    ),
+                )
+            )
+        if runtime.origin in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}:
+            tools.append(
+                ChatTool(
+                    name="set_reply_layout",
+                    description=(
+                        "设置本轮正文拆成几条 QQ 消息以及切分方式。max_messages 会被后端"
+                        "限制在安全上限以内。默认不要预测条数；只有用户明确要求分条或"
+                        "内容确实适合拆分时才调用。"
+                    ),
+                    parameters=_object_schema(
+                        {
+                            "max_messages": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 20,
+                            },
+                            "split_hint": {
+                                "type": "string",
+                                "enum": ["auto", "sentence", "paragraph"],
+                            },
+                        },
+                        required=("max_messages",),
+                    ),
+                )
+            )
+        if runtime.origin is TurnOrigin.AUTONOMOUS_GROUP:
+            tools.append(
+                ChatTool(
+                    name="decline_reply",
+                    description=(
+                        "决定本轮不回复。只能在尚未执行任何工具或回复效果时作为本批唯一调用。"
+                        "调用后不会再发消息。reason_code 必须是固定枚举，不要写自由文本理由。"
+                    ),
+                    parameters=_object_schema(
+                        {
+                            "reason_code": {
+                                "type": "string",
+                                "enum": [
+                                    "not_relevant",
+                                    "would_interrupt",
+                                    "insufficient_context",
+                                    "duplicate",
+                                ],
+                            }
+                        },
+                        required=("reason_code",),
                     ),
                 )
             )
@@ -733,6 +881,14 @@ class AgentToolService:
                     return await self._call_onebot(arguments, runtime)
                 if name == "send_voice":
                     return self._queue_voice(arguments, runtime)
+                if name == "send_emoji":
+                    return self._queue_emoji(arguments, runtime)
+                if name == "set_voice_preference":
+                    return await self._set_voice_preference(arguments, runtime)
+                if name == "set_reply_layout":
+                    return self._set_reply_layout(arguments, runtime)
+                if name == "decline_reply":
+                    return self._decline_reply(arguments, runtime)
                 return self._result(error="unknown_tool", detail=f"未知工具：{name}")
             except WebSearchError as exc:
                 return self._web_result(error=exc.code, detail=exc.detail)
@@ -748,12 +904,11 @@ class AgentToolService:
     @staticmethod
     def _voice_available_for_turn(runtime: ToolRuntime) -> bool:
         config = runtime.runtime_config
-        if (
-            config is None
-            or runtime.reply_effects is None
-            or not runtime.voice_tool_authorized
-            or not config.speech.enabled
-        ):
+        if config is None or runtime.reply_effects is None or not config.speech.enabled:
+            return False
+        if runtime.origin is TurnOrigin.PLUGIN_BACKGROUND:
+            return False
+        if not config.speech.agent_effects_enabled:
             return False
         return (
             config.speech.private_enabled
@@ -761,20 +916,38 @@ class AgentToolService:
             else config.speech.group_enabled
         )
 
+    @staticmethod
+    def _emoji_available_for_turn(runtime: ToolRuntime) -> bool:
+        config = runtime.runtime_config
+        if config is None or runtime.reply_effects is None:
+            return False
+        if runtime.origin is TurnOrigin.PLUGIN_BACKGROUND:
+            return False
+        return bool(config.emoji.enabled)
+
     def _queue_voice(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         queue = runtime.reply_effects
-        if not runtime.voice_tool_authorized:
-            return self._result(
-                error="voice_not_authorized",
-                detail="Planner 未确认用户在本轮明确索要语音",
-            )
         if queue is None or not self._voice_available_for_turn(runtime):
             return self._result(error="speech_unavailable", detail="当前回复没有启用语音效果")
-        if any(isinstance(item, PendingVoiceReplyEffect) for item in queue):
-            return self._result(error="speech_effect_limit", detail="本轮已经排队了一条语音")
-        extra = set(arguments) - {"style_hint", "language"}
+        extra = set(arguments) - {"mode", "request_basis", "style_hint", "language"}
         if extra:
             return self._result(error="invalid_arguments", detail="语音工具参数包含未知字段")
+        mode = arguments.get("mode")
+        request_basis = arguments.get("request_basis")
+        if mode not in {"voice_only", "text_and_voice"}:
+            return self._result(
+                error="invalid_arguments",
+                detail="mode 必须是 voice_only 或 text_and_voice",
+            )
+        if request_basis not in {"user_requested", "agent_initiated"}:
+            return self._result(
+                error="invalid_arguments",
+                detail="request_basis 必须是 user_requested 或 agent_initiated",
+            )
+        if request_basis == "agent_initiated" and not runtime.voice_spontaneous_allowed:
+            return self._result(error="voice_cadence_limited", detail="当前会话不宜再自发语音")
+        if any(isinstance(item, PendingVoiceReplyEffect) for item in queue):
+            return self._result(error="speech_effect_limit", detail="本轮已经排队了一条语音")
         style_hint = arguments.get("style_hint", "")
         language = arguments.get("language", "auto")
         if not isinstance(style_hint, str) or len(style_hint) > 128:
@@ -783,14 +956,151 @@ class AgentToolService:
             return self._result(error="invalid_arguments", detail="style_hint 不能包含路径")
         if language not in {"auto", "zh", "jp"}:
             return self._result(error="invalid_arguments", detail="language 必须是 auto、zh 或 jp")
+        voice_mode = VoiceMode.VOICE if mode == "voice_only" else VoiceMode.TEXT_AND_VOICE
         queue.append(
             PendingVoiceReplyEffect(
                 style_hint=" ".join(style_hint.split()),
                 language_hint=language,
+                mode=voice_mode,
+                request_basis=request_basis,
                 source="agent_explicit_request",
             )
         )
-        return self._result(data={"queued": True, "effect": "voice"})
+        if runtime.reply_control is not None:
+            runtime.reply_control.mark_effect()
+            runtime.reply_control.voice_request_basis = request_basis
+        return self._result(
+            data={"queued": True, "effect": "voice", "mode": mode, "request_basis": request_basis}
+        )
+
+    def _queue_emoji(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+        queue = runtime.reply_effects
+        if queue is None or not self._emoji_available_for_turn(runtime):
+            return self._result(error="emoji_unavailable", detail="当前回复没有启用表情效果")
+        extra = set(arguments) - {"mode", "placement", "goal", "emotion"}
+        if extra:
+            return self._result(error="invalid_arguments", detail="表情工具参数包含未知字段")
+        mode = arguments.get("mode")
+        placement = arguments.get("placement")
+        goal = arguments.get("goal", "")
+        emotion = arguments.get("emotion", "")
+        if mode not in {"emoji_only", "with_text"}:
+            return self._result(
+                error="invalid_arguments",
+                detail="mode 必须是 emoji_only 或 with_text",
+            )
+        if placement not in {"before_text", "after_text", "only"}:
+            return self._result(error="invalid_arguments", detail="placement 无效")
+        if not isinstance(goal, str) or not goal.strip() or len(goal) > 300:
+            return self._result(error="invalid_arguments", detail="goal 必须是 1 到 300 字符")
+        if not isinstance(emotion, str) or len(emotion) > 100:
+            return self._result(error="invalid_arguments", detail="emotion 最多 100 字符")
+        if mode == "emoji_only":
+            placement = "only"
+        if any(isinstance(item, PendingReplyEffect) for item in queue):
+            return self._result(error="emoji_effect_limit", detail="本轮已经排队了一条表情")
+        queue.append(
+            PendingReplyEffect(
+                mode=(
+                    EmojiReplyMode.EMOJI_ONLY if mode == "emoji_only" else EmojiReplyMode.PREFERRED
+                ),
+                placement=EmojiPlacement(placement),
+                goal=" ".join(goal.split()),
+                emotion=" ".join(emotion.split()),
+                explicit_request=True,
+                source="agent",
+            )
+        )
+        if runtime.reply_control is not None:
+            runtime.reply_control.mark_effect()
+        return self._result(data={"queued": True, "effect": "emoji", "mode": mode})
+
+    async def _set_voice_preference(
+        self,
+        arguments: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
+        if runtime.origin is not TurnOrigin.USER_MESSAGE or runtime.read_only:
+            return self._result(error="voice_preference_forbidden", detail="本轮不能修改语音偏好")
+        if self._voice_preferences is None:
+            return self._result(error="speech_unavailable", detail="语音偏好服务不可用")
+        extra = set(arguments) - {"mode"}
+        if extra:
+            return self._result(error="invalid_arguments", detail="语音偏好只接受 mode")
+        mode = arguments.get("mode")
+        if mode not in {"text_only", "auto", "prefer_voice"}:
+            return self._result(error="invalid_arguments", detail="mode 无效")
+        saved = await self._voice_preferences.set_persistent(
+            user_id=runtime.inbound.sender.user_id,
+            mode=VoicePreferenceMode(mode),
+            source_message_id=runtime.inbound.message_id,
+            origin=runtime.origin,
+        )
+        if saved is None:
+            return self._result(error="voice_preference_not_written", detail="语音偏好没有写入")
+        if runtime.reply_control is not None:
+            runtime.reply_control.mark_effect()
+        return self._result(
+            data={
+                "written": True,
+                "mode": saved.mode.value,
+                "confirmation": "persisted",
+            }
+        )
+
+    def _set_reply_layout(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+        control = runtime.reply_control
+        if control is None:
+            return self._result(error="reply_control_unavailable", detail="本轮没有布局控制")
+        extra = set(arguments) - {"max_messages", "split_hint"}
+        if extra:
+            return self._result(error="invalid_arguments", detail="布局工具参数包含未知字段")
+        max_messages = arguments.get("max_messages")
+        split_hint = arguments.get("split_hint", "auto")
+        hard_max = 10
+        if runtime.runtime_config is not None:
+            hard_max = runtime.runtime_config.reply.hard_max_messages
+        if not isinstance(max_messages, int) or isinstance(max_messages, bool):
+            return self._result(error="invalid_arguments", detail="max_messages 必须是整数")
+        if max_messages < 1:
+            return self._result(error="invalid_arguments", detail="max_messages 至少为 1")
+        if split_hint not in {"auto", "sentence", "paragraph"}:
+            return self._result(error="invalid_arguments", detail="split_hint 无效")
+        clamped = min(max_messages, hard_max)
+        control.spec = ReplySequenceSpec(max_messages=clamped, split_hint=split_hint)
+        control.layout_applied = True
+        return self._result(
+            data={"max_messages": clamped, "split_hint": split_hint, "hard_max": hard_max}
+        )
+
+    def _decline_reply(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+        control = runtime.reply_control
+        if runtime.origin is not TurnOrigin.AUTONOMOUS_GROUP:
+            return self._result(error="decline_reply_forbidden", detail="当前轮次不能拒绝回复")
+        if control is None:
+            return self._result(error="reply_control_unavailable", detail="本轮没有回复控制")
+        extra = set(arguments) - {"reason_code"}
+        if extra:
+            return self._result(
+                error="invalid_arguments",
+                detail="decline_reply 只接受 reason_code",
+            )
+        reason = arguments.get("reason_code")
+        if reason not in {
+            "not_relevant",
+            "would_interrupt",
+            "insufficient_context",
+            "duplicate",
+        }:
+            return self._result(error="invalid_arguments", detail="reason_code 无效")
+        if control.had_effect or control.declined or control.layout_applied:
+            return self._result(
+                error="decline_reply_after_effect",
+                detail="已经产生效果后不能拒绝回复",
+            )
+        control.declined = True
+        control.decline_reason = str(reason)
+        return self._result(data={"declined": True, "reason_code": reason})
 
     def _my_capabilities(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         """Return only the report derived from this authoritative inbound event."""
@@ -1075,7 +1385,7 @@ class AgentToolService:
         if isinstance(selection, _ToolFailure):
             return self._result(error=selection.code, detail=selection.detail)
         user_id = selection.user_id
-        limit = self._memory_limit(arguments)
+        limit = self._memory_list_limit(arguments)
         query, mode = self._memory_query(arguments)
         person_targets = selection.targets
         projected_rows = (
@@ -1137,12 +1447,11 @@ class AgentToolService:
                         block_id=f"tool_person_projection:{user_id}",
                     ),
                 )
-            result = await self._memory_context.search(
+            result = await self._read_memories(
+                arguments,
                 text=query or "",
-                mode=mode or MemoryRetrievalMode.RELEVANT,
                 targets=search_targets,
-                runtime=self._runtime(),
-                limit=100 if projected_rows else limit,
+                requested_limit=100 if projected_rows else self._memory_requested_limit(arguments),
             )
             visible_hits = [
                 hit
@@ -1460,7 +1769,7 @@ class AgentToolService:
         group_id = arguments.get("group_id")
         if not isinstance(group_id, str) or not group_id:
             return self._result(error="invalid_group_id", detail="group_id 必须是字符串")
-        limit = self._memory_limit(arguments)
+        limit = self._memory_list_limit(arguments)
         query, mode = self._memory_query(arguments)
         targets = await self._memory_context.resolve_targets(runtime.inbound, self._runtime())
         target = next(
@@ -1479,12 +1788,11 @@ class AgentToolService:
                 self._memory_json(row, retrieval_reason="deterministic_list") for row in rows
             ]
         else:
-            result = await self._memory_context.search(
+            result = await self._read_memories(
+                arguments,
                 text=query or "",
-                mode=mode or MemoryRetrievalMode.RELEVANT,
                 targets=(target,),
-                runtime=self._runtime(),
-                limit=limit,
+                requested_limit=self._memory_requested_limit(arguments),
             )
             memories = [
                 self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
@@ -1504,8 +1812,7 @@ class AgentToolService:
     ) -> str:
         if not self._settings.self_memory_enabled:
             return self._result(error="self_memory_unavailable", detail="自我记忆功能未启用")
-        limit = self._memory_limit(arguments)
-        query, mode = self._memory_query(arguments)
+        query, _mode = self._memory_query(arguments)
         targets = await self._memory_context.resolve_targets(
             runtime.inbound,
             self._runtime(),
@@ -1522,15 +1829,12 @@ class AgentToolService:
         )
         if target is None:
             return self._result(error="self_memory_unavailable", detail="当前会话不能读取自我记忆")
-        result = await self._memory_context.search(
+        result = await self._read_memories(
+            arguments,
             text=query or "",
-            mode=mode
-            or (
-                MemoryRetrievalMode.RELEVANT if query is not None else MemoryRetrievalMode.OVERVIEW
-            ),
             targets=(target,),
-            runtime=self._runtime(),
-            limit=limit,
+            requested_limit=self._memory_requested_limit(arguments),
+            default_overview=query is None,
         )
         visible_hits = tuple(
             hit for hit in result.hits if hit.fact.scope_type is MemoryScopeType.SELF
@@ -1550,11 +1854,92 @@ class AgentToolService:
         )
 
     @staticmethod
-    def _memory_limit(arguments: dict[str, Any]) -> int:
-        value = arguments.get("limit", 20)
+    def _memory_requested_limit(arguments: dict[str, Any]) -> int | None:
+        if "limit" not in arguments or arguments.get("limit") is None:
+            return None
+        value = arguments.get("limit")
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 100:
             raise ValueError("limit 必须是 1～100 的整数")
         return int(value)
+
+    @staticmethod
+    def _memory_list_limit(arguments: dict[str, Any]) -> int:
+        return AgentToolService._memory_requested_limit(arguments) or 20
+
+    async def _read_memories(
+        self,
+        arguments: dict[str, Any],
+        *,
+        text: str,
+        targets: tuple[MemoryEntityTarget, ...],
+        requested_limit: int | None,
+        default_overview: bool = False,
+    ) -> Any:
+        intent = self._memory_tool_intent(arguments, default_overview=default_overview)
+        return await MemoryQueryPlane(self._memory_context).read(
+            MemoryReadConsumer.AGENT_TOOL,
+            MemoryReadRequest(
+                text=text,
+                intent=intent,
+                requested_limit=requested_limit,
+                resolved_scope=ResolvedReadScope(targets=targets),
+            ),
+            runtime=self._runtime(),
+        )
+
+    @staticmethod
+    def _memory_tool_intent(
+        arguments: dict[str, Any],
+        *,
+        default_overview: bool = False,
+    ) -> MemoryQueryIntent | None:
+        raw_mode = arguments.get("mode")
+        has_structured = any(
+            arguments.get(name) not in (None, "", ())
+            for name in ("purpose", "entities", "preferred_kinds", "start_at", "end_at")
+        )
+        if raw_mode is None and not has_structured and not default_overview:
+            return None
+        mode = (
+            MemoryContextMode.OVERVIEW
+            if default_overview and raw_mode is None
+            else (
+                MemoryContextMode.OVERVIEW
+                if raw_mode == "overview"
+                else MemoryContextMode.LEXICAL
+                if raw_mode == "lexical"
+                else MemoryContextMode.HYBRID
+            )
+        )
+        purpose_raw = arguments.get("purpose")
+        purpose = (
+            MemoryRecallPurpose(purpose_raw)
+            if isinstance(purpose_raw, str) and purpose_raw in MemoryRecallPurpose
+            else MemoryRecallPurpose.RECALL
+        )
+        entities = arguments.get("entities")
+        kinds = arguments.get("preferred_kinds")
+        start_at = AgentToolService._parse_time(arguments.get("start_at"))
+        end_at = AgentToolService._parse_time(arguments.get("end_at"))
+        temporal = MemoryTemporalIntent()
+        if start_at is not None or end_at is not None:
+            temporal = MemoryTemporalIntent(
+                mode=MemoryTemporalIntentMode.RANGE,
+                constraint=MemoryTemporalConstraint.SOFT,
+                start_at=start_at,
+                end_at=end_at,
+            )
+        return MemoryQueryIntent(
+            mode=mode,
+            purpose=purpose,
+            entities=tuple(entities) if isinstance(entities, list) else (),
+            preferred_kinds=tuple(
+                MemoryKind(item) for item in kinds if item in {kind.value for kind in MemoryKind}
+            )
+            if isinstance(kinds, list)
+            else (),
+            temporal=temporal,
+        )
 
     async def _memory_fact(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         fact_id = arguments.get("fact_id")
@@ -1793,10 +2178,19 @@ class AgentToolService:
         raw_mode = arguments.get("mode")
         if raw_mode is None:
             mode = None
-        elif isinstance(raw_mode, str) and raw_mode in {"relevant", "overview"}:
-            mode = MemoryRetrievalMode(raw_mode)
+        elif isinstance(raw_mode, str) and raw_mode in {
+            "relevant",
+            "lexical",
+            "hybrid",
+            "overview",
+        }:
+            mode = (
+                MemoryRetrievalMode.OVERVIEW
+                if raw_mode == "overview"
+                else MemoryRetrievalMode.RELEVANT
+            )
         else:
-            raise ValueError("mode 必须是 relevant 或 overview")
+            raise ValueError("mode 必须是 relevant、lexical、hybrid 或 overview")
         return raw_query, mode
 
     @staticmethod

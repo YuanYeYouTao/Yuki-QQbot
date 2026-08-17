@@ -31,8 +31,9 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
     for event_name in (
         EventName.MESSAGE_NORMALIZED,
         EventName.MESSAGE_TRIGGERED,
-        EventName.PLANNER_PLANNED,
+        EventName.TURN_ADMITTED,
         EventName.REPLY_SENT,
+        EventName.TURN_CLOSED,
     ):
         bus.subscribe(
             plugin_id="com.example.capture",
@@ -60,8 +61,9 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
     assert [event.name for event in events] == [
         EventName.MESSAGE_NORMALIZED,
         EventName.MESSAGE_TRIGGERED,
-        EventName.PLANNER_PLANNED,
+        EventName.TURN_ADMITTED,
         EventName.REPLY_SENT,
+        EventName.TURN_CLOSED,
     ]
     assert set(events[0].payload) == {
         "message_id",
@@ -81,25 +83,10 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
         "mentions_bot",
     }
     assert set(events[2].payload) == {
-        "trigger_message_id",
-        "scope_type",
         "origin",
-        "decision",
-        "reason_code",
-        "delivery_mode",
-        "desired_messages",
-        "tool_mode",
-        "voice_mode",
-        "voice_intent",
-        "voice_tool_policy",
-        "memory_context_mode",
-        "memory_context_reason",
-        "memory_self_recall",
-        "confidence",
-        "planner_used",
-        "fallback_used",
-        "latency_milliseconds",
-        "turn_version",
+        "scope_type",
+        "conversation_key_hash",
+        "reason",
     }
     assert set(events[3].payload) == {
         "trigger_message_id",
@@ -109,6 +96,19 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
         "delivered",
         "recorded",
     }
+    assert set(events[4].payload) == {
+        "origin",
+        "scope_type",
+        "conversation_key_hash",
+        "outcome",
+        "handled",
+        "sent_messages",
+        "latency_ms",
+    }
+    assert events[2].payload["origin"] == "user_message"
+    assert events[2].payload["reason"] == "private_allowed"
+    assert events[4].payload["outcome"] == "chat"
+    assert events[4].payload["handled"] is True
     serialized = json.dumps(
         [event.model_dump(mode="json") for event in events],
         ensure_ascii=False,
@@ -116,7 +116,12 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
     assert secret_body not in serialized
     assert "FakeLLM" not in serialized
     assert "tester" not in serialized
-    assert "1001" not in serialized
+    assert "private:1001" not in serialized
+    for event in events:
+        for value in event.payload.values():
+            if isinstance(value, str) and len(value) == 64:
+                continue
+            assert "1001" not in str(value)
 
 
 async def test_publisher_exception_does_not_affect_chat(database: Database) -> None:

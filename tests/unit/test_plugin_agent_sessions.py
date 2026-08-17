@@ -56,7 +56,7 @@ async def _install(database: Database, plugin_id: str) -> None:
         plugin_id=plugin_id,
         name="Session Test",
         version="0.1.0",
-        plugin_api="1.0",
+        plugin_api="2.0",
         yuki_requires=">=1.6.0,<2.0",
         manifest_hash="a" * 64,
         entrypoint="plugin:Plugin",

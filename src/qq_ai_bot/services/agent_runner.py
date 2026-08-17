@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from dataclasses import dataclass
@@ -77,6 +78,7 @@ class AgentRunResult:
     citations: tuple[ResponseCitation, ...] = ()
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
     web_route: WebRouteDecision | None = None
+    suppress_delivery: bool = False
 
 
 class AgentToolBackend(Protocol):
@@ -159,6 +161,7 @@ class AgentRunner:
             enable_fallback = getattr(tools, "enable_native_web_fallback", None)
             if callable(enable_fallback):
                 enable_fallback()
+        await self._prepare_tools(tools, runtime)
         for request_index in range(runtime.max_model_requests):
             definitions = (
                 tools.definitions(runtime, web_was_used=web_was_used) if tools is not None else ()
@@ -168,15 +171,21 @@ class AgentRunner:
                 web_mode = WebMode(getattr(web_config, "mode", WebMode.DISABLED.value))
             except ValueError:
                 web_mode = WebMode.DISABLED
-            native_definitions = self._native_tools.bind(
-                protocol=self._models.protocol(self._task),
-                capabilities=self._models.capabilities(self._task),
-                allowed_capabilities=runtime.allowed_capabilities,
-                web_mode=web_mode,
-                web_was_used=web_was_used,
+            web_search_selected = any(tool.name == "web_search" for tool in definitions)
+            native_definitions = (
+                self._native_tools.bind(
+                    protocol=self._models.protocol(self._task),
+                    capabilities=self._models.capabilities(self._task),
+                    allowed_capabilities=runtime.allowed_capabilities,
+                    web_mode=web_mode,
+                    web_was_used=web_was_used,
+                )
+                if web_search_selected
+                else ()
             )
             if (
                 not tavily_fallback
+                and web_search_selected
                 and web_mode is WebMode.NATIVE_WITH_TAVILY_FALLBACK
                 and web_route is not None
                 and web_route.provider is WebProvider.NATIVE
@@ -191,6 +200,7 @@ class AgentRunner:
                     enable_fallback()
                     tavily_fallback = True
                     web_route = self._fallback_route(web_route, WebRouteReason.NATIVE_UNAVAILABLE)
+                    await self._prepare_tools(tools, runtime)
                     definitions = tools.definitions(runtime, web_was_used=web_was_used)
             if tavily_fallback:
                 native_definitions = ()
@@ -198,6 +208,11 @@ class AgentRunner:
                 definitions = tuple(
                     item for item in definitions if item.name not in {"web_search", "read_webpage"}
                 )
+            restart_chain = getattr(tools, "consume_provider_chain_restart", None)
+            if callable(restart_chain) and restart_chain():
+                continuation = None
+                continuation_tools = ()
+                continuation_native_tools = ()
             if continuation is not None:
                 # Responses continuations are one cumulative request chain.
                 # Tools may be added after request_tools, but removing a tool
@@ -235,6 +250,10 @@ class AgentRunner:
             if no_progress_recovery and continuation is None:
                 definitions = ()
                 native_definitions = ()
+            if tools is not None:
+                confirm_exposure = getattr(tools, "confirm_memory_prompt_exposure", None)
+                if callable(confirm_exposure):
+                    await confirm_exposure()
             try:
                 response = await self._concurrency.run_llm(
                     runtime.conversation_key,
@@ -612,6 +631,34 @@ class AgentRunner:
                     )
                 else:
                     messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
+            if tools is not None:
+                declined = getattr(tools, "declined_reply", None)
+                if callable(declined) and declined():
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        native_tool_events=tuple(native_events),
+                        citations=tuple(citations),
+                        response_status=response_status,
+                        web_route=web_route,
+                        suppress_delivery=True,
+                    )
+                terminal_reply = getattr(tools, "terminal_memory_reply", None)
+                if callable(terminal_reply):
+                    terminal_text = terminal_reply()
+                    if isinstance(terminal_text, str) and terminal_text.strip():
+                        return AgentRunResult(
+                            text=terminal_text,
+                            tool_calls_used=calls_used,
+                            model_requests=request_index + 1,
+                            web_was_used=web_was_used,
+                            native_tool_events=tuple(native_events),
+                            citations=tuple(citations),
+                            response_status=response_status,
+                            web_route=web_route,
+                        )
             if finalizing_commit_in_batch:
                 force_finalization = True
                 reusable_tool_results.clear()
@@ -727,6 +774,47 @@ class AgentRunner:
             unique_calls.append(call)
 
         if tools is not None:
+            write_calls = [call for call in unique_calls if call.function.name == "memory_change"]
+            if write_calls:
+                conflicting = [
+                    call
+                    for call in unique_calls
+                    if call.function.name != "memory_change"
+                    and self._is_side_effecting(tools, call, runtime)
+                ]
+                if conflicting:
+                    violation = json.dumps(
+                        {
+                            "ok": False,
+                            "error": "memory_mutation_exclusive_violation",
+                            "detail": "记忆写入批次不能夹带其他副作用工具。",
+                        },
+                        ensure_ascii=False,
+                    )
+                    return CoordinatedToolResult(
+                        calls=tuple((call, violation, False) for call in calls),
+                        executed_count=0,
+                        reused_count=0,
+                    )
+            decline_calls = [call for call in unique_calls if call.function.name == "decline_reply"]
+            if decline_calls:
+                prior_effects = getattr(tools, "has_prior_reply_effects", None)
+                mixed = len(unique_calls) != 1 or len(calls) != 1
+                already_used = bool(callable(prior_effects) and prior_effects())
+                if mixed or already_used:
+                    violation = json.dumps(
+                        {
+                            "ok": False,
+                            "error": "decline_reply_batch_rejected",
+                            "detail": "decline_reply 必须是尚未产生效果时的单独调用。",
+                        },
+                        ensure_ascii=False,
+                    )
+                    return CoordinatedToolResult(
+                        calls=tuple((call, violation, False) for call in calls),
+                        executed_count=0,
+                        reused_count=0,
+                    )
             tools.begin_batch(tuple(unique_calls), runtime)
         coordinated = await self._tool_coordinator.execute_batch(
             tuple(unique_calls),
@@ -827,6 +915,17 @@ class AgentRunner:
         return bool(callable(probe) and probe(call.function.name, call.function.arguments, runtime))
 
     @staticmethod
+    async def _prepare_tools(tools: AgentToolBackend | None, runtime: AgentRuntime) -> None:
+        if tools is None:
+            return
+        prepare = getattr(tools, "prepare", None)
+        if not callable(prepare):
+            return
+        result = prepare(runtime)
+        if inspect.isawaitable(result):
+            await result
+
+    @staticmethod
     def _record_failure_usage(
         tools: AgentToolBackend | None,
         *,
@@ -843,7 +942,11 @@ class AgentRunner:
         current: tuple[ChatTool, ...],
     ) -> tuple[ChatTool, ...]:
         merged = {item.name: item for item in previous}
-        merged.update({item.name: item for item in current})
+        for item in current:
+            existing = merged.get(item.name)
+            if existing is None or existing.parameters == item.parameters:
+                merged[item.name] = item
+            # Responses declared schemas are append-only; never silently replace.
         return tuple(sorted(merged.values(), key=lambda item: item.name))
 
     @staticmethod

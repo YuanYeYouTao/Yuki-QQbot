@@ -52,6 +52,24 @@ def test_merge_function_tools_is_stable_by_tool_name() -> None:
     assert [item.name for item in merged] == ["alpha", "beta", "zeta"]
     assert merged[1].description == "new"
 
+    previous_schema = (
+        ChatTool(
+            name="beta",
+            description="old",
+            parameters={"type": "object", "properties": {"a": {"type": "string"}}},
+        ),
+    )
+    current_schema = (
+        ChatTool(
+            name="beta",
+            description="new",
+            parameters={"type": "object", "properties": {"b": {"type": "string"}}},
+        ),
+    )
+    kept = AgentRunner._merge_function_tools(previous_schema, current_schema)
+    assert kept[0].description == "old"
+    assert kept[0].parameters == previous_schema[0].parameters
+
 
 def test_only_explicit_successful_json_results_are_reusable() -> None:
     assert AgentRunner._tool_result_reusable('{"ok":true}')
@@ -545,3 +563,127 @@ def test_voice_effect_cannot_complete_chat_without_text() -> None:
         optional_emoji_runtime,
     )
     assert not optional_emoji_backend.has_visible_effects()
+
+
+@dataclass(slots=True)
+class MemoryTerminalBackend(VoiceEffectBackend):
+    confirmed: bool = False
+
+    def definitions(
+        self,
+        runtime: AgentRuntime,
+        *,
+        web_was_used: bool,
+    ) -> tuple[ChatTool, ...]:
+        del runtime, web_was_used
+        return (
+            ChatTool(
+                name="memory_change",
+                description="write memory",
+                parameters={"type": "object", "properties": {}},
+            ),
+            ChatTool(
+                name="send_voice",
+                description="queue voice",
+                parameters={"type": "object", "properties": {}},
+            ),
+        )
+
+    async def confirm_memory_prompt_exposure(self) -> None:
+        self.confirmed = True
+
+    def terminal_memory_reply(self) -> str | None:
+        return "记忆已按回执更新。" if self.effects else None
+
+    def is_side_effecting(self, name: str, _arguments: str, _runtime: object) -> bool:
+        return name != "get_person_memories"
+
+    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        del arguments_json, runtime
+        self.effects.append(name)
+        return json.dumps(
+            {
+                "ok": True,
+                "mutation_committed": True,
+                "finalize_after_commit": True,
+            },
+            ensure_ascii=False,
+        )
+
+
+class MemoryWriteThenTextProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="write-1",
+                        function=ToolFunction(name="memory_change", arguments="{}"),
+                    ),
+                ),
+            )
+        return ChatResponse(content="这轮不该再问模型。", latency_seconds=0)
+
+
+class MixedMemoryBatchProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="write-1",
+                        function=ToolFunction(name="memory_change", arguments="{}"),
+                    ),
+                    ToolCall(
+                        id="voice-1",
+                        function=ToolFunction(name="send_voice", arguments="{}"),
+                    ),
+                ),
+            )
+        return ChatResponse(content="批次已被拒绝。", latency_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_terminal_memory_reply_skips_discarded_final_model_request() -> None:
+    provider = MemoryWriteThenTextProvider()
+    backend = MemoryTerminalBackend()
+    result = await AgentRunner(provider, ConcurrencyManager(1)).run(
+        (ChatMessage(role="user", content="记住这个"),),
+        _agent_runtime(),
+        backend,
+    )
+
+    assert backend.confirmed is True
+    assert result.text == "记忆已按回执更新。"
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_memory_write_batch_rejects_other_side_effects() -> None:
+    provider = MixedMemoryBatchProvider()
+    backend = MemoryTerminalBackend()
+    result = await AgentRunner(provider, ConcurrencyManager(1)).run(
+        (ChatMessage(role="user", content="记住并朗读"),),
+        _agent_runtime(),
+        backend,
+    )
+
+    assert backend.effects == []
+    assert "记忆已按回执更新" not in result.text
+    assert any(
+        "memory_mutation_exclusive_violation" in (message.content or "")
+        for message in provider.requests[-1].messages
+        if message.role == "tool"
+    )

@@ -1,6 +1,6 @@
 # 架构
 
-Plugin API v1 把“可声明的扩展”和“可使用的运行时服务”分开：
+Plugin API 2.0 把“可声明的扩展”和“可使用的运行时服务”分开：
 
 ```text
 plugin.toml
@@ -22,11 +22,11 @@ plugin.toml
 
 `register()` 得到的是声明型 `PluginRegistrar`，没有运行时 Facade；`start()` 才得到已绑定 `plugin_id`、真实当前用户/群和已批准权限的 `PluginContext`。
 
-## Planner-first 主聊天
+## Conversation Runtime 主聊天
 
-Yuki 1.6.0 的主聊天先形成受后端约束的 `TurnPlan`，再调用原有单一 Agent。Planner 只能决定回复、等待或沉默，并缩小工具与发送计划；它不能授予权限、执行工具或产生最终回复。
+主聊天由 Conversation Runtime 做确定性准入，再调用单一 Main Agent。私聊、@ 与回复机器人直接进入 Agent；群自主插话先评分，再决定是否回复。Runtime 不能授予权限；工具可见性由本轮能力检索决定。
 
-插件可以贡献有界 `PlannerSignal`，但信号总和会被 Host 裁剪。确定性 `/ai` 命令仍绕过 Planner；普通聊天统一由 Planner 决策，不再保留旧聊天流程。
+插件可以贡献有界 `AdmissionSignal`，但只影响自主群评分，且总和会被 Host 裁剪。确定性 `/ai` 命令仍绕过该评分。
 
 ## 独立插件 AI 会话
 
@@ -49,7 +49,7 @@ Yuki 1.6.0 的主聊天先形成受后端约束的 `TurnPlan`，再调用原有�
 | 插件配置 | Host，按插件/作用域隔离 | `ctx.config` |
 | 插件 Secret | Host/部署者 | `ctx.secrets`，只按名称读取 |
 | 插件 KV | 插件命名空间 | `ctx.storage` |
-| Planner 记录 | Yuki Core | 无原始数据库访问 |
+| 准入与会话观测 | Yuki Core | 无原始数据库访问 |
 | 独立插件 AI 历史 | Host，按插件和会话隔离 | `ctx.agent_sessions` |
 
 所有 Facade 都是能力边界，不是 Repository 的别名；插件永远不能获得 SQLAlchemy Session。

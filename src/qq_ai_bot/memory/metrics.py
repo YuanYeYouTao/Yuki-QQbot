@@ -13,6 +13,12 @@ from qq_ai_bot.memory.enums import (
     MemoryRecallPurpose,
     MemoryRetrievalMode,
 )
+from qq_ai_bot.memory.runtime.contract import (
+    MemoryAvailability,
+    MemoryReadPolicy,
+    MemoryTurnContract,
+    MemoryWritePolicy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +245,19 @@ class MemoryLifecycleMetrics:
 
     def record_access(self, access: MemoryAccessMode) -> None:
         self.increment(f"memory_access_{access.value}")
+
+    def record_runtime_access(self, contract: MemoryTurnContract) -> None:
+        """Map a runtime contract onto the historical access-mode counters."""
+
+        if contract.availability is MemoryAvailability.FORBIDDEN:
+            access = MemoryAccessMode.NONE
+        elif contract.write_policy is MemoryWritePolicy.EXCLUSIVE:
+            access = MemoryAccessMode.MUTATION
+        elif contract.read_policy is MemoryReadPolicy.EAGER:
+            access = MemoryAccessMode.TOOL
+        else:
+            access = MemoryAccessMode.AUTOMATIC
+        self.record_access(access)
 
     def record_mutation_turn_outcome(self, outcome: str) -> None:
         if outcome not in MEMORY_MUTATION_TURN_OUTCOMES:

@@ -182,7 +182,7 @@ async def test_mcd_preset_overrides_query_semantics_without_hardcoding_provider(
     )
     await manager.start()
     await manager.ensure_metadata("mcd")
-    provider = MCPToolProvider(manager, gateway_enabled=False, selection_mode="all")
+    provider = MCPToolProvider(manager, gateway_enabled=False)
     descriptors = {
         item.model_name: item for item in provider.descriptors(SimpleNamespace(runtime_config=None))
     }

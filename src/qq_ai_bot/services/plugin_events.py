@@ -6,10 +6,33 @@ import logging
 from collections.abc import Mapping
 from typing import Protocol
 
+from qq_ai_bot.runtime.observability import stable_identifier_hash
 from yuki_plugin_sdk.events import EventEnvelope, EventName
 from yuki_plugin_sdk.models import JsonValue
 
 logger = logging.getLogger(__name__)
+
+
+def content_free_turn_payload(
+    *,
+    origin: str,
+    scope_type: str,
+    conversation_key: str | None = None,
+    **fields: JsonValue,
+) -> dict[str, JsonValue]:
+    """Build one turn/capability notification without user text or tool args."""
+
+    payload: dict[str, JsonValue] = {
+        "origin": origin,
+        "scope_type": scope_type,
+    }
+    if conversation_key:
+        payload["conversation_key_hash"] = stable_identifier_hash(
+            conversation_key,
+            kind="conversation",
+        )
+    payload.update(fields)
+    return payload
 
 
 class LifecycleEventPublisher(Protocol):

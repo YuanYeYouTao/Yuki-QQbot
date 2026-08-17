@@ -1,4 +1,4 @@
-# Permission Catalog v1
+# Permission Catalog
 
 来源：`yuki_plugin_sdk.permissions.PluginPermission`。Manifest 只能使用下表精确字符串。
 
@@ -86,7 +86,7 @@
 | `background.worker` | 注册 Host 托管后台服务 |
 | `notification.publish` | 向已授权目标发布外部事件和持久通知 |
 | `notification.agent` | 请求已授权外部事件进入主会话 Agent；高风险 |
-| `planner.signal.register` | 注册有界 PlannerSignal |
+| `admission.signal.register` | 注册有界 AdmissionSignal |
 
 `HIGH_RISK_PERMISSIONS` 当前包含：`relationship.write`、`memory.delete`、`runtime.config.write`、`network.http.unrestricted`、`onebot.mutate`、`agent.run`、`agent.session`、`notification.agent` 等管理型能力。
 

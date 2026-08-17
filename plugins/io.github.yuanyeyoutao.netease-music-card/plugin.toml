@@ -4,7 +4,7 @@ version = "0.2.3"
 description = "通过只读网易云 MCP 搜索歌曲或专辑，并向当前 QQ 会话发送原生音乐卡片"
 entrypoint = "netease_music_card_plugin:NetEaseMusicCardPlugin"
 
-plugin_api = "1.0"
+plugin_api = "2.0"
 yuki_requires = ">=2.1.1,<4.0"
 
 permissions = [

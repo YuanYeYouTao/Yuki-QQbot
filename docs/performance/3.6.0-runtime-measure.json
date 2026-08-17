@@ -1,0 +1,181 @@
+{
+  "generated_at": "2026-08-17T18:47:58.326989+00:00",
+  "commit": "a252e85e8456924fdf6063c07c8d36fcf4dfb552",
+  "hardware": {
+    "system": "Windows",
+    "release": "11",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "python": "3.12.13",
+    "sqlite": "3.53.1"
+  },
+  "concurrency": 1,
+  "warmup": 20,
+  "sample_size": 200,
+  "region": "local-dev-machine",
+  "provider_profile": "none-local-only",
+  "capability": {
+    "document_count": 20,
+    "index_reuse": "CapabilityIndexCache rebuilds only when registry revision changes",
+    "cold_rebuild": {
+      "n": 10,
+      "min_ms": 0.6957000005058944,
+      "max_ms": 0.9951000101864338,
+      "p50_ms": 0.7915000023785979,
+      "p95_ms": 0.9862350081675686,
+      "p50_ci": {
+        "p": 50,
+        "low": 0.7361999887507409,
+        "high": 0.9116500004893169,
+        "samples": 1000,
+        "method": "percentile_bootstrap"
+      },
+      "p95_ci": {
+        "p": 95,
+        "low": 0.8322899913764559,
+        "high": 0.9951000101864338,
+        "samples": 1000,
+        "method": "percentile_bootstrap"
+      },
+      "percentile_algorithm": "linear_interpolation",
+      "ci_method": "percentile_bootstrap",
+      "ci_samples": 1000,
+      "ci_seed": 36
+    },
+    "warm_search": {
+      "n": 200,
+      "min_ms": 0.038700003642588854,
+      "max_ms": 0.07419998291879892,
+      "p50_ms": 0.045249995309859514,
+      "p95_ms": 0.05390500300563871,
+      "p50_ci": {
+        "p": 50,
+        "low": 0.04410000110510737,
+        "high": 0.04579999949783087,
+        "samples": 1000,
+        "method": "percentile_bootstrap"
+      },
+      "p95_ci": {
+        "p": 95,
+        "low": 0.05260499310679734,
+        "high": 0.055199983762577176,
+        "samples": 1000,
+        "method": "percentile_bootstrap"
+      },
+      "percentile_algorithm": "linear_interpolation",
+      "ci_method": "percentile_bootstrap",
+      "ci_samples": 1000,
+      "ci_seed": 36
+    },
+    "queries": [
+      "刚刚说了什么",
+      "他以前提过吗",
+      "请记住我不喝咖啡",
+      "搜一下最新新闻",
+      "看看这个网页",
+      "发个语音",
+      "改成引用回复",
+      "我能改什么"
+    ]
+  },
+  "admission": {
+    "warm_evaluate": {
+      "n": 200,
+      "min_ms": 0.006099988240748644,
+      "max_ms": 0.09479999425821006,
+      "p50_ms": 0.007499998901039362,
+      "p95_ms": 0.014114991063252086,
+      "p50_ci": {
+        "p": 50,
+        "low": 0.007350012310780585,
+        "high": 0.007700000423938036,
+        "samples": 1000,
+        "method": "percentile_bootstrap"
+      },
+      "p95_ci": {
+        "p": 95,
+        "low": 0.010134989861398923,
+        "high": 0.02275002480018872,
+        "samples": 1000,
+        "method": "percentile_bootstrap"
+      },
+      "percentile_algorithm": "linear_interpolation",
+      "ci_method": "percentile_bootstrap",
+      "ci_samples": 1000,
+      "ci_seed": 36
+    },
+    "texts": [
+      "今晚要不要一起看新番？",
+      "666",
+      "雪纪你觉得呢",
+      "帮我查一下明天天气",
+      "哦"
+    ]
+  },
+  "memory_and_combined": {
+    "shape": {
+      "users": 3,
+      "facts_per_user": 4,
+      "chat_events": 20,
+      "mode": "lexical_fts_only",
+      "embedding": "excluded",
+      "vision": "excluded",
+      "generative_model": "excluded"
+    },
+    "lexical_fts": {
+      "n": 200,
+      "min_ms": 1.0726999898906797,
+      "max_ms": 2.7188000094611198,
+      "p50_ms": 1.3968999992357567,
+      "p95_ms": 1.887944991176482,
+      "p50_ci": {
+        "p": 50,
+        "low": 1.3674000219907612,
+        "high": 1.4232000103220344,
+        "samples": 1000,
+        "method": "percentile_bootstrap"
+      },
+      "p95_ci": {
+        "p": 95,
+        "low": 1.7908000154420733,
+        "high": 1.9564999965950847,
+        "samples": 1000,
+        "method": "percentile_bootstrap"
+      },
+      "percentile_algorithm": "linear_interpolation",
+      "ci_method": "percentile_bootstrap",
+      "ci_samples": 1000,
+      "ci_seed": 36
+    },
+    "local_pre_model_combined": {
+      "n": 200,
+      "min_ms": 1.2685999972745776,
+      "max_ms": 2.737600007094443,
+      "p50_ms": 1.6763000166974962,
+      "p95_ms": 2.1655400109011675,
+      "p50_ci": {
+        "p": 50,
+        "low": 1.6279999981634319,
+        "high": 1.69500001356937,
+        "samples": 1000,
+        "method": "percentile_bootstrap"
+      },
+      "p95_ci": {
+        "p": 95,
+        "low": 2.0527799904812123,
+        "high": 2.3253000108525157,
+        "samples": 1000,
+        "method": "percentile_bootstrap"
+      },
+      "percentile_algorithm": "linear_interpolation",
+      "ci_method": "percentile_bootstrap",
+      "ci_samples": 1000,
+      "ci_seed": 36
+    },
+    "combined_includes": [
+      "LocalAutonomousParticipationPolicy.evaluate",
+      "FtsCapabilitySearchIndex.search (warm)",
+      "SQLiteMemoryFTSIndex.search (lexical)"
+    ]
+  }
+}

@@ -84,24 +84,45 @@ class CapabilityDescriptor:
     scope_summaries: tuple[tuple[str, str], ...] = ()
     provider_metadata: dict[str, Any] | None = None
     finalize_after_commit: bool = False
+    namespace: str = ""
+    aliases: tuple[str, ...] = ()
+    use_when: tuple[str, ...] = ()
+    generation: str = ""
+
+    @property
+    def capability_id(self) -> str:
+        """Stable model-facing id; currently the function tool name."""
+
+        return self.model_name
+
+    @property
+    def namespace_id(self) -> str:
+        """Semantic discovery namespace; never a permission."""
+
+        return self.namespace or self.group
 
     @property
     def scope_id(self) -> str:
-        """Return the dynamic Planner scope used by this capability."""
+        """Discovery grouping id; namespace replaces Planner scope."""
 
-        return self.group
+        return self.namespace_id
 
     @property
     def scope_ids(self) -> tuple[str, ...]:
-        """Return every Planner scope without duplicates."""
+        """Namespace plus optional bundle aliases, without duplicates."""
 
-        return tuple(dict.fromkeys((self.group, *self.additional_scopes)))
+        return tuple(dict.fromkeys((self.namespace_id, *self.additional_scopes)))
 
     def as_chat_tool(self, description: str | None = None) -> ChatTool:
         return ChatTool(
             name=self.model_name,
             description=description if description is not None else self.description,
             parameters=self.input_schema,
+            namespace=self.namespace_id,
+            aliases=self.aliases,
+            use_when=self.use_when,
+            tags=self.tags,
+            schema_version=self.schema_version,
         )
 
 

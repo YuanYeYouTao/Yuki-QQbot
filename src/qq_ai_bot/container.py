@@ -29,6 +29,7 @@ from qq_ai_bot.application.modules import (
     ModelRuntimeModule,
     PersistenceModule,
     PluginModule,
+    RuntimeFoundationModule,
     SpeechModule,
     WebModule,
 )
@@ -144,7 +145,6 @@ class ApplicationContainer:
         self.media_analyses = persistence.media_analyses
         self.emoji_descriptions = persistence.emoji_descriptions
         self.emoji_repository = persistence.emoji_repository
-        self.planner_runs = persistence.planner_runs
         self.voice_preferences = persistence.voice_preferences
         self.voice_profiles = persistence.voice_profiles
         self.speech_generations = persistence.speech_generations
@@ -154,6 +154,11 @@ class ApplicationContainer:
         )
         self.relationships = persistence.relationships
         self.relationship_jobs = persistence.relationship_jobs
+        self.turn_observations = persistence.turn_observations
+        self.runtime_foundation = RuntimeFoundationModule(
+            turn_observability=self.turn_observations,
+            superusers=settings.superusers,
+        ).build()
         model_runtime = ModelRuntimeModule(
             settings.model_runtime,
             self.database,
@@ -207,7 +212,7 @@ class ApplicationContainer:
         self.turn_coordinator = ConversationTurnCoordinator(
             cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
-                settings.planner_interrupt_autonomous_on_new_message
+                settings.conversation_interrupt_autonomous_on_new_message
             ),
         )
         speech = SpeechModule(
@@ -252,10 +257,7 @@ class ApplicationContainer:
         conversation = self.conversation_module.build()
         self.conversation = conversation
         self.prompt_registry = conversation.prompt_registry
-        self.planner_observability = conversation.planner_observability
-        self.planner_provider = conversation.planner_provider
-        self.planner = conversation.planner
-        self.planner_context = conversation.planner_context
+        self.admission_features = conversation.admission_features
         self.reply_sequence = conversation.reply_sequence
         self.relationship_evaluator = conversation.relationship_evaluator
         self.deduplication = conversation.deduplication
@@ -359,10 +361,9 @@ class ApplicationContainer:
             repository=self.plugin_notification_repository,
             ledger=self.ledger,
             runtime_config=self.runtime_config,
-            planner_context=self.planner_context,
-            planner=self.planner,
             chat=self.chat,
             turns=self.turn_coordinator,
+            turn_observations=self.turn_observations,
         )
         self.plugin_module = PluginModule(
             settings=settings.plugins,
@@ -401,7 +402,7 @@ class ApplicationContainer:
         self.plugin_tools = plugins.tools
         self.plugin_direct_commands = plugins.direct_commands
         self.plugin_commands = plugins.commands
-        self.plugin_planner_signals = plugins.planner_signals
+        self.plugin_admission_signals = plugins.admission_signals
         self.emoji_collector.set_event_publisher(self.plugin_events)
         self.emoji_lifecycle.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_event_publisher(self.plugin_events)
@@ -414,10 +415,10 @@ class ApplicationContainer:
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,
-            planner_context=self.planner_context,
-            planner=self.planner,
+            admission_features=self.admission_features,
             turn_coordinator=self.turn_coordinator,
-            planner_signals=self.plugin_planner_signals,
+            admission_signals=self.plugin_admission_signals,
+            turn_observations=self.turn_observations,
         )
         self.command_service = CommandService(
             settings=settings,
@@ -439,8 +440,6 @@ class ApplicationContainer:
             automation_repository=self.automation_repository,
             automation_worker=self.automation_worker,
             turn_coordinator=self.turn_coordinator,
-            planner_observability=self.planner_observability,
-            planner_repository=self.planner_runs,
             plugin_commands=self.plugin_commands,
             emoji_admin=self.emoji_admin,
             speech_admin=self.speech_admin,
@@ -480,15 +479,15 @@ class ApplicationContainer:
             automation_worker=self.automation_worker,
             command_service=self.command_service,
             direct_plugin_commands=self.plugin_direct_commands,
-            planner_context=self.planner_context,
-            planner_service=self.planner,
+            admission_signals=self.plugin_admission_signals,
             turn_coordinator=self.turn_coordinator,
-            planner_signals=self.plugin_planner_signals,
             event_publisher=self.plugin_events,
             emoji_collector=self.emoji_collector,
             emoji_worker=self.emoji_worker,
             voice_preferences=self.voice_preference_service,
+            turn_observations=self.turn_observations,
         )
+        self.runtime_foundation.provider_registry.freeze()
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
         self._register_lifecycle()
@@ -823,6 +822,12 @@ class ApplicationContainer:
                         "speech_cache_cleaned rows=%d files=%d",
                         speech_expired,
                         speech_files,
+                    )
+                turn_observations_deleted = await self.turn_observations.cleanup_expired()
+                if turn_observations_deleted:
+                    logger.info(
+                        "runtime_turn_observations_cleaned count=%d",
+                        turn_observations_deleted,
                     )
             except (SQLAlchemyError, OSError, RuntimeError) as exc:
                 logger.error("processed_event_cleanup_failed", exc_info=exc)

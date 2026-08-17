@@ -27,8 +27,6 @@ from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
     PeopleRepository,
 )
-from qq_ai_bot.planner.observability import PlannerObservability
-from qq_ai_bot.planner.repository import PlannerRepository
 from qq_ai_bot.plugin_host.command_adapter import PluginCommandAdapter
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
@@ -85,8 +83,6 @@ class CommandService:
         automation_repository: AutomationRepository | None = None,
         automation_worker: AutomationWorker | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
-        planner_observability: PlannerObservability | None = None,
-        planner_repository: PlannerRepository | None = None,
         plugin_commands: PluginCommandAdapter | None = None,
         emoji_admin: EmojiAdminService | None = None,
         speech_admin: SpeechAdminService | None = None,
@@ -106,8 +102,6 @@ class CommandService:
         self._automation_repository = automation_repository
         self._automation_worker = automation_worker
         self._turn_coordinator = turn_coordinator
-        self._planner_observability = planner_observability
-        self._planner_repository = planner_repository
         self._plugin_commands = plugin_commands
         self._emoji_admin = emoji_admin
         self._speech_admin = speech_admin
@@ -249,26 +243,6 @@ class CommandService:
             )
             automation_last_text = automation_last_run.isoformat() if automation_last_run else "无"
             automation_next_text = automation_next_run.isoformat() if automation_next_run else "无"
-            planner_metrics = (
-                self._planner_observability.snapshot()
-                if self._planner_observability is not None
-                else None
-            )
-            latest_planner = (
-                await self._planner_repository.latest()
-                if self._planner_repository is not None
-                else None
-            )
-            planner_model = (
-                latest_planner.planner_model
-                if latest_planner is not None and latest_planner.planner_model
-                else "尚无规划记录"
-            )
-            planner_latency = (
-                planner_metrics.last_latency_seconds
-                if planner_metrics and planner_metrics.last_latency_seconds is not None
-                else "无"
-            )
             speech_status: dict[str, object] = {}
             if self._speech_admin is not None:
                 speech_status = await self._speech_admin.status_data(
@@ -303,13 +277,6 @@ class CommandService:
                 f"{emoji_counts.get('jobs_pending', 0)}\n"
                 f"当前切点后的事件数：{count}\n"
                 f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
-                "Planner：固定启用\n"
-                f"Planner 模型：{planner_model}\n"
-                f"活动 Planner：{planner_metrics.active_requests if planner_metrics else 0}\n"
-                f"最近 Planner 延迟："
-                f"{planner_latency}\n"
-                f"最近 Planner 决策时间："
-                f"{latest_planner.created_at.isoformat() if latest_planner else '无'}\n"
                 f"待重启配置数：{pending_restart}\n"
                 f"自动化：{'已启用' if self._settings.automation_enabled else '未启用'}\n"
                 f"自动化 Worker：{automation_worker_status}\n"
@@ -489,8 +456,8 @@ class CommandService:
                     "按任务：",
                 ]
                 lines.extend(
-                    f"- {task.value}: {item.invocations} 次 / {item.total_tokens} Token"
-                    for task, item in sorted(by_task.items(), key=lambda pair: pair[0].value)
+                    f"- {task}: {item.invocations} 次 / {item.total_tokens} Token"
+                    for task, item in sorted(by_task.items(), key=lambda pair: pair[0])
                 )
                 lines.append("按档案：")
                 lines.extend(
@@ -499,7 +466,7 @@ class CommandService:
                 )
                 lines.append("最近错误：")
                 lines.extend(
-                    f"- {item.created_at.isoformat()} {item.task.value}/{item.profile_id}: "
+                    f"- {item.created_at.isoformat()} {item.task}/{item.profile_id}: "
                     f"{item.error_category}"
                     for item in recent_errors
                 )

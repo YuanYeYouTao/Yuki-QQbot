@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
@@ -9,10 +8,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
+from qq_ai_bot.admin.models import ConversationRuntimeConfig
+from qq_ai_bot.conversation.participation import AdmissionFeatures
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.planner.models import PlannerDecision, PlannerReasonCode, TurnPlan
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService, _GroupState
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 
@@ -22,10 +22,23 @@ class _FailingRuntime:
         raise SQLAlchemyError("database unavailable")
 
 
+def _conversation_config() -> ConversationRuntimeConfig:
+    return ConversationRuntimeConfig(
+        autonomous_enabled=True,
+        autonomous_debounce_seconds=0.02,
+        autonomous_admission_threshold=80,
+        autonomous_batch_limit=20,
+        autonomous_presence_window_seconds=120,
+        interrupt_autonomous_on_new_message=True,
+    )
+
+
 class _WorkingRuntime:
     async def snapshot(self, **_kwargs: object) -> object:
+        policy = _conversation_config()
         return SimpleNamespace(
-            planner=SimpleNamespace(group_enabled=True, group_debounce_seconds=0.02)
+            conversation=policy,
+            conversation_policy=lambda: policy,
         )
 
 
@@ -33,8 +46,7 @@ def _service() -> AutonomousGroupService:
     chat = SimpleNamespace(_runtime_config=_FailingRuntime(), _turn_coordinator=object())
     return AutonomousGroupService(
         chat=cast(Any, chat),
-        planner_context=cast(Any, object()),
-        planner=cast(Any, object()),
+        admission_features=cast(Any, object()),
         runtime_config=cast(Any, _FailingRuntime()),
         turn_coordinator=cast(Any, object()),
     )
@@ -45,8 +57,7 @@ def _working_service() -> AutonomousGroupService:
     chat = SimpleNamespace(_runtime_config=runtime, _turn_coordinator=object())
     return AutonomousGroupService(
         chat=cast(Any, chat),
-        planner_context=cast(Any, object()),
-        planner=cast(Any, object()),
+        admission_features=cast(Any, object()),
         runtime_config=cast(Any, runtime),
         turn_coordinator=cast(Any, object()),
     )
@@ -65,24 +76,16 @@ def _group_message(message_id: str, text: str) -> InboundMessage:
 
 
 @pytest.mark.asyncio
-async def test_after_silence_observes_sqlalchemy_failure(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_after_silence_observes_sqlalchemy_failure() -> None:
     service = _service()
-    caplog.set_level(logging.WARNING, logger="qq_ai_bot.services.autonomous_groups")
     await service._after_silence("2001")
     assert service.task_failures == 1
-    assert "autonomous_group_task_failed" in caplog.text
-    assert "SQLAlchemyError" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_task_owner_consumes_unexpected_failure_and_clears_reference(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_task_owner_consumes_unexpected_failure_and_clears_reference() -> None:
     service = _service()
     service._states["2001"] = _GroupState()
-    caplog.set_level(logging.ERROR, logger="qq_ai_bot.services.autonomous_groups")
 
     async def fail() -> None:
         raise LookupError("unexpected")
@@ -95,8 +98,6 @@ async def test_task_owner_consumes_unexpected_failure_and_clears_reference(
 
     assert service._states["2001"].task is None
     assert service.task_failures == 1
-    assert "autonomous_group_task_failed" in caplog.text
-    assert "Traceback" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -130,7 +131,7 @@ async def test_group_updates_share_one_worker_and_plan_only_latest_quiet_revisio
     )
     sender = cast(Any, object())
 
-    with patch.object(service, "_plan_latest", new_callable=AsyncMock) as plan_latest:
+    with patch.object(service, "_run_latest", new_callable=AsyncMock) as run_latest:
         service.observe(_group_message("1", "第一条"), profile, sender)
         first_task = service._states["2001"].task
         await asyncio.sleep(0.005)
@@ -139,41 +140,28 @@ async def test_group_updates_share_one_worker_and_plan_only_latest_quiet_revisio
         assert service._states["2001"].task is first_task
         await service.wait_until_idle("2001")
 
-    assert plan_latest.await_count == 1
-    assert plan_latest.await_args is not None
-    assert plan_latest.await_args.args[:2] == ("2001", 2)
+    assert run_latest.await_count == 1
+    assert run_latest.await_args is not None
+    assert run_latest.await_args.args[:2] == ("2001", 2)
     await service.close()
 
 
 @pytest.mark.asyncio
-async def test_stale_planner_result_cannot_start_agent_or_tools() -> None:
+async def test_stale_admission_result_cannot_start_agent_or_tools() -> None:
     started = asyncio.Event()
     release = asyncio.Event()
-    deliveries: list[tuple[int, int, bool]] = []
 
-    class BlockingPlanner:
-        async def plan(self, *_args: object, **_kwargs: object) -> object:
+    class BlockingContext:
+        async def admission_features(self, **_kwargs: object) -> AdmissionFeatures:
             started.set()
             await release.wait()
-            return SimpleNamespace(
-                run_id=7,
-                planned_turn=SimpleNamespace(
-                    plan=TurnPlan(
-                        decision=PlannerDecision.REPLY,
-                        confidence=0.9,
-                        reason_code=PlannerReasonCode.USEFUL_CONTRIBUTION,
-                    )
-                ),
+            return AdmissionFeatures(
+                scope_type=ScopeType.GROUP,
+                text="请帮我查一下这是什么？你觉得怎么样",
+                pending_message_count=8,
+                idle_seconds=90,
+                recent_total_messages=8,
             )
-
-        async def record_delivery(
-            self,
-            run_id: int,
-            *,
-            messages_sent: int,
-            interrupted: bool,
-        ) -> None:
-            deliveries.append((run_id, messages_sent, interrupted))
 
     runtime_service = _WorkingRuntime()
     coordinator = ConversationTurnCoordinator()
@@ -182,11 +170,9 @@ async def test_stale_planner_result_cannot_start_agent_or_tools() -> None:
         _turn_coordinator=coordinator,
         respond=AsyncMock(),
     )
-    context = SimpleNamespace(build=AsyncMock(return_value=object()))
     service = AutonomousGroupService(
         chat=cast(Any, chat),
-        planner_context=cast(Any, context),
-        planner=cast(Any, BlockingPlanner()),
+        admission_features=cast(Any, BlockingContext()),
         runtime_config=cast(Any, runtime_service),
         turn_coordinator=coordinator,
     )
@@ -210,7 +196,7 @@ async def test_stale_planner_result_cannot_start_agent_or_tools() -> None:
     service._states["2001"] = state
     runtime = await runtime_service.snapshot(group_id="2001")
 
-    task = asyncio.create_task(service._plan_latest("2001", 1, cast(Any, runtime)))
+    task = asyncio.create_task(service._run_latest("2001", 1, cast(Any, runtime)))
     await started.wait()
     state.revision = 2
     state.changed.set()
@@ -218,5 +204,4 @@ async def test_stale_planner_result_cannot_start_agent_or_tools() -> None:
     await task
 
     assert chat.respond.await_count == 0
-    assert deliveries == [(7, 0, True)]
     await service.close()

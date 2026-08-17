@@ -232,6 +232,11 @@ class ChatTool:
     name: str
     description: str
     parameters: dict[str, object]
+    namespace: str = ""
+    aliases: tuple[str, ...] = ()
+    use_when: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+    schema_version: str = "1"
 
 
 @dataclass(frozen=True, slots=True)

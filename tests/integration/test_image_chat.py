@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 from tests.conftest import MemorySender, build_harness, make_settings
 
+from qq_ai_bot.conversation.features import AdmissionFeatureBuilder
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
@@ -258,15 +259,17 @@ async def test_autonomous_group_batch_never_analyzes_observed_images(database) -
     vision = FakeVisionProvider()
     settings = _vision_settings(
         "sqlite+aiosqlite:///:memory:",
-        planner_group_debounce_seconds=0.01,
+        conversation_autonomous_debounce_seconds=0.01,
         daily_chat_message_delay_min_seconds=0,
         daily_chat_message_delay_max_seconds=0,
     )
     harness = build_harness(database, settings, llm, vision_provider=vision)
     autonomous = AutonomousGroupService(
         chat=harness.processor._chat,
-        planner_context=harness.processor._planner_context,
-        planner=harness.processor._planner,
+        admission_features=AdmissionFeatureBuilder(
+            ledger=harness.processor._ledger,
+            relationships=harness.processor._relationships,
+        ),
         runtime_config=harness.processor._runtime_config,
     )
     harness.processor._autonomous = autonomous

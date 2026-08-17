@@ -14,6 +14,37 @@ from qq_ai_bot.domain.messages import ChatTool
 _MODEL_NAME = re.compile(r"[^a-zA-Z0-9_-]+")
 
 
+def descriptor_content_fingerprint(descriptor: CapabilityDescriptor) -> str:
+    """Hash the full discovery+policy surface so index caches stay coherent."""
+
+    payload = {
+        "canonical_name": descriptor.canonical_name,
+        "model_name": descriptor.model_name,
+        "namespace": descriptor.namespace_id,
+        "aliases": list(descriptor.aliases),
+        "use_when": list(descriptor.use_when),
+        "tags": list(descriptor.tags),
+        "description": descriptor.description,
+        "compact_description": descriptor.compact_description,
+        "input_schema": descriptor.input_schema,
+        "output_schema": descriptor.output_schema,
+        "effect": descriptor.effect.value,
+        "risk": descriptor.risk.value,
+        "trust_source": descriptor.trust_source.value,
+        "allowed_origins": sorted(origin.value for origin in descriptor.allowed_origins),
+        "required_permissions": sorted(descriptor.required_permissions),
+        "schema_version": descriptor.schema_version,
+        "generation": descriptor.generation,
+        "provider_id": descriptor.provider_id,
+        "provider_tool_name": descriptor.provider_tool_name,
+        "finalize_after_commit": descriptor.finalize_after_commit,
+        "additional_scopes": list(descriptor.additional_scopes),
+        "bundle_scopes": list(descriptor.bundle_scopes),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def estimate_chat_tool_tokens(tool: ChatTool) -> int:
     """Estimate the complete function-calling envelope with one stable heuristic."""
 
@@ -91,6 +122,39 @@ class UnifiedToolCatalog:
         return next((item for item in self.entries if item.descriptor.model_name == name), None)
 
 
+@dataclass(frozen=True, slots=True)
+class DescriptorRegistrySnapshot:
+    """Context-free catalog used to cache the search index.
+
+    ``revision`` is the full-content hash.  It must not include per-user
+    authority projections.
+    """
+
+    catalog: UnifiedToolCatalog
+
+    @property
+    def revision(self) -> str:
+        return self.catalog.revision
+
+    def entry(self, capability_id: str) -> UnifiedToolCatalogEntry | None:
+        return self.catalog.by_model_name(capability_id)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizedCatalogSnapshot:
+    """Per-turn authority/availability projection of one registry revision."""
+
+    registry_revision: str
+    catalog: UnifiedToolCatalog
+    requestable_ids: frozenset[str]
+    hidden_ids: frozenset[str] = frozenset()
+
+    def entry(self, capability_id: str) -> UnifiedToolCatalogEntry | None:
+        if capability_id not in self.requestable_ids:
+            return None
+        return self.catalog.by_model_name(capability_id)
+
+
 class ToolProviderRegistry:
     """Own provider lifecycle and reject ambiguous model-facing names centrally."""
 
@@ -132,6 +196,18 @@ class ToolProviderRegistry:
                 names.add(descriptor.model_name)
                 canonical_names.add(descriptor.canonical_name)
                 description = descriptor.compact_description or descriptor.description
+                searchable = " ".join(
+                    (
+                        descriptor.model_name,
+                        descriptor.canonical_name,
+                        descriptor.namespace_id,
+                        *descriptor.aliases,
+                        *descriptor.use_when,
+                        *descriptor.scope_ids,
+                        description,
+                        *descriptor.tags,
+                    )
+                ).casefold()
                 entries.append(
                     UnifiedToolCatalogEntry(
                         descriptor=descriptor,
@@ -139,20 +215,12 @@ class ToolProviderRegistry:
                         scope_ids=descriptor.scope_ids,
                         compact_description=description,
                         tags=descriptor.tags,
-                        searchable_text=" ".join(
-                            (
-                                descriptor.model_name,
-                                descriptor.canonical_name,
-                                *descriptor.scope_ids,
-                                description,
-                                *descriptor.tags,
-                            )
-                        ).casefold(),
+                        searchable_text=searchable,
                         estimated_schema_tokens=estimate_chat_tool_tokens(
                             descriptor.as_chat_tool()
                         ),
                         available=True,
-                        revision=descriptor.schema_version,
+                        revision=descriptor_content_fingerprint(descriptor),
                         bundle_scope_ids=descriptor.bundle_scopes,
                     )
                 )

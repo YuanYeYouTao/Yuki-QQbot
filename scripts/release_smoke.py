@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -17,7 +18,6 @@ class SmokeError(RuntimeError):
 
 _MODEL_TASKS = (
     "chat_agent",
-    "planner",
     "memory_extraction",
     "memory_self_reflection",
     "memory_consolidation",
@@ -28,9 +28,9 @@ _MODEL_TASKS = (
     "automation_text_generation",
     "automation_agent",
     "plugin_agent_session",
-    "tool_selection",
     "utility_structured",
 )
+_SMOKE_PLUGIN_ID = "io.github.yuanyeyoutao.kun-game"
 
 
 class Compose:
@@ -111,6 +111,8 @@ def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
         for old, new in replacements.items():
             environment = environment.replace(old, new)
         env_file.write_text(environment, encoding="utf-8")
+    if env_file.exists():
+        _enable_plugin_system(env_file)
     mcp_file = deploy_directory / ".mcp.json"
     if not mcp_file.exists():
         mcp_file.write_text('{"mcpServers": {}}\n', encoding="utf-8")
@@ -119,7 +121,7 @@ def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
         model_profiles.parent.mkdir(parents=True, exist_ok=True)
         routes = "\n".join(f'{task} = "main"' for task in _MODEL_TASKS)
         model_profiles.write_text(
-            """schema_version = 2
+            """schema_version = 3
 
 [profiles.main]
 provider = "openai_compatible"
@@ -162,6 +164,61 @@ capabilities = ["tools", "structured_output", "long_context"]
     return sentinels
 
 
+def _enable_plugin_system(env_file: Path) -> None:
+    text = env_file.read_text(encoding="utf-8")
+    if re.search(r"(?m)^PLUGIN_SYSTEM_ENABLED=", text):
+        text = re.sub(r"(?m)^PLUGIN_SYSTEM_ENABLED=.*$", "PLUGIN_SYSTEM_ENABLED=true", text)
+    else:
+        text = text.rstrip() + "\nPLUGIN_SYSTEM_ENABLED=true\n"
+    env_file.write_text(text, encoding="utf-8")
+
+
+def discover_smoke_plugin_ids(deploy_directory: Path) -> tuple[str, ...]:
+    root = deploy_directory / "plugins"
+    if not root.is_dir():
+        return ()
+    ids = tuple(
+        sorted(
+            path.name
+            for path in root.iterdir()
+            if path.is_dir() and not path.name.startswith(".") and (path / "plugin.toml").is_file()
+        )
+    )
+    if _SMOKE_PLUGIN_ID in ids:
+        return (_SMOKE_PLUGIN_ID,)
+    return ids[:1]
+
+
+def write_plugin_pending(deploy_directory: Path) -> tuple[str, ...]:
+    selected = discover_smoke_plugin_ids(deploy_directory)
+    pending = deploy_directory / "data/setup/pending.json"
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    pending.write_text(
+        json.dumps({"schema_version": 1, "selected_plugins": list(selected)}, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    return selected
+
+
+def _read_healthz(compose: Compose) -> dict[str, Any]:
+    command = (
+        "import json,urllib.request; "
+        "print(json.dumps(json.load(urllib.request.urlopen("
+        "'http://127.0.0.1:8080/healthz', timeout=3))))"
+    )
+    return json.loads(compose.run("exec", "-T", "bot", "python", "-c", command, capture=True))
+
+
+def _assert_core_health(health: dict[str, Any], version: str) -> None:
+    expected = {"status": "ok", "version": version, "database": "ok"}
+    actual = {key: health.get(key) for key in expected}
+    if actual != expected:
+        raise SmokeError(f"unexpected /healthz response: {actual}")
+    if health.get("plugin_system_enabled") is not True:
+        raise SmokeError(f"plugin system is not enabled: {health}")
+
+
 def wait_healthy(compose: Compose, service: str, timeout_seconds: float = 120.0) -> str:
     container_id = compose.run("ps", "--quiet", service, capture=True)
     if not container_id:
@@ -187,16 +244,8 @@ def wait_healthy(compose: Compose, service: str, timeout_seconds: float = 120.0)
 
 def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     wait_healthy(compose, "bot")
-    command = (
-        "import json,urllib.request; "
-        "print(json.dumps(json.load(urllib.request.urlopen("
-        "'http://127.0.0.1:8080/healthz', timeout=3))))"
-    )
-    health = json.loads(compose.run("exec", "-T", "bot", "python", "-c", command, capture=True))
-    expected = {"status": "ok", "version": version, "database": "ok"}
-    actual = {key: health.get(key) for key in expected}
-    if actual != expected:
-        raise SmokeError(f"unexpected /healthz response: {actual}")
+    health = _read_healthz(compose)
+    _assert_core_health(health, version)
     migration_command = (
         "import sqlite3; "
         "connection=sqlite3.connect('/app/data/qq_ai_bot.db'); "
@@ -206,8 +255,31 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     alembic_version = compose.run(
         "exec", "-T", "bot", "python", "-c", migration_command, capture=True
     )
-    if alembic_version != "0036":
+    if alembic_version != "0040":
         raise SmokeError(f"unexpected Alembic version: {alembic_version!r}")
+    compose.run("exec", "-T", "bot", "qq-ai-bot-cli", "plugin", "discover", capture=True)
+    selected = write_plugin_pending(deploy_directory)
+    compose.run(
+        "exec",
+        "-T",
+        "bot",
+        "qq-ai-bot-cli",
+        "setup",
+        "apply-pending",
+        "--deployment-root",
+        "/app",
+        "--no-color",
+        capture=True,
+    )
+    if not selected:
+        return
+    compose.run("up", "-d", "--no-deps", "--force-recreate", "bot")
+    wait_healthy(compose, "bot")
+    health = _read_healthz(compose)
+    _assert_core_health(health, version)
+    running = int(health.get("plugin_running_count") or 0)
+    if running < 1:
+        raise SmokeError(f"plugin did not start after apply-pending: {health}")
 
 
 def verify_guided_setup(deploy_directory: Path, version: str) -> None:

@@ -132,21 +132,21 @@ def speech_config_specs() -> tuple[ConfigSpec, ...]:
                 field_name,
             ) in (
                 (
-                    "speech.planner_enabled",
-                    "Planner 语音计划",
-                    "允许 Planner 为聊天回复选择语音模式。",
+                    "speech.agent_effects_enabled",
+                    "Agent 语音效果",
+                    "允许 Main Agent 通过 send_voice 请求语音效果。",
                     (),
                     "boolean",
                     None,
                     (),
-                    "SPEECH_PLANNER_ENABLED",
-                    "speech_planner_enabled",
+                    "SPEECH_AGENT_EFFECTS_ENABLED",
+                    "speech_agent_effects_enabled",
                 ),
                 (
                     "speech.default_mode",
                     "全局语音偏好基线",
                     "未保存人物语音偏好时使用：text 禁止日常主动语音，optional 自动决定，"
-                    "voice/text_and_voice 偏好语音；本轮最终模式仍由 Planner 决定。",
+                    "voice/text_and_voice 偏好语音；本轮最终模式仍由 Main Agent 决定。",
                     (),
                     "enum",
                     None,

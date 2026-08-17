@@ -12,8 +12,6 @@ from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMes
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventRecord, PeopleRepository
-from qq_ai_bot.planner.context import PlannerContextBuilder
-from qq_ai_bot.planner.repository import PlannerRepository, PlannerVoiceCadence
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.speech.models import (
     VoiceIntent,
@@ -86,115 +84,6 @@ async def test_persistent_voice_preference_is_person_scoped_and_cascades(
 
     await people.delete_person("1001")
     assert await repository.get("1001") is None
-
-
-@pytest.mark.asyncio
-async def test_planner_voice_cadence_counts_only_neutral_reply_turns(database: Database) -> None:
-    repository = PlannerRepository(database)
-    now = datetime(2026, 7, 29, tzinfo=UTC)
-
-    for index, (intent, mode) in enumerate(
-        (("neutral", "voice"), ("neutral", "text"), ("explicit_request", "voice")),
-        start=1,
-    ):
-        row = await repository.begin(
-            conversation_key="private:1001",
-            trigger_message_id=str(index),
-            scope_type="private",
-            origin="user_message",
-            sender_user_id="1001",
-            group_id=None,
-            necessity_score=100,
-            necessity_reasons={},
-            gate_decision="enter",
-            planner_used=True,
-            created_at=now,
-        )
-        await repository.finish(
-            row.id,
-            planner_decision="reply",
-            reason_code="direct_request",
-            delivery_mode="single",
-            desired_messages=1,
-            tool_mode="inherit",
-            voice_mode=mode,
-            voice_intent=intent,
-            voice_tool_policy=("required" if intent == "explicit_request" else "forbidden"),
-            confidence=1,
-            latency_seconds=0,
-            finished_at=now,
-        )
-
-    cadence = await repository.voice_cadence("private:1001")
-    assert cadence == PlannerVoiceCadence(spontaneous_turns=2, spontaneous_voice_turns=1)
-    assert cadence.ratio == 0.5
-
-
-def test_spontaneous_frequency_is_a_deterministic_budget() -> None:
-    allowed = PlannerContextBuilder._spontaneous_allowed
-
-    assert allowed(
-        PlannerVoiceCadence(spontaneous_turns=0, spontaneous_voice_turns=0),
-        frequency=0.15,
-        preference_mode=VoicePreferenceMode.AUTO,
-    )
-    assert not allowed(
-        PlannerVoiceCadence(spontaneous_turns=1, spontaneous_voice_turns=1),
-        frequency=0.15,
-        preference_mode=VoicePreferenceMode.AUTO,
-    )
-    assert not allowed(
-        PlannerVoiceCadence(spontaneous_turns=50, spontaneous_voice_turns=0),
-        frequency=1,
-        preference_mode=VoicePreferenceMode.TEXT_ONLY,
-    )
-
-
-def test_emoji_cadence_groups_split_messages_into_reply_turns() -> None:
-    now = datetime.now(UTC)
-    inbound = EventRecord(
-        id=1,
-        bot_user_id="8000",
-        platform_message_id="in-1",
-        scope_type=ScopeType.PRIVATE,
-        sender_user_id="1001",
-        direction="inbound",
-        content="你好",
-        visual_summary="",
-        segments=({"type": "text", "data": {"text": "你好"}},),
-        occurred_at=now,
-        private_peer_user_id="1001",
-    )
-    text_reply = replace(
-        inbound,
-        id=2,
-        platform_message_id="out-1",
-        sender_user_id="8000",
-        direction="outbound",
-        content="在呢",
-        segments=({"type": "text", "data": {"text": "在呢"}},),
-    )
-    split_reply = replace(text_reply, id=3, platform_message_id="out-2", content="怎么啦")
-    emoji_reply = replace(
-        text_reply,
-        id=5,
-        platform_message_id="out-3",
-        content="",
-        segments=({"type": "image", "data": {"emoji_id": "emoji-1"}},),
-    )
-    cadence = PlannerContextBuilder._emoji_cadence(
-        (inbound, text_reply, split_reply, replace(inbound, id=4), emoji_reply),
-        "8000",
-    )
-
-    assert cadence.turns == 2
-    assert cadence.emoji_turns == 1
-    assert cadence.ratio == 0.5
-    assert not PlannerContextBuilder._effect_frequency_allows(
-        cadence.turns,
-        cadence.emoji_turns,
-        0.15,
-    )
 
 
 def test_voice_ledger_separates_spoken_text_from_internal_metadata() -> None:

@@ -1,4 +1,4 @@
-"""Versioned, cooperative cancellation for Planner-first conversation turns."""
+"""Versioned, cooperative cancellation for conversation turns."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from typing import Literal
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.messages import InboundMessage
 
-TurnStage = Literal["planner", "generation", "reply"]
+TurnStage = Literal["admission", "generation", "reply"]
 
 
-class PlannerInterruptedError(RuntimeError):
-    """A newer message superseded an interruptible Planner request."""
+class TurnInterruptedError(RuntimeError):
+    """A newer message superseded an interruptible admission or generation stage."""
 
 
 class TurnSupersededError(RuntimeError):
@@ -102,7 +102,7 @@ class ConversationTurnCoordinator:
                 and previous_origin in {TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND}
                 and not state.mutation_started
             ):
-                for stage in ("planner", "generation"):
+                for stage in ("admission", "generation"):
                     task = state.tasks.get(stage)
                     if task is not None and not task.done():
                         to_cancel.add(task)
@@ -133,8 +133,8 @@ class ConversationTurnCoordinator:
         try:
             yield
         except asyncio.CancelledError as exc:
-            if stage == "planner":
-                raise PlannerInterruptedError("planner interrupted by a newer message") from exc
+            if stage == "admission":
+                raise TurnInterruptedError("turn interrupted by a newer message") from exc
             if stage == "reply":
                 raise ReplySequenceCancelled("reply sequence cancelled") from exc
             raise TurnSupersededError("generation superseded by a newer message") from exc
@@ -157,7 +157,7 @@ class ConversationTurnCoordinator:
 
         The promotion keeps the same input version: it does not invent a message.
         It only changes the trusted origin after the debounce window, so the next
-        real group message can cancel Planner or generation work immediately.  A
+        real group message can cancel admission or generation work immediately.  A
         still-running explicit turn always wins and blocks autonomous work.
         """
 
@@ -182,7 +182,7 @@ class ConversationTurnCoordinator:
 
         Unlike :meth:`notify_message`, this never cancels user work.  Once admitted,
         the next real message advances the version and cooperatively interrupts the
-        background Planner or generation stage.
+        background admission or generation stage.
         """
 
         async with self._guard:
@@ -200,7 +200,7 @@ class ConversationTurnCoordinator:
             )
 
     async def cancel_interruptible(self, conversation_key: str) -> bool:
-        """Explicitly cancel registered Planner/generation/reply work for `/ai stop`."""
+        """Explicitly cancel registered admission/generation/reply work for `/ai stop`."""
 
         async with self._guard:
             state = self._states.get(conversation_key)
@@ -219,11 +219,3 @@ class ConversationTurnCoordinator:
     def is_current(self, token: TurnToken) -> bool:
         state = self._states.get(token.conversation_key)
         return state is not None and state.version == token.version
-
-    @property
-    def active_planner_count(self) -> int:
-        return sum(
-            1
-            for state in self._states.values()
-            if (task := state.tasks.get("planner")) is not None and not task.done()
-        )

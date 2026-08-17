@@ -1,7 +1,7 @@
 schema_version = "1"
 memory_fact_schema = 3
 memory_evidence_schema = 4
-memory_query_schema = 5
+memory_query_schema = 6
 memory_context_schema = 5
 embedding_profile_schema = 1
 rebuild_selection_schema = 1

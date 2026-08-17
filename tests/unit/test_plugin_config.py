@@ -30,7 +30,7 @@ async def test_config_accepts_nested_models_and_frozensets(database: Database) -
         plugin_id=PLUGIN_ID,
         name="Nested config",
         version="1.0.0",
-        plugin_api="1.1",
+        plugin_api="2.0",
         yuki_requires=">=3.4",
         manifest_hash="a" * 64,
         entrypoint="plugin:Plugin",

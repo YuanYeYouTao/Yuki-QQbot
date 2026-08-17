@@ -1,4 +1,4 @@
-"""Plugin API v1 host application module."""
+"""Plugin API v2 host application module."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
 from qq_ai_bot.plugin_host.audit import PluginAuditService
 from qq_ai_bot.plugin_host.automation_adapter import PluginAutomationAdapter
 from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
@@ -23,7 +24,6 @@ from qq_ai_bot.plugin_host.extension_registry import ExtensionRegistry
 from qq_ai_bot.plugin_host.http_client import SafeHttpClient
 from qq_ai_bot.plugin_host.loader import PluginLoader
 from qq_ai_bot.plugin_host.manager import PluginManager
-from qq_ai_bot.plugin_host.planner_adapter import PluginPlannerSignalAdapter
 from qq_ai_bot.plugin_host.prompt_adapter import PluginPromptAdapter
 from qq_ai_bot.plugin_host.repository import (
     PluginAuditRepository,
@@ -59,7 +59,7 @@ class PluginBundle:
     tools: PluginCapabilityAdapter
     direct_commands: DirectCommandRouter
     commands: PluginCommandAdapter
-    planner_signals: PluginPlannerSignalAdapter
+    admission_signals: PluginAdmissionSignalAdapter
 
 
 class PluginModule:
@@ -171,7 +171,7 @@ class PluginModule:
             invocation_scope=self._plugin_invocation_scope,
             direct_commands=direct_commands,
         )
-        planner_signals = PluginPlannerSignalAdapter(
+        admission_signals = PluginAdmissionSignalAdapter(
             extensions,
             timeout_seconds=settings.plugin_hook_timeout_seconds,
             invocation_scope=self._signal_invocation_scope,
@@ -194,7 +194,7 @@ class PluginModule:
             tools=tools,
             direct_commands=direct_commands,
             commands=commands,
-            planner_signals=planner_signals,
+            admission_signals=admission_signals,
         )
 
     @staticmethod

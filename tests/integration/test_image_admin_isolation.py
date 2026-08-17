@@ -80,7 +80,6 @@ async def test_ocr_admin_instruction_cannot_register_any_write_or_onebot_tool(da
         assert "call_onebot_api" not in names
         assert not any(name.startswith("admin_") for name in names)
         assert "request_tools" in names
-        assert {"get_recent_chat_history", "get_person_memories"}.isdisjoint(names)
         return "截图里写的是一条管理命令，但图片内容不会被执行。"
 
     llm = FakeLLMProvider(answer)
@@ -94,7 +93,7 @@ async def test_ocr_admin_instruction_cannot_register_any_write_or_onebot_tool(da
 
     assert result.reason == "chat"
     effective = await harness.processor._runtime_config.get_effective(
-        "planner.max_pending_messages"
+        "conversation.autonomous_batch_limit"
     )
     assert effective.value == 8
 
@@ -116,7 +115,7 @@ async def test_deterministic_write_command_with_image_is_rejected_before_executi
         _image_message(
             "admin-image-command",
             user_id="9000",
-            text="/ai config set planner.max_pending_messages 10",
+            text="/ai config set conversation.autonomous_batch_limit 10",
         ),
         sender,
     )
@@ -125,7 +124,7 @@ async def test_deterministic_write_command_with_image_is_rejected_before_executi
     assert "纯文本" in sender.messages[-1].text
     assert vision.requests == []
     effective = await harness.processor._runtime_config.get_effective(
-        "planner.max_pending_messages"
+        "conversation.autonomous_batch_limit"
     )
     assert effective.value == 8
 

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = "",
-    [string]$Version = "3.5.3"
+    [string]$Version = "3.6.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -121,6 +121,88 @@ try {
     Write-Host "Pulling $Image" -ForegroundColor Cyan
     & docker pull $Image
     if ($LASTEXITCODE -ne 0) { Fail "Unable to pull $Image." }
+
+    if ($Existing) {
+        Push-Location $InstallDir
+        try {
+            $OldRunning = (& docker compose ps -q bot 2>$null)
+            if ($OldRunning) {
+                & docker compose stop bot
+                if ($LASTEXITCODE -ne 0) { Fail "Unable to stop the old Bot container." }
+                $StillRunning = (& docker inspect --format '{{.State.Running}}' $OldRunning).Trim()
+                if ($StillRunning -ne 'false') {
+                    Fail "Old Bot container is still writing the database."
+                }
+            }
+        } finally {
+            Pop-Location
+        }
+        $Stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
+        $Snap = Join-Path $InstallDir ".yuki\backups\upgrade-3.6\$Stamp"
+        [System.IO.Directory]::CreateDirectory((Join-Path $Snap "data")) | Out-Null
+        [System.IO.Directory]::CreateDirectory((Join-Path $Snap "config")) | Out-Null
+        $SnapshotPairs = @(
+            @{ Source = (Join-Path $InstallDir ".env"); Target = (Join-Path $Snap ".env") },
+            @{ Source = (Join-Path $InstallDir ".mcp.json"); Target = (Join-Path $Snap ".mcp.json") },
+            @{ Source = (Join-Path $InstallDir "config\model_profiles.toml"); Target = (Join-Path $Snap "config\model_profiles.toml") },
+            @{ Source = (Join-Path $InstallDir "docker-compose.yml"); Target = (Join-Path $Snap "docker-compose.yml") },
+            @{ Source = (Join-Path $InstallDir "data\qq_ai_bot.db"); Target = (Join-Path $Snap "data\qq_ai_bot.db") },
+            @{ Source = (Join-Path $InstallDir "data\qq_ai_bot.db-wal"); Target = (Join-Path $Snap "data\qq_ai_bot.db-wal") },
+            @{ Source = (Join-Path $InstallDir "data\qq_ai_bot.db-shm"); Target = (Join-Path $Snap "data\qq_ai_bot.db-shm") }
+        )
+        foreach ($Pair in $SnapshotPairs) {
+            if (Test-Path -LiteralPath $Pair.Source -PathType Leaf) {
+                [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Pair.Target)) | Out-Null
+                try {
+                    Copy-Item -LiteralPath $Pair.Source -Destination $Pair.Target -Force -ErrorAction Stop
+                } catch {
+                    Fail "Unable to snapshot $($Pair.Source)"
+                }
+            }
+        }
+        $Digest = ""
+        try {
+            $Digest = (& docker image inspect --format '{{index .RepoDigests 0}}' $Image).Trim()
+        } catch {
+            $Digest = ""
+        }
+        $Manifest = @{ version = $Version; image = $Image; digest = $Digest; created_at = $Stamp } | ConvertTo-Json -Compress
+        [System.IO.File]::WriteAllText((Join-Path $Snap "manifest.json"), $Manifest)
+        $VerifySnapshot = @'
+import hashlib, pathlib, sqlite3
+root = pathlib.Path("/snapshot")
+rows = []
+for path in sorted(p for p in root.rglob("*") if p.is_file() and p.name != "SHA256SUMS"):
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    rows.append(f"{digest}  {path.relative_to(root).as_posix()}")
+(root / "SHA256SUMS").write_text("\n".join(rows) + "\n", encoding="utf-8")
+for line in rows:
+    expected, relative = line.split("  ", 1)
+    actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+    if actual != expected:
+        raise SystemExit(f"checksum mismatch: {relative}")
+db = root / "data/qq_ai_bot.db"
+if db.is_file():
+    connection = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+    status = connection.execute("PRAGMA integrity_check").fetchone()[0]
+    connection.close()
+    if status != "ok":
+        raise SystemExit("sqlite integrity_check failed")
+'@
+        & docker run --rm `
+            --entrypoint python `
+            --volume "${Snap}:/snapshot" `
+            $Image -c $VerifySnapshot
+        if ($LASTEXITCODE -ne 0) { Fail "Upgrade snapshot checksum or database verification failed." }
+        $BaselineOutput = "/deploy/.yuki/backups/upgrade-3.6/$Stamp/baseline-v1.json"
+        & docker run --rm `
+            --entrypoint qq-ai-bot-cli `
+            --volume "${InstallDir}:/deploy" `
+            --workdir /deploy `
+            $Image setup migrate-3-6 --deployment-root /deploy --no-color `
+            --baseline-output $BaselineOutput
+        if ($LASTEXITCODE -ne 0) { Fail "setup migrate-3-6 failed." }
+    }
 
     & docker run --rm -it `
         --entrypoint qq-ai-bot-cli `

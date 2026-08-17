@@ -1,8 +1,12 @@
 # Yuki-QQbot
 
+> **3.6.0 正式版：**删除强制 Planner。普通聊天由 Conversation Runtime 准入后直接进入 Main Agent；
+> Memory Runtime 与 Capability Runtime 在模型前完成本地准备。Alembic head 为 `0040`，
+> Plugin API 为 `2.0`。从 3.5.3 升级见 [3.6.0 升级指南](upgrade-3.6.0.md)。
+
 > **3.5.3 正式版：**新增 `qq-ai-bot-cli setup` 彩色引导配置和 Linux / Windows 安装器。
 > 首次部署只需 Docker；可选能力按需提问，密钥不回显，确认后原子写入并自动完成 Compose
-> 启动、健康检查和 NapCat 登录提示。Alembic head 仍为 `0036`，Plugin API 仍为 `1.1`。
+> 启动、健康检查和 NapCat 登录提示。当时 Alembic head 为 `0036`，Plugin API 为 `1.1`。
 
 > **3.5.2 正式版：**部署改用固定版本 GHCR 镜像和无源码 Release 部署包；生产 Compose 不再
 > 本地构建 Bot 或语音 Worker。升级时先修改 `.env` 中的 `YUKI_VERSION`，再执行
@@ -83,8 +87,9 @@
 > 只有当前真实 `SUPERUSERS` 发送者显式 plan/start、人工审阅并 commit 后才会写入事实。
 > 进程重启会暂停而不会自动恢复。操作前仍应备份 `data/`。
 
-当前 Plugin API 为 `1.1`，并兼容声明 `1.0` 的插件。第三方插件若把 `yuki_requires` 上限写成
-`<3.0`，需要在确认兼容后改为 `<4.0`；不要根据 Yuki 产品版本猜测 Plugin API 版本。
+当前 Plugin API 为 `2.0`。声明 `1.0` / `1.1` 的插件会被拒绝；从 1.x 升级见
+[Plugin API 2.0 迁移](plugin-development/api-2.0-migration.md)。第三方插件若把 `yuki_requires`
+上限写成 `<3.0`，需要在确认兼容后改为 `<4.0`；不要根据 Yuki 产品版本猜测 Plugin API 版本。
 
 从 GitHub Release 下载 `install.sh` 或 `install.ps1`。Linux 执行：
 
@@ -130,7 +135,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.5.3 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。当前运行时路径见 [3.6.0 架构](architecture/yuki-3.6.0-runtime.md)。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -145,7 +150,7 @@ Yuki-QQbot 3.5.3 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
   其他群友的长期事实默认不进入当前上下文。
 - 机器人支持 DeepSeek Chat Completions / Responses API、普通/思考模式和多轮工具调用。
 - 内置 Tool Kernel 将 Core、Admin、Automation、Plugin 与 MCP 工具统一为同一目录、
-  Planner scope、Binding、结果预算和 AgentRunner 执行链。
+  Capability namespace、Binding、结果预算和 AgentRunner 执行链。
 - 可按 `.mcp.json` 接入 stdio 与 Streamable HTTP MCP Server；默认关闭，不影响原有聊天。
 - 可选使用 Qwen3.7-Plus 作为独立视觉前端，动态思考并识别图片、虚构角色、图片表情、动态表情和回复图片；DeepSeek 仍是唯一主聊天模型并负责最终回复。
 - 可选使用 DeepSeek Provider 原生联网搜索、Tavily 搜索或原生优先的有界 Tavily 回退；来源仍由后端严格保存、隔离和显示。
@@ -155,32 +160,32 @@ Yuki-QQbot 3.5.3 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 运行时配置保存在 SQLite，不修改 `.env`；所有修改都有脱敏审计，配置覆盖可安全回滚。
 - 每轮聊天获得后端可信当前时间；每个 QQ 可保存独立 IANA 时区，历史消息按本地时间显示。
 - 普通用户和超级管理员都可以用自然语言创建自己的持久化自动化任务；普通用户严格限于本人和当前群，超级管理员可显式委托现有管理员与 OneBot 能力。
-- 默认启用 Planner-first 会话：后端先做确定性回复必要性评分，再生成受约束 `TurnPlan`，规划回复/等待/沉默、工具上限、消息条数和发送节奏。
-- 新消息可以中断过期的自主 Planner、自主生成和尚未发送的旧消息序列；已经开始的修改型业务操作不会被自动取消。
-- 提供 Plugin API v1、独立 `yuki_plugin_sdk`、Manifest/批准/权限/事件/Prompt/PlannerSignal 扩展点和无网络测试 SDK；插件系统默认关闭。
+- 默认启用 Conversation Runtime：私聊、真实 `@` 与回复机器人由 Host 直接准入；已启用群的未触发消息先观察，静默窗口后由本地评分决定是否开一轮只读 Main Agent。
+- 新消息可以中断过期的自主轮、自主生成和尚未发送的旧消息序列；已经开始的修改型业务操作不会被自动取消。
+- 提供 Plugin API 2.0、独立 `yuki_plugin_sdk`、Manifest/批准/权限/事件/Prompt/AdmissionSignal 扩展点和无网络测试 SDK；插件系统默认关闭。
 - 插件可以创建与主聊天账本、人物记忆分离的持久或临时 AI 会话，适合骰子跑团等连续任务；插件拿不到模型隐藏推理，也不能伪造超级管理员。
-- 内置持久化表情系统会按配置观察图片、保存原图与静态预览、复用 Qwen 视觉分类、自动采用合格表情，并由 Planner 在正常回复序列中选择发送。
+- 内置持久化表情系统会按配置观察图片、保存原图与静态预览、复用 Qwen 视觉分类、自动采用合格表情，并由 Main Agent 通过 `ReplyEffect` 在正常回复序列中选择发送。
 - 可选启用完全本地的 Genie-TTS 2.0.2 Worker，使用部署者自行准备的 GPT-SoVITS V2/V2ProPlus ONNX 声线和多参考风格发送 QQ `record`，不调用云端 TTS。
 
 ### 当前架构约束
 
-- 所有主模型调用都以 `ModelTask → ModelRoute → ModelProfile → ModelClientPool` 执行；聊天、自动化 Agent 和插件 Agent 会话默认走 Pro，Planner、记忆提取、关系评价、表情替换和辅助结构化任务默认走 Flash。路由缺失或能力不兼容会在启动时明确失败，不会静默回退到 Pro。
-- Planner、记忆提取、关系评价与表情替换共用 `StructuredTaskRunner`，输出结构直接来自 Pydantic Schema；不再解析 Markdown JSON fence 或从自由文本中猜测第一个花括号对象。
+- 所有主模型调用都以 `ModelTask → ModelRoute → ModelProfile → ModelClientPool` 执行；聊天、自动化 Agent 和插件 Agent 会话默认走 Pro，记忆提取、关系评价、表情替换和辅助结构化任务默认走 Flash。路由缺失或能力不兼容会在启动时明确失败，不会静默回退到 Pro。
+- 记忆提取、关系评价与表情替换共用 `StructuredTaskRunner`，输出结构直接来自 Pydantic Schema；不再解析 Markdown JSON fence 或从自由文本中猜测第一个花括号对象。
 - Prompt 由不可变 `PromptContribution` 经 `PromptCompiler` 组成一个稳定静态前缀和一个紧凑动态 Envelope；人物、群、关系、记忆和插件资料由通用 `ContextContribution` 预算器按 required、priority、relevance 和 cost 选择。
-- 工具访问由 `CapabilityDescriptor` 的 effect、risk、trust source、origin 和权限元数据决定；Planner 的 `ToolSelection` 只会缩小工具组，图片、网页和插件资料不能扩大权限。本地表情和语音统一作为 `ReplyEffect` 进入既有回复序列。
-- Planner 只接收紧凑 Tool scope 摘要，不接收完整 JSON Schema；主 Agent 只会获得本轮选中的
-  完整工具 Schema。MCP 未启用或未被选择时，普通聊天不会增加 MCP Schema Token。
+- 工具访问由 `CapabilityDescriptor` 的 effect、risk、trust source、origin 和权限元数据决定；Capability Runtime 只会在已授权目录内搜索和收窄工具，图片、网页和插件资料不能扩大权限。本地表情和语音统一作为 `ReplyEffect` 进入既有回复序列。
+- Capability Search 只接收紧凑 namespace 摘要与本地 FTS 命中；主 Agent 只会获得本轮暴露的
+  完整工具 Schema。MCP 未启用时，普通聊天不会增加 MCP Schema Token。
 - 配置启用的 MCP Server 是可信工具来源，但返回内容仍作为外部资料处理。MCP 不增加逐工具审批，
-  可用性只由配置、Server 启停状态和既有 Planner/能力策略决定。
+  可用性只由配置、Server 启停状态和既有能力策略决定。
 - 组合根通过不可变 Bundle 装配 Persistence、ModelRuntime、Web、Media、Emoji、Speech、Conversation、Admin 和 Automation Module；`LifecycleRegistry` 负责按注册顺序启动、反序关闭、失败回滚及模块健康检查。
-- 根 `Settings` 保留 1.x 的扁平 `.env` 名称作为兼容入口，同时组合不可变的 App、OneBot、ModelRuntime、Conversation、Planner、Plugin、Memory、Relationship、Web、Vision、Emoji、Speech 和 Automation 领域设置。
-- 正常聊天、管理员自然语言操作、联网和自动化创建继续使用同一个聊天 Agent；Planner 只规划，不能执行工具或产生权限。插件独立 AI 会话只服务插件任务，不是第二套管理员人格或主聊天路由。
+- 根 `Settings` 保留 1.x 的扁平 `.env` 名称作为兼容入口，同时组合不可变的 App、OneBot、ModelRuntime、Conversation、Plugin、Memory、Relationship、Web、Vision、Emoji、Speech 和 Automation 领域设置。
+- 正常聊天、管理员自然语言操作、联网和自动化创建继续使用同一个聊天 Agent。插件独立 AI 会话只服务插件任务，不是第二套管理员人格或主聊天路由。
 - `ContextAssembler` 统一装配人物、群、关系和近期事件，并用 `MAX_CONTEXT_CHARACTERS` 限制动态上下文总量；当前消息优先保留，低优先级旧资料先裁剪。
 - `PromptComposer` 集中生成后端可信的时间、权限、关系、视觉和联网规则，业务服务不再各自拼接一套运行说明。
 - 持久化仓储按人物与访问、事件账本、Memory V2、关系、媒体和联网来源分域实现；
   `qq_ai_bot.memory` 负责事实、证据、身份映射、提取和上下文投影，Repository 不包含 Prompt；
   `persistence.repositories` 仅作为其余仓储的稳定门面。
-- `/ai` 确定性命令由 `CommandService` 调度并绕过 Planner；普通聊天由 `ReplyNecessityScorer → PlannerService → AgentRunner → ReplySequenceManager` 协作，`MessageProcessor` 继续负责准入、观察、账本、视觉和最终异常边界。
+- `/ai` 确定性命令由 `CommandService` 调度并绕过 Main Agent；普通聊天由 Conversation Runtime 准入后进入 `ChatService.handle_turn → AgentRunner → ReplySequenceManager`，`MessageProcessor` 继续负责观察、账本、视觉和最终异常边界。
 - 运行时配置注册表只负责查找、别名和类型转换；热更新、仅影响未来、需重启、受保护/密钥配置分别维护在独立声明目录中。
 - 相关人物按批次读取，避免群聊中按 QQ 串行查询多组资料；群名片仍严格按当前群号隔离。
 - SQLite 使用 WAL 和有限等待支持多个后台 Worker；部署仍定位于单 Bot、小型服务器，未来需要多进程横向扩展时再迁移 PostgreSQL。
@@ -203,8 +208,8 @@ Memory V2 质量、合成大库性能基准与生产审计命令见
 3. 重建 Bot：`docker compose up -d --no-deps --force-recreate bot`。不要重建或退出 NapCat，可保留 QQ 登录状态。
 4. 用 `/ai mcp list` 查看状态；超级管理员可执行 `/ai mcp doctor <server_id>`。
 
-`MCP_TOOL_SELECTION_MODE=hybrid` 会先做本地目录粗选，再由 `TOOL_SELECTION` 的 Flash
-档案对紧凑候选精排；Flash 不会看到工具 Schema。大量工具部署可设置
+Capability Search 只做本地 FTS5 BM25 检索，不再使用 Planner 或 Flash
+Tool Selection。大量工具部署可设置
 `TOOLING_SELECTED_TOOL_LIMIT`、`TOOLING_SCHEMA_TOKEN_BUDGET`、
 `MCP_SELECTED_TOOL_LIMIT` 与 `MCP_SCHEMA_TOKEN_BUDGET`。默认采用宽松的首批预算，
 遗漏能力仍可通过 `request_tools` 按需加载；显式留空表示不增加对应限制。
@@ -242,12 +247,12 @@ Memory V2 质量、合成大库性能基准与生产审计命令见
 }
 ```
 
-Planner 只需选择 Bundle scope，成员就会整体进入候选与 Agent Schema；Flash 和工具数量限制
-不能拆散它。若完整 Bundle 超过 Schema Token 预算，本轮会明确失败并指出 scope，不会静默
+Capability Runtime 按本地 FTS 命中与 Bundle namespace 决定首批 Schema；Flash 和工具数量限制
+不能拆散已声明的 Bundle。若完整 Bundle 超过 Schema Token 预算，本轮会明确失败并指出 namespace，不会静默
 留下半条工具链。`mcp_gateway` 的 search 只搜索、describe 只返回定义，call 仍按目标工具的
-真实风险经过统一 CapabilityPolicy，不能借只读 Gateway 绕过 scope、read-only、图片或联网限制。
+真实风险经过统一 CapabilityPolicy，不能借只读 Gateway 绕过 namespace、read-only、图片或联网限制。
 若 Agent 在执行过程中发现所需工具未加载，可调用 `request_tools` 按能力描述从统一目录请求；
-后端只会加载当前真实事件原本有权使用、且属于 Planner 本轮已批准 scope 的完整工具 Schema；
+后端只会加载当前真实事件原本有权使用的完整工具 Schema；
 它能找回预算省略项，但不能扩大本轮工具范围，下一步仍由目标工具自身执行和审计。
 成功的 MCP 调用同时返回 `structuredContent` 和兼容文本时，Yuki 以结构化结果为准并丢弃重复
 文本，避免菜单等大结果被字符预算截断成无名称的 ID 摘要；图片和资源块仍会保留。
@@ -281,7 +286,7 @@ TaskSpec Schema 提供的模型安全 ID 中选择能力，后端会解析为真
 - 状态：`candidate → recognized → adopted`；普通照片进入 `rejected`，管理员可 `ban`，文件丢失时标记 `missing`。
 - 自动收集：`metadata_only` 只看 OneBot 明确表情字段；`likely` 还接受表情相关元数据；`all_images` 接受作用域内全部图片作为候选。
 - 去重与文件：SHA-256 完全去重；可选 dHash 只标识近似候选，不会误删。原图保存到 `data/emoji/original/`，第一帧 WebP 预览保存到 `data/emoji/preview/`；GIF/WebP 原动画保持不变。
-- 回复：Planner 只输出语义目标、情绪、模式和位置，不能指定文件或表情 ID；核心先粗排，再可选用候选拼图做视觉精排。`emoji_only` 由发送层直接执行，不再经过第二次 Agent 决策；日常 `optional` 受 `EMOJI_SPONTANEOUS_FREQUENCY`（默认 0.15）和近期真实发送比例约束，明确索要表情不受影响。发送可以位于文字前、文字后或仅发表情，并服从新消息取消与发送成功后计数。
+- 回复：Main Agent 只输出语义目标、情绪、模式和位置，不能指定文件或表情 ID；核心先粗排，再可选用候选拼图做视觉精排。`emoji_only` 由发送层直接执行，不再经过第二次 Agent 决策；日常 `optional` 受 `EMOJI_SPONTANEOUS_FREQUENCY`（默认 0.15）和近期真实发送比例约束，明确索要表情不受影响。发送可以位于文字前、文字后或仅发表情，并服从新消息取消与发送成功后计数。
 - 隔离：OCR、描述、插件和网页都不能执行命令、改变关系或写人物记忆；数据库和日志不保存图片 Base64。
 
 常用命令（仅真实 `SUPERUSERS`）：
@@ -320,15 +325,15 @@ API = "エーピーアイ"
 
 词典匹配不区分大小写；普通英文词优先走 C2K，缩写和不常见词优先走 NGram，最后按日语字母名确定性拼读。日语 Worker 输入若仍含拉丁字母会明确拒绝合成，不会静默发送原文；中文和英文合成路径不变。`/healthz` 与 `speech status` 会显示 `japanese_frontend_available`、版本和不含正文的缓存签名。可用 `SPEECH_JP_KATAKANA_ENABLED=false` 显式关闭。
 
-同一声线可声明多种目标语言。Planner 可以按当前语境在中文和日文间自然选择，Agent 会生成对应语言的正文；后端还会根据最终文本中的中文汉字或日语假名再次校验，避免语言提示与实际文本不一致。参考音频的语言独立保存，因此日语参考音频也可以用于合成中文目标文本。
+同一声线可声明多种目标语言。Main Agent 可以按当前语境在中文和日文间自然选择，并生成对应语言的正文；后端还会根据最终文本中的中文汉字或日语假名再次校验，避免语言提示与实际文本不一致。参考音频的语言独立保存，因此日语参考音频也可以用于合成中文目标文本。
 
-语音意图由 Planner 理解自然语言和当前上下文，不再由后端匹配“语音/文字”等固定短语。用户本轮明确索要语音时，Planner 授权 Agent 使用 `send_voice` 选择语气与语言；工具不能改变 Planner 决定的纯语音、文字加语音或纯文字模式。用户没有明确索要语音时，Agent 看不到该工具，普通聊天是否偶尔发语音完全由 Planner 按人物偏好和 `SPEECH_SPONTANEOUS_FREQUENCY`（默认 0.15）决定。
+语音意图由 Main Agent 理解自然语言和当前上下文，不再由后端匹配“语音/文字”等固定短语。用户本轮明确索要语音时，Agent 可使用 `send_voice` 选择语气与语言；用户没有明确索要语音时，普通聊天是否偶尔发语音由语音运行时按人物偏好和 `SPEECH_SPONTANEOUS_FREQUENCY`（默认 0.15）以及近期投递账本决定。
 
 语音账本只把实际朗读正文交给聊天模型；声线、参考风格、目标语言和生成 ID 仅保存在结构化 `record` 消息段，不会以 `[语音：Yuki 发送了一条语音，声线：…]` 的形式混入 Yuki 的上下文或下一次语音。包含语音的回复中，系统提示词要求自称使用 `ゆき`，避免日语 TTS 把 `Yuki` 读成英文字母；纯文字回复仍可使用 `Yuki`。
 
 每个 QQ 可持久保存 `text_only`、`auto` 或 `prefer_voice` 模式。只有“以后都用文字”“以后可以偶尔发语音”等明确持续语义会更新偏好；“这次用语音说”只影响当前轮。`SPEECH_DEFAULT_MODE` 是尚未保存人物偏好时的全局基线：`text` 对应文字模式，`optional` 对应自动决定，`voice`/`text_and_voice` 对应偏好语音。CPU ONNX 模型可能占用数 GiB，Bot 启动时只同步声线元数据、首次合成时才按需加载模型；Worker 会主动归还空闲堆内存，并在 `SPEECH_WORKER_IDLE_RECYCLE_SECONDS`（默认 300 秒）后由 Compose 自动回收重启；设为 `0` 可关闭空闲回收。
 
-仓库不会下载或附带任何角色模型、Galgame/动漫声线或原始语音，生产 Worker 也不安装 PyTorch。部署者必须确认模型权重和参考音频授权。准备流程、Manifest、转换、Planner、插件、自动化与排障见 [语音文档](speech/architecture.md)。
+仓库不会下载或附带任何角色模型、Galgame/动漫声线或原始语音，生产 Worker 也不安装 PyTorch。部署者必须确认模型权重和参考音频授权。准备流程、Manifest、转换、插件、自动化与排障见 [语音文档](speech/architecture.md)。
 
 常用命令：
 
@@ -476,64 +481,47 @@ docker compose up -d --no-deps --force-recreate bot
 
 普通用户可以创建提醒、定时生成文本、给自己发私聊，以及在创建消息所在的当前群执行受限任务；只能查看、修改和运行本人任务。超级管理员可以额外委托已登记的管理员业务接口、运行时配置和 NapCat/OneBot 全部公开 action。引用、历史、记忆、网页、OCR 和模型自行生成的 QQ/群号不能扩大目标范围。
 
-### Planner-first 会话
+### Conversation Runtime 会话
 
-Planner 是普通聊天固定且唯一的决策边界。2.0.0 中它通过 `ModelTask.PLANNER` 和 `MODEL_PROFILES_FILE` 读取模型路由；`PLANNER_MODEL` 已删除。Planner 关闭思考、不提供工具，只通过 `StructuredTaskRunner` 提交严格的 `TurnPlan`。Planner 只能缩小本轮工具和回复计划，不能修改配置、记忆、关系、权限或直接发送消息。
+普通聊天不再经过前置 Planner。私聊、真实 `@` 与回复机器人由 Host 直接交给 Main Agent；已启用群的未触发消息先观察，静默窗口后由本地评分决定是否开一轮只读自主回复。
 
 ```dotenv
-PLANNER_DIRECT_ENABLED=true
-PLANNER_GROUP_ENABLED=true
-PLANNER_GROUP_DEBOUNCE_SECONDS=3
-PLANNER_PREFERRED_MESSAGES=3
-PLANNER_REPLY_NECESSITY_THRESHOLD=0
-PLANNER_CONFIDENCE_THRESHOLD=0.2
-PLANNER_MAX_PENDING_MESSAGES=8
-PLANNER_MAX_WAIT_SECONDS=60
+CONVERSATION_AUTONOMOUS_ENABLED=true
+CONVERSATION_AUTONOMOUS_DEBOUNCE_SECONDS=3
+CONVERSATION_AUTONOMOUS_ADMISSION_THRESHOLD=0
+CONVERSATION_AUTONOMOUS_BATCH_LIMIT=8
+CONVERSATION_AUTONOMOUS_PRESENCE_WINDOW_SECONDS=300
+CONVERSATION_INTERRUPT_AUTONOMOUS_ON_NEW_MESSAGE=true
 SPEECH_SPONTANEOUS_FREQUENCY=0.15
 REPLY_SEQUENCE_CANCEL_ON_NEW_MESSAGE=true
-REPLY_PLAN_HARD_MAX_MESSAGES=10
+REPLY_HARD_MAX_MESSAGES=10
 ```
 
-要先用 1.5.2 兼容聊天路径验证升级，可临时设置：
+旧 `PLANNER_*`、`REPLY_PLAN_HARD_MAX_MESSAGES` 与 `SPEECH_PLANNER_ENABLED` 由 `setup migrate-3-6` 备份后改写或删除，运行时不再 dual-read。映射表见 [3.6.0 升级指南](upgrade-3.6.0.md)。
 
-```dotenv
-PLUGIN_SYSTEM_ENABLED=false
-```
+已启用群由 `conversation.autonomous_enabled` 控制是否进入自主评分，并使用
+`conversation.autonomous_debounce_seconds` 聚合连续消息。默认高参与度：普通群消息静默约 3 秒后评分，批次上限 8 条，门槛为 0。真实 `@Yuki`、回复 Yuki 和私聊属于后端强制回复，不会走自主评分；后续普通群消息也不会抢占正在处理的明确触发。禁用群仍只接受超级管理员的启用命令。
 
-Planner 开启时，已启用群由 `planner.group_enabled` 控制是否进入自主规划，并使用
-`planner.group_debounce_seconds` 聚合连续消息。旧 `AUTONOMOUS_*` 开关、静默时间、
-置信度、冷却和小时上限完全不参与 Planner 会话；只有显式关闭 Planner 时，它们才作为
-1.5.2 兼容路径重新生效。
+`reply.hard_max_messages` 是单轮实际发送 QQ 消息数的硬上限，默认 10。非结构化聊天正文中的空行会直接成为两条 QQ 消息的发送边界；代码、表格、步骤和长篇结构化回答不会逐句拆散。超级管理员可直接对 Yuki 说“把单轮发送硬上限改成 15 条”，修改会热生效。
 
-当前默认采用高参与度群聊策略：普通群消息静默约 3 秒后进入 Planner，决策上下文限制为
-最近 8 条，必要性门槛为 0，由 Planner 判断是否能自然接话。已启用群中的真实 `@Yuki`、
-回复 Yuki 和私聊属于后端强制回复，Planner 不能把它们改成 `silent/wait`；后续普通群消息
-也不会抢占正在处理的明确触发。已通过发言门槛的批次如遇 Planner 格式异常，会降级为正常回复而非
-沉默。禁用群仍只接受超级管理员的启用命令。
-
-`planner.preferred_messages` 是 `natural_multi` 日常回复的软目标，默认 3 条；内容不足时
-不会凑数。非结构化聊天正文中的空行会直接成为两条 QQ 消息的发送边界；代码、表格、步骤
-和长篇结构化回答不会逐句拆散。超级管理员可直接对 Yuki 说
-“把 Planner 日常回复偏好改成 5 条”或“把单轮发送硬上限改成 15 条”，修改会热生效。
-
-Planner 还可在多人聊天中为指向关系非常明确的回答选择引用消息发送；`reply_to_message_id`
+Main Agent 还可在多人聊天中为指向关系非常明确的回答选择引用消息发送；`reply_to_message_id`
 默认为空，正常回答当前消息、私聊、被 @ 或多条发送都不会自动开启回复气泡。私聊若选择当前消息，
 后端会将其收缩为普通发送；明确选择较早的消息，或群聊中确实需要指出某条消息时才保留引用。
-引用目标必须来自当前受限 Planner 上下文中的真实消息 ID；多条回复只让第一条携带这次明确引用。
+多条回复只让第一条携带这次明确引用。
 
-Planner 同时是聊天语音的唯一决策边界：它从语义识别本轮明确索要/拒绝语音、持续人物偏好和
+语音由 Main Agent 与语音运行时共同完成：语义识别本轮明确索要/拒绝语音、持续人物偏好和
 中性的日常表达。Agent 的 `send_voice` 只在明确索要语音的轮次临时出现，并且只能补充风格与
-语言；日常主动语音按 `speech.spontaneous_frequency` 和最近 Planner 记录形成频率预算。超级
+语言；日常主动语音按 `speech.spontaneous_frequency` 和近期真实投递账本形成频率预算。超级
 管理员可直接说“把日常主动语音频率改成 0.25”，以 global/group/user 作用域热更新。
 
 ### 可选：启用本地插件
 
-插件系统默认关闭。先阅读 [插件开发手册](plugin-development/index.md) 和 [真实安全边界](plugin-development/security.md)：1.6.0 插件运行在 Yuki 进程内，权限系统是官方 API 的访问治理，不是恶意 Python 沙盒，只能安装管理员完全信任并审阅过源码的插件。
+插件系统默认关闭。先阅读 [插件开发手册](plugin-development/index.md) 和 [真实安全边界](plugin-development/security.md)：插件运行在 Yuki 进程内，权限系统是官方 API 的访问治理，不是恶意 Python 沙盒，只能安装管理员完全信任并审阅过源码的插件。
 
 ```dotenv
 PLUGIN_SYSTEM_ENABLED=true
 PLUGIN_DIRECTORY=plugins
-PLUGIN_API_VERSION=1.1
+PLUGIN_API_VERSION=2.0
 # 示例：让“*签到”等消息直达插件的 play 命令。
 PLUGIN_DIRECT_COMMAND_BINDINGS={"*":"io.github.yuanyeyoutao.kun-game:play"}
 ```
@@ -547,13 +535,13 @@ uv run qq-ai-bot-cli plugin validate plugins/com.example.echo
 uv run qq-ai-bot-cli plugin test plugins/com.example.echo
 ```
 
-通过插件 CLI 发现、审阅权限、批准并启用后重启 Bot。Manifest 任何变化都会使批准失效，必须重新审阅。Docker Compose 将 `./plugins` 只读挂载到 `/app/plugins`，插件热更新和在线下载不属于 1.6.0。
+通过插件 CLI 发现、审阅权限、批准并启用后重启 Bot。Manifest 任何变化都会使批准失效，必须重新审阅。Docker Compose 将 `./plugins` 只读挂载到 `/app/plugins`，插件热更新和在线下载不属于当前版本。
 
 `PLUGIN_DIRECT_COMMAND_BINDINGS` 是启动期静态 JSON 对象。前缀不得为空、包含空白或控制字符、
 与 `AI_PREFIX` 重叠，多个前缀之间也不得相同或互为前缀；`/github` 这类斜杠命令可以绑定。
 目标必须写成 `plugin_id:command`，且只能是已批准、已启用、正在运行的命令。命中后仍会经过
 群/私聊准入、消息去重、入站账本、命令权限、限流和插件调用隔离；配置目标暂时不可用时会
-失败关闭，不会回退 Planner。可用 `qq-ai-bot-cli plugin doctor <plugin_id>` 查看绑定状态。
+失败关闭，不会回退到另一套聊天路径。可用 `qq-ai-bot-cli plugin doctor <plugin_id>` 查看绑定状态。
 
 插件需要连续独立上下文时可使用 `ctx.agent_sessions`。例如跑团插件可以创建 `durable + current_group` 会话；历史只写 `plugin_agent_messages`，不写主 `chat_events`，默认不注入主聊天或人物记忆，也不返回隐藏推理。详见 [独立 AI 会话](plugin-development/service-facades.md#独立-ai-会话跑团示例)。
 
@@ -689,7 +677,7 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 | `automation_versions` | 每次脚本修改的不可变版本与稳定哈希 |
 | `automation_runs` | 幂等执行记录、资源计数、状态和脱敏结果摘要 |
 | `automation_step_runs` | 每个步骤的 capability、时间、状态和脱敏摘要 |
-| `planner_runs` | `0013` 新增的 Planner 必要性、计划、降级、中断、耗时和发送计数；只保存脱敏哈希与摘要 |
+| `planner_runs` | `0013` 新增、`0040` 删除。3.5.3 保存 Planner 必要性、计划、降级、中断、耗时和发送计数；升级前由 baseline 导出，升级后不再存在 |
 | `plugin_installations` | 插件 Manifest 哈希、请求/批准权限、状态和失败计数 |
 | `plugin_config_values` | 按插件及 global/group/user 作用域保存已校验配置 |
 | `plugin_state` | 按插件强制隔离的私有 KV，不用于保存 Secret |
@@ -711,9 +699,9 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
   → 记忆任务入队
   → 已触发且含图片时，按需解析、预处理并调用独立视觉前端
   → /ai 与确定性插件命令直接处理
-  → 其他轮次由 ReplyNecessityScorer 判断是否值得进入 Planner
-  → Planner 生成并由后端裁剪 TurnPlan（reply / wait / silent）
-  → reply 才装配上下文并进入同一个正常聊天 Agent
+  → 私聊 / @ / 回复机器人直接进入 Main Agent
+  → 未触发的已启用群消息进入观察；静默窗口后由本地评分决定是否自主回复
+  → 准入轮次装配 Memory Runtime 与 Capability Runtime，再进入同一个正常聊天 Agent
   → 纯文本轮次可按当前真实 QQ 创建或管理本人自动化任务
   → 当前真实发送者是超级管理员时，为该 Agent 动态增加管理员工具
   → ReplySequenceManager 按计划发送，并在新消息到达时停止过期的剩余消息
@@ -746,9 +734,9 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 - 当前私聊或当前群在 `12000` 字符总预算内的连续滑动历史；
 - 只有模型主动调用搜索工具时，才加入更早历史。
 
-相关记忆检索不会调用 LLM。Planner 会为本轮选择 `none / lexical / hybrid / overview` 检索深度：
+相关记忆检索不会调用聊天 LLM。Memory Runtime 按当前真实事件决定召回路径：
 纯表情等独立效果不装配上下文，简短日常交流优先使用本地词法检索，人物事实、偏好、模糊指代
-和历史语义问题才使用混合检索，显式记忆概览使用 overview。Planner 不能选择 QQ、群号或人物，
+和历史语义问题才使用混合检索，显式记忆概览使用 overview。模型不能选择 QQ、群号或人物，
 这些范围仍由后端根据当前真实事件确定。
 
 后端先按 QQ、群号和作用域在同一 SQL 中硬过滤，再使用 SQLite FTS5 `trigram` 与可选 Qwen
@@ -965,7 +953,7 @@ relationship_weight = round(0.6 × affection_score + 0.4 × effective_trust)
 可通过 `automation_diagnose` 核实，不能仅凭聊天记忆声称任务存在。
 
 主聊天链路还会确定性识别“几分钟后查询”“明天九点下单”“每天检查”等未来执行请求。此类
-消息即使被 Planner 或工具精排误判为 MCP 查询，本轮也只会向 Agent 暴露
+消息即使被工具精排误判为 MCP 查询，本轮也只会向 Agent 暴露
 `automation_create`，不会提前执行目标 MCP、联网或 OneBot 工具；未取得持久化确认时，后端会
 拦截“设好了”“创建成功”等错误宣称。普通的“明天早餐有什么”“明天九点天气怎么样”只是
 询问信息，不会因为包含未来时间而自动创建任务。
@@ -1125,20 +1113,20 @@ docker compose up -d --no-deps --force-recreate bot
 
 在已启用群中，可以只发送一个 `@Yuki` 而不附带文字；该消息会进入正常聊天 Agent，让 Yuki 自然回应。后端只把最小的“仅被提及”上下文交给模型，永久事件账本仍保存真实的空文本消息，不伪造用户发言。
 
-Planner-first 自主参与规则：
+Conversation Runtime 自主参与规则：
 
-- 群消息静默窗口结束后，最多按 `PLANNER_MAX_PENDING_MESSAGES` 组成受限批次；
-- 默认必要性门槛为 `0`，非空群聊批次都会交给 Planner 判断是否自然参与；
-- 达到阈值后，由 Planner 选择 `reply`、`wait` 或 `silent`，`wait` 最多重新规划一次；
-- Planner 以活跃群友为默认倾向，能自然接话、参与玩笑、回应情绪或延续话题时优先发言；
-- 真实 `@Yuki`、回复 Yuki 和私聊由后端强制回复，历史活跃度不能降低该优先级；
-- 旧置信度、冷却、每小时上限和旧自主引擎已经删除，不再存在两套群聊决策；
-- 新群消息会中断自主 Planner 和自主生成，但普通观察消息不会中断明确触发的处理轮；
-- 自主轮不开放通用 OneBot 管理工具，Planner 本身也没有任何工具；
-- 最终回复仍由同一个 Yuki Agent 生成，并使用普通消息与计划内的发送节奏。
+- 群消息静默窗口结束后，最多按 `conversation.autonomous_batch_limit`（默认 8）组成受限批次；
+- 默认必要性门槛为 `0`，非空群聊批次都会交给本地评分判断是否自然参与；
+- 达到阈值后开一轮只读 Main Agent，不再生成 `wait` / `silent` TurnPlan；
+- 评分以活跃群友为默认倾向，能自然接话、参与玩笑、回应情绪或延续话题时优先发言；
+- 真实 `@Yuki`、回复 Yuki 和私聊由后端强制回复，不走自主评分；
+- 旧置信度、冷却、每小时上限、前置 Planner 和旧自主引擎已经删除，不再存在两套群聊决策；
+- 新群消息会中断自主轮和自主生成，但普通观察消息不会中断明确触发的处理轮；
+- 自主轮不开放通用 OneBot 管理工具，默认 `read_only`；
+- 最终回复仍由同一个 Yuki Agent 生成，并使用普通消息与发送节奏。
 
-普通聊天固定经过 Planner；不再保留 1.5.2 的候选判断、置信度、冷却与每小时上限回退链。
-旧 `.env` 中的 `PLANNER_ENABLED`、`PLANNER_MODEL`、`ALLOWED_PRIVATE_USERS` 与 `AUTONOMOUS_*` 项已失效，可以删除；项目不会改写现有 `.env`。
+普通聊天不再经过 Planner。从 3.5.3 升级时由 `setup migrate-3-6` 改写 `.env` 与运行时覆盖；
+旧 `PLANNER_*` 残留环境变量会被忽略。完整步骤见 [3.6.0 升级指南](upgrade-3.6.0.md)。
 
 ## 命令
 
@@ -1268,9 +1256,9 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 
 | 模式 | 配置键 |
 |---|---|
-| HOT | `planner.enabled`、`planner.direct_enabled`、`planner.group_enabled`、`planner.group_debounce_seconds`、`planner.confidence_threshold`、`planner.reply_necessity_threshold`、`planner.max_pending_messages`、`planner.recent_presence_window_seconds`、`planner.max_wait_seconds`、`planner.interrupt_autonomous_on_new_message` |
+| HOT | `conversation.autonomous_enabled`、`conversation.autonomous_debounce_seconds`、`conversation.autonomous_admission_threshold`、`conversation.autonomous_batch_limit`、`conversation.autonomous_presence_window_seconds`、`conversation.interrupt_autonomous_on_new_message` |
 | HOT | `context.local_event_limit`、`memory.max_referenced_targets` |
-| HOT | `reply.delay_min_seconds`、`reply.delay_max_seconds`、`reply.max_qq_message_chars` |
+| HOT | `reply.delay_min_seconds`、`reply.delay_max_seconds`、`reply.max_qq_message_chars`、`reply.hard_max_messages` |
 | HOT | `llm.temperature`、`llm.max_output_tokens`、`llm.thinking_enabled` |
 | HOT | `agent.max_tool_calls`、`agent.max_model_requests`、`agent.tool_result_max_characters` |
 | HOT | `web.search_max_results`、`web.extract_max_results`、`web.max_calls_per_turn`、`web.tool_result_max_characters` |
@@ -1363,25 +1351,17 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `AGENT_MAX_TOOL_CALLS` | `8` |
 | `AGENT_MAX_MODEL_REQUESTS` | `6` |
 | `AGENT_TOOL_RESULT_MAX_CHARACTERS` | `8000` |
-| `PLANNER_DIRECT_ENABLED` | `true` |
-| `PLANNER_GROUP_ENABLED` | `true` |
-| `PLANNER_GROUP_DEBOUNCE_SECONDS` | `3` |
-| `PLANNER_PREFERRED_MESSAGES` | `3`（热配置范围 `1`～`20`） |
-| `PLANNER_TEMPERATURE` | `0.1` |
-| `PLANNER_MAX_OUTPUT_TOKENS` | `512` |
-| `PLANNER_TIMEOUT_SECONDS` | `20` |
-| `PLANNER_CONFIDENCE_THRESHOLD` | `0.2` |
-| `PLANNER_REPLY_NECESSITY_THRESHOLD` | `0` |
-| `PLANNER_MAX_PENDING_MESSAGES` | `8` |
-| `PLANNER_RECENT_PRESENCE_WINDOW_SECONDS` | `300` |
-| `PLANNER_MAX_WAIT_SECONDS` | `60` |
-| `PLANNER_INTERRUPT_AUTONOMOUS_ON_NEW_MESSAGE` | `true` |
-| `PLANNER_RECORD_RUNS` | `true` |
+| `CONVERSATION_AUTONOMOUS_ENABLED` | `true` |
+| `CONVERSATION_AUTONOMOUS_DEBOUNCE_SECONDS` | `3` |
+| `CONVERSATION_AUTONOMOUS_ADMISSION_THRESHOLD` | `0` |
+| `CONVERSATION_AUTONOMOUS_BATCH_LIMIT` | `8`（热配置范围 `1`～`100`） |
+| `CONVERSATION_AUTONOMOUS_PRESENCE_WINDOW_SECONDS` | `300` |
+| `CONVERSATION_INTERRUPT_AUTONOMOUS_ON_NEW_MESSAGE` | `true` |
 | `REPLY_SEQUENCE_CANCEL_ON_NEW_MESSAGE` | `true` |
-| `REPLY_PLAN_HARD_MAX_MESSAGES` | `10`（可热更新至 `20`） |
+| `REPLY_HARD_MAX_MESSAGES` | `10`（可热更新至 `20`） |
 | `PLUGIN_SYSTEM_ENABLED` | `false` |
 | `PLUGIN_DIRECTORY` | `plugins` |
-| `PLUGIN_API_VERSION` | `1.0` |
+| `PLUGIN_API_VERSION` | `2.0` |
 | `PLUGIN_DIRECT_COMMAND_BINDINGS` | `{}` |
 | `PLUGIN_HOOK_TIMEOUT_SECONDS` | `3` |
 | `PLUGIN_START_TIMEOUT_SECONDS` | `10` |
@@ -1490,7 +1470,7 @@ docker compose ps
 docker compose -f docker-compose.yml -f docker-compose.dev.yml build bot
 ```
 
-健康检查不会请求 DeepSeek、Planner、Tavily、Qwen 或执行真实自动化，也不会暴露密钥；`planner_enabled/configured/active_requests`、`plugin_system_enabled/running_count`、`web_configured`、`vision_configured`、`automation_worker_running`、`active_automation_count`、`mcp_automation_tools` 和 `mcp_automation_missing_tools` 都只读取本地配置或运行状态：
+健康检查不会请求 DeepSeek、Tavily、Qwen 或执行真实自动化，也不会暴露密钥；`plugin_system_enabled/running_count`、`web_configured`、`vision_configured`、`automation_worker_running`、`active_automation_count`、`mcp_automation_tools` 和 `mcp_automation_missing_tools` 都只读取本地配置或运行状态：
 
 ```bash
 docker compose exec bot python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz').read().decode())"

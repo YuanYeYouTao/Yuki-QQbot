@@ -19,7 +19,7 @@ async def _install(database: Database, plugin_id: str) -> None:
         plugin_id=plugin_id,
         name="Quota test",
         version="1.0.0",
-        plugin_api="1.0",
+        plugin_api="2.0",
         yuki_requires=">=1.6,<2",
         manifest_hash="0" * 64,
         entrypoint="quota_plugin:Plugin",

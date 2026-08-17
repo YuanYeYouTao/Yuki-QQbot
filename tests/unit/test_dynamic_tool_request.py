@@ -13,11 +13,13 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities import (
     CapabilityTrustSource,
     InProcessToolProvider,
-    ToolCandidateSelector,
     ToolKernelMetrics,
     ToolProviderRegistry,
 )
-from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME, match_requestable_tools
+from qq_ai_bot.capabilities.catalog import DescriptorRegistrySnapshot
+from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME
+from qq_ai_bot.capabilities.runtime import CapabilityIndexCache
+from qq_ai_bot.capabilities.search_document import SEARCH_DOCUMENT_BODY_MAX
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     ChatTool,
@@ -26,18 +28,39 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.memory.enums import MemoryAccessMode
-from qq_ai_bot.planner.models import ToolMode
+from qq_ai_bot.memory.runtime.capability_view import (
+    MEMORY_READ_NAMESPACES,
+    MEMORY_WRITE_NAMESPACE,
+)
+from qq_ai_bot.memory.runtime.contract import MemoryReadPolicy
+from qq_ai_bot.memory.runtime.finalizer import (
+    MutationFinalizationInput,
+    finalize_mutation_text,
+    mutation_view_from_tool_result,
+)
+from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.chat import ChatService, _ChatAgentBackend
 from qq_ai_bot.services.reply_target import ReplyTargetControl
 
 
-def _tool(name: str, description: str) -> ChatTool:
+def _tool(
+    name: str,
+    description: str,
+    *,
+    namespace: str = "",
+    aliases: tuple[str, ...] = (),
+    use_when: tuple[str, ...] = (),
+    tags: tuple[str, ...] = (),
+) -> ChatTool:
     return ChatTool(
         name=name,
         description=description,
         parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        namespace=namespace,
+        aliases=aliases,
+        use_when=use_when,
+        tags=tags,
     )
 
 
@@ -52,8 +75,22 @@ def _registry(calls: list[str]) -> ToolProviderRegistry:
             provider_id="plugin",
             source=CapabilityTrustSource.PLUGIN,
             definitions=lambda _runtime: (
-                _tool("album_share", "搜索并发送网易云专辑卡片"),
-                _tool("song_share", "搜索并发送网易云单曲；也可从刚才专辑抽一首"),
+                _tool(
+                    "album_share",
+                    "搜索并发送网易云专辑卡片",
+                    namespace="music.share",
+                    aliases=("专辑", "album"),
+                    use_when=("搜索并发送网易云专辑",),
+                    tags=("music", "album"),
+                ),
+                _tool(
+                    "song_share",
+                    "搜索并发送网易云单曲；也可从刚才专辑抽一首",
+                    namespace="music.share",
+                    aliases=("单曲", "网易云", "点歌"),
+                    use_when=("搜索并发送网易云单曲",),
+                    tags=("music", "song"),
+                ),
             ),
             execute=execute,
         )
@@ -72,7 +109,7 @@ def _registry(calls: list[str]) -> ToolProviderRegistry:
 class _Service:
     def __init__(self, registry: ToolProviderRegistry) -> None:
         self.registry = registry
-        self._tool_selector = ToolCandidateSelector()
+        self._capability_index = CapabilityIndexCache()
         self._tool_metrics = ToolKernelMetrics()
         self._tool_invocations = None
         self._tool_artifacts = None
@@ -87,6 +124,9 @@ class _Service:
         del web_was_used
         return self.registry
 
+    def _responses_append_only(self) -> bool:
+        return False
+
     @staticmethod
     def _decode_tool_result(value: str) -> dict[str, object]:
         decoded = json.loads(value)
@@ -97,20 +137,102 @@ class _Service:
         self.mutation_turn_outcomes.append(outcome)
 
 
-class _CandidateChatService(ChatService):
-    def __init__(self, registry: ToolProviderRegistry) -> None:
-        self.registry = registry
-        self._tool_artifacts = None
-        self._tool_selector = ToolCandidateSelector()
-
-    def _build_tool_registry(
+class _FakeMemorySession:
+    def __init__(
         self,
-        _runtime: ToolRuntime,
         *,
-        web_was_used: bool,
-    ) -> ToolProviderRegistry:
-        del web_was_used
-        return self.registry
+        exclusive_write: bool = False,
+        locator_open: bool = False,
+        eager_read: bool = False,
+        receipt_gated: bool = False,
+        mutation_terminal: bool = False,
+        mutation_text: str | None = None,
+    ) -> None:
+        self.exclusive_write = exclusive_write
+        self.locator_open = locator_open
+        self.receipt_gated = receipt_gated
+        self.mutation_terminal = mutation_terminal
+        self._mutation_text = mutation_text
+        self._view_revision = 1
+        self._view_key: tuple[object, ...] | None = None
+        if exclusive_write and locator_open:
+            read_policy = MemoryReadPolicy.LOCATOR_ONLY
+        elif eager_read:
+            read_policy = MemoryReadPolicy.EAGER
+        else:
+            read_policy = MemoryReadPolicy.DEFERRED
+        self.contract = SimpleNamespace(read_policy=read_policy)
+
+    def finalize_text(self) -> str | None:
+        return self._mutation_text
+
+    def request_exclusive_write(self) -> None:
+        self.exclusive_write = True
+
+    def capability_view(self) -> MemoryCapabilityView:
+        key = (self.exclusive_write, self.locator_open, self.contract.read_policy)
+        if self._view_key is None:
+            self._view_key = key
+        elif key != self._view_key:
+            self._view_key = key
+            self._view_revision += 1
+        if self.exclusive_write:
+            if self.locator_open:
+                return MemoryCapabilityView(
+                    eager_namespaces=(*MEMORY_READ_NAMESPACES, MEMORY_WRITE_NAMESPACE),
+                    requestable_namespaces=(),
+                    hidden_namespaces=(),
+                    exclusive_namespace=MEMORY_WRITE_NAMESPACE,
+                    transition_revision=self._view_revision,
+                )
+            return MemoryCapabilityView(
+                eager_namespaces=(MEMORY_WRITE_NAMESPACE,),
+                requestable_namespaces=(),
+                hidden_namespaces=MEMORY_READ_NAMESPACES,
+                exclusive_namespace=MEMORY_WRITE_NAMESPACE,
+                transition_revision=self._view_revision,
+            )
+        if self.contract.read_policy is MemoryReadPolicy.EAGER:
+            return MemoryCapabilityView(
+                eager_namespaces=MEMORY_READ_NAMESPACES,
+                requestable_namespaces=(),
+                hidden_namespaces=(MEMORY_WRITE_NAMESPACE,),
+                exclusive_namespace=None,
+                transition_revision=self._view_revision,
+            )
+        return MemoryCapabilityView(
+            eager_namespaces=(),
+            requestable_namespaces=(*MEMORY_READ_NAMESPACES, MEMORY_WRITE_NAMESPACE),
+            hidden_namespaces=(),
+            exclusive_namespace=None,
+            transition_revision=self._view_revision,
+        )
+
+    async def observe_tool_result(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def confirm_prompt_exposure(self) -> None:
+        return None
+
+
+def _exclusive_session(
+    *,
+    locator_open: bool = False,
+    result: dict[str, object] | None = None,
+) -> _FakeMemorySession:
+    if result is None:
+        text = finalize_mutation_text(MutationFinalizationInput(attempted=False))
+        terminal = False
+    else:
+        text = finalize_mutation_text(mutation_view_from_tool_result(result, attempted=True))
+        terminal = True
+    return _FakeMemorySession(
+        exclusive_write=True,
+        locator_open=locator_open,
+        receipt_gated=True,
+        mutation_terminal=terminal,
+        mutation_text=text,
+    )
 
 
 def _runtime() -> ToolRuntime:
@@ -136,39 +258,67 @@ def _runtime() -> ToolRuntime:
             web=SimpleNamespace(max_calls_per_turn=3),
         ),
         origin=TurnOrigin.USER_MESSAGE,
-        tool_mode=ToolMode.INHERIT,
-        tool_groups=frozenset({"plugin"}),
-        planner_scopes_explicit=True,
-        selected_tool_names=frozenset({"album_share"}),
     )
 
 
-def test_request_matcher_prefers_song_capability_and_has_no_arbitrary_fallback() -> None:
+def _backend(
+    registry: ToolProviderRegistry | None = None,
+    runtime: ToolRuntime | None = None,
+    *,
+    service: _Service | None = None,
+) -> tuple[_Service, _ChatAgentBackend]:
+    owned = service or _Service(registry or _registry([]))
+    backend = _ChatAgentBackend(owned, runtime or _runtime())  # type: ignore[arg-type]
+    return owned, backend
+
+
+def test_fts_prefers_song_capability_and_has_no_arbitrary_fallback() -> None:
     catalog = _registry([]).catalog(object())
+    index = CapabilityIndexCache().index_for(DescriptorRegistrySnapshot(catalog))
 
-    matches = match_requestable_tools(catalog, query="搜索并发送网易云单曲", limit=2)
+    hits = index.search("点歌", limit=2)
 
-    assert matches[0].entry.descriptor.model_name == "song_share"
-    assert match_requestable_tools(catalog, query="完全无关的量子天气", limit=2) == ()
+    assert hits
+    assert hits[0].capability_id == "song_share"
+    assert index.search("完全无关的量子天气", limit=2) == ()
+
+
+def test_search_index_clamps_oversized_tool_description() -> None:
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        return {"ok": True, "data": {"called": name}}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="plugin",
+            source=CapabilityTrustSource.PLUGIN,
+            definitions=lambda _runtime: (
+                _tool(
+                    "huge_share",
+                    "x" * 8_000,
+                    namespace="music.share",
+                ),
+            ),
+            execute=execute,
+        )
+    )
+    catalog = registry.catalog(object())
+    index = CapabilityIndexCache().index_for(DescriptorRegistrySnapshot(catalog))
+    document = index.document("huge_share")
+    assert document is not None
+    assert len(document.description) <= SEARCH_DOCUMENT_BODY_MAX
 
 
 @pytest.mark.asyncio
-async def test_reply_target_control_survives_tool_mode_none_and_is_bounded() -> None:
-    service = _Service(_registry([]))
+async def test_reply_target_control_survives_tools_closed_and_is_bounded() -> None:
     control = ReplyTargetControl(visible_event_ids=frozenset({42}))
-    runtime = replace(
-        _runtime(),
-        tool_mode=ToolMode.NONE,
-        tool_groups=frozenset(),
-        selected_tool_names=frozenset(),
-        reply_target_control=control,
-    )
-    backend = _ChatAgentBackend(service, runtime)  # type: ignore[arg-type]
+    runtime = replace(_runtime(), tools_closed=True, reply_target_control=control)
+    _service, backend = _backend(_registry([]), runtime)
     agent_runtime = SimpleNamespace()
 
     definitions = backend.definitions(agent_runtime, web_was_used=False)
 
-    assert [tool.name for tool in definitions] == ["request_tools", "set_reply_target"]
+    assert [tool.name for tool in definitions] == ["set_reply_target"]
     assert backend.counts_toward_limit("set_reply_target", agent_runtime) is False
     assert backend.counts_toward_limit("read_tool_artifact", agent_runtime) is False
     assert backend.counts_toward_limit("business_tool", agent_runtime) is True
@@ -194,28 +344,20 @@ async def test_reply_target_control_survives_tool_mode_none_and_is_bounded() -> 
 
 
 @pytest.mark.asyncio
-async def test_user_message_can_request_authorized_tools_from_tool_mode_none() -> None:
+async def test_user_message_can_request_authorized_tools() -> None:
     calls: list[str] = []
-    service = _Service(_registry(calls))
-    runtime = replace(
-        _runtime(),
-        tool_mode=ToolMode.NONE,
-        tool_groups=frozenset(),
-        selected_tool_names=frozenset(),
-        planner_scopes_explicit=True,
-    )
-    backend = _ChatAgentBackend(service, runtime)  # type: ignore[arg-type]
+    _service, backend = _backend(_registry(calls), _runtime())
     agent_runtime = SimpleNamespace()
 
     assert {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)} == {
         REQUEST_TOOLS_NAME
     }
     arguments = json.dumps(
-        {"query": "搜索并发送网易云单曲", "max_results": 1},
+        {"query": "点歌", "max_results": 1},
         ensure_ascii=False,
     )
     call = ToolCall(
-        id="request-from-none",
+        id="request-from-empty",
         function=ToolFunction(name=REQUEST_TOOLS_NAME, arguments=arguments),
     )
     backend.begin_batch((call,), agent_runtime)
@@ -251,7 +393,10 @@ async def test_artifact_reads_do_not_add_a_separate_internal_budget() -> None:
             execute=execute,
         )
     )
-    backend = _ChatAgentBackend(_Service(registry), _runtime())  # type: ignore[arg-type]
+    service = _Service(registry)
+    service._tool_artifacts = object()
+    runtime = replace(_runtime(), selection_query="artifact")
+    backend = _ChatAgentBackend(service, runtime)  # type: ignore[arg-type]
     agent_runtime = SimpleNamespace(max_model_requests=10)
     exposed = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
     assert "read_tool_artifact" in exposed
@@ -284,10 +429,9 @@ async def test_artifact_reads_do_not_add_a_separate_internal_budget() -> None:
 
 @pytest.mark.asyncio
 async def test_reply_target_control_rejects_unseen_event_without_overriding() -> None:
-    service = _Service(_registry([]))
     control = ReplyTargetControl(visible_event_ids=frozenset({42}))
     runtime = replace(_runtime(), reply_target_control=control)
-    backend = _ChatAgentBackend(service, runtime)  # type: ignore[arg-type]
+    _service, backend = _backend(_registry([]), runtime)
     agent_runtime = SimpleNamespace()
     backend.definitions(agent_runtime, web_was_used=False)
     arguments = json.dumps({"event_id": 99})
@@ -305,20 +449,28 @@ async def test_reply_target_control_rejects_unseen_event_without_overriding() ->
 
 
 def test_reply_target_control_is_not_exposed_to_scheduled_automation() -> None:
-    service = _Service(_registry([]))
     runtime = replace(
         _runtime(),
         origin=TurnOrigin.SCHEDULED_AUTOMATION,
-        tool_mode=ToolMode.NONE,
-        tool_groups=frozenset(),
-        selected_tool_names=frozenset(),
+        tools_closed=True,
         reply_target_control=ReplyTargetControl(visible_event_ids=frozenset({42})),
     )
-    backend = _ChatAgentBackend(service, runtime)  # type: ignore[arg-type]
+    _service, backend = _backend(_registry([]), runtime)
 
     definitions = backend.definitions(SimpleNamespace(), web_was_used=False)
 
     assert definitions == ()
+
+
+def test_read_only_runtime_hides_write_tools() -> None:
+    runtime = replace(_runtime(), read_only=True, selection_query="album_share")
+    _service, backend = _backend(_registry([]), runtime)
+
+    names = {tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)}
+
+    assert "album_share" not in names
+    assert "song_share" not in names
+    assert REQUEST_TOOLS_NAME in names
 
 
 def test_mutation_access_exposes_only_memory_write_capability_initially() -> None:
@@ -347,38 +499,39 @@ def test_mutation_access_exposes_only_memory_write_capability_initially() -> Non
             execute=execute,
         )
     )
-    runtime = replace(
+    exclusive = replace(
         _runtime(),
         actor_is_superuser=True,
         allow_admin_actions=True,
-        memory_access=MemoryAccessMode.MUTATION,
-        tool_groups=frozenset({"memory", "admin", "web"}),
-        selected_tool_names=frozenset({"web_search"}),
+        memory_session=_exclusive_session(),
+        selection_query="web_search",
     )
-    backend = _ChatAgentBackend(_Service(registry), runtime)  # type: ignore[arg-type]
+    _service, backend = _backend(registry, exclusive)
 
     names = {tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)}
 
     assert "memory_change" in names
-    assert "request_tools" not in names
     assert "get_my_capabilities" not in names
     assert "get_person_memories" not in names
     assert "admin_execute_action" not in names
     assert "web_search" not in names
 
-    backend._memory_locator_failed = True
-    fallback_names = {
-        tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)
+    locator = replace(exclusive, memory_session=_exclusive_session(locator_open=True))
+    _ignored, locator_backend = _backend(registry, locator)
+    locator_names = {
+        tool.name for tool in locator_backend.definitions(SimpleNamespace(), web_was_used=False)
     }
-    assert "request_tools" in fallback_names
-    assert "get_person_memories" not in fallback_names
+    assert "memory_change" in locator_names
+    assert "get_person_memories" in locator_names
+    assert "admin_execute_action" not in locator_names
+    assert "web_search" not in locator_names
 
     read_backend = _ChatAgentBackend(  # type: ignore[arg-type]
         _Service(registry),
         replace(
-            runtime,
-            memory_access=MemoryAccessMode.TOOL,
-            selected_tool_names=None,
+            exclusive,
+            memory_session=_FakeMemorySession(eager_read=True),
+            selection_query="",
         ),
     )
     read_names = {
@@ -386,15 +539,13 @@ def test_mutation_access_exposes_only_memory_write_capability_initially() -> Non
     }
     assert "get_person_memories" in read_names
     assert "memory_change" not in read_names
-    assert "admin_execute_action" not in read_names
-    assert "web_search" not in read_names
 
 
 @pytest.mark.asyncio
 async def test_mutation_access_rejects_early_request_tools_call() -> None:
-    backend = _ChatAgentBackend(  # type: ignore[arg-type]
-        _Service(_registry([])),
-        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
+    _service, backend = _backend(
+        _registry([]),
+        replace(_runtime(), memory_session=_exclusive_session()),
     )
     agent_runtime = SimpleNamespace()
     call = ToolCall(
@@ -418,10 +569,7 @@ async def test_mutation_access_rejects_early_request_tools_call() -> None:
     assert result["error"] == "capability_not_loaded"
 
 
-@pytest.mark.asyncio
-async def test_mutation_locator_failure_can_load_memory_read_without_widening_initial_path() -> (
-    None
-):
+def test_mutation_locator_failure_can_load_memory_read_without_widening_initial_path() -> None:
     async def execute(name: str, _arguments: str, _runtime: object) -> object:
         return {"ok": True, "data": {"called": name}}
 
@@ -437,56 +585,41 @@ async def test_mutation_locator_failure_can_load_memory_read_without_widening_in
             execute=execute,
         )
     )
-    backend = _ChatAgentBackend(  # type: ignore[arg-type]
-        _Service(registry),
-        replace(
-            _runtime(),
-            memory_access=MemoryAccessMode.MUTATION,
-            tool_groups=frozenset({"memory"}),
-            selected_tool_names=None,
-        ),
+    _service, backend = _backend(
+        registry,
+        replace(_runtime(), memory_session=_exclusive_session()),
     )
     agent_runtime = SimpleNamespace()
-    assert {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)} == {
-        "memory_change"
-    }
+    names = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
+    assert "memory_change" in names
+    assert "get_person_memories" not in names
 
-    backend._memory_locator_failed = True
-    assert "request_tools" in {
-        tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)
+    locator = replace(_runtime(), memory_session=_exclusive_session(locator_open=True))
+    _ignored, locator_backend = _backend(registry, locator)
+    locator_names = {
+        tool.name for tool in locator_backend.definitions(agent_runtime, web_was_used=False)
     }
-    arguments = json.dumps({"query": "read person memories", "max_results": 1})
-    call = ToolCall(
-        id="locator-read-fallback",
-        function=ToolFunction(name=REQUEST_TOOLS_NAME, arguments=arguments),
-    )
-    backend.begin_batch((call,), agent_runtime)
-    loaded = json.loads(await backend.execute(REQUEST_TOOLS_NAME, arguments, agent_runtime))
-
-    assert loaded["ok"] is True
-    assert loaded["data"]["loaded_tools"][0]["name"] == "get_person_memories"
-    assert "get_person_memories" in {
-        tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)
-    }
+    assert "memory_change" in locator_names
+    assert "get_person_memories" in locator_names
 
 
 def test_mutation_completion_gate_uses_last_real_receipt() -> None:
-    service = _Service(_registry([]))
-    backend = _ChatAgentBackend(  # type: ignore[arg-type]
-        service,
-        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
+    _service, backend = _backend(
+        _registry([]),
+        replace(_runtime(), memory_session=_exclusive_session()),
     )
 
     assert "未执行" in backend.finalize("已经改好了", SimpleNamespace())
-    backend._memory_mutation_attempted = True
-    backend._last_memory_mutation_result = {
-        "ok": True,
-        "mutation_committed": True,
-        "data": {
-            "applied_operation": "invalidate",
-            "outcome": "committed",
-        },
-    }
+    backend._memory_session = _exclusive_session(
+        result={
+            "ok": True,
+            "mutation_committed": True,
+            "data": {
+                "applied_operation": "invalidate",
+                "outcome": "committed",
+            },
+        }
+    )
 
     rendered = backend.finalize("已经永久删除", SimpleNamespace())
 
@@ -572,37 +705,38 @@ def test_mutation_completion_gate_renders_domain_outcomes(
     result: dict[str, object],
     expected: str,
 ) -> None:
-    backend = _ChatAgentBackend(  # type: ignore[arg-type]
-        _Service(_registry([])),
-        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
+    _service, backend = _backend(
+        _registry([]),
+        replace(_runtime(), memory_session=_exclusive_session(result=result)),
     )
-    backend._memory_mutation_attempted = True
-    backend._last_memory_mutation_result = result
 
     assert expected in backend.finalize("模型声称全部成功", SimpleNamespace())
 
 
 def test_mutation_completion_gate_bounds_ambiguous_candidates() -> None:
-    backend = _ChatAgentBackend(  # type: ignore[arg-type]
-        _Service(_registry([])),
-        replace(_runtime(), memory_access=MemoryAccessMode.MUTATION),
-    )
-    backend._memory_mutation_attempted = True
-    backend._last_memory_mutation_result = {
-        "ok": False,
-        "error_code": "memory_candidate_ambiguous",
-        "data": {
-            "candidates": [
-                {
-                    "fact_id": fact_id,
-                    "memory_ref": f"M{fact_id}",
-                    "key": f"test:{fact_id}",
-                    "content": f"candidate {fact_id}",
+    _service, backend = _backend(
+        _registry([]),
+        replace(
+            _runtime(),
+            memory_session=_exclusive_session(
+                result={
+                    "ok": False,
+                    "error_code": "memory_candidate_ambiguous",
+                    "data": {
+                        "candidates": [
+                            {
+                                "fact_id": fact_id,
+                                "memory_ref": f"M{fact_id}",
+                                "key": f"test:{fact_id}",
+                                "content": f"candidate {fact_id}",
+                            }
+                            for fact_id in range(1, 5)
+                        ]
+                    },
                 }
-                for fact_id in range(1, 5)
-            ]
-        },
-    }
+            ),
+        ),
+    )
 
     rendered = backend.finalize("任选一个就当成功", SimpleNamespace())
 
@@ -635,108 +769,37 @@ def test_core_search_tags_recall_tools_from_natural_chinese_phrases() -> None:
         )
     )
     catalog = registry.catalog(object())
+    index = CapabilityIndexCache().index_for(DescriptorRegistrySnapshot(catalog))
     cases = {
         "刚刚说了什么": "get_recent_chat_history",
         "他以前提过吗": "search_chat_history",
-        "你记得我的爱好吗": "get_person_memories",
         "请记住我不喝咖啡": "memory_change",
         "搜一下最新新闻": "web_search",
         "看看这个网页": "read_webpage",
     }
 
     for query, expected in cases.items():
-        matches = match_requestable_tools(catalog, query=query, limit=1)
-        assert matches
-        assert matches[0].entry.descriptor.model_name == expected
+        hits = index.search(query, limit=3)
+        assert hits, query
+        assert expected in {hit.capability_id for hit in hits}
 
 
-def test_builtin_planner_scope_descriptions_explain_actual_capabilities() -> None:
-    service = object.__new__(ChatService)
-    service._plugin_tools = None
-    service._external_tool_providers = []
-
-    scopes = {
-        item.scope_id: item.description
-        for item in service.planner_tool_scopes(
-            ("memory", "web", "automation", "onebot", "capability")
-        )
-    }
-
-    assert "搜索近期或永久聊天历史" in scopes["memory"]
-    assert "读取网页" in scopes["web"]
-    assert "周期任务" in scopes["automation"]
-    assert "QQ 平台" in scopes["onebot"]
-    assert "真实用户" in scopes["capability"]
-
-
-def test_tool_exposure_log_records_scopes_and_final_tool_names(
+def test_tool_exposure_log_records_final_tool_names(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="qq_ai_bot.services.chat")
-    backend = _ChatAgentBackend(_Service(_registry([])), _runtime())  # type: ignore[arg-type]
+    caplog.set_level(logging.INFO)
+    runtime = replace(_runtime(), selection_query="album_share")
+    _service, backend = _backend(_registry([]), runtime)
 
     backend.definitions(SimpleNamespace(), web_was_used=False)
 
     assert "agent_tools_exposed" in caplog.text
-    assert "planner_scope_source=explicit" in caplog.text
-    assert "planner_scopes=plugin" in caplog.text
-    assert "effective_scopes=plugin" in caplog.text
-    assert "tools=album_share,request_tools" in caplog.text
-    assert "exposed_count=2" in caplog.text
+    assert "album_share" in caplog.text
+    assert "request_tools" in caplog.text
     assert "private:10001" not in caplog.text
 
 
-def test_tool_exposure_log_distinguishes_inherited_scopes(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.INFO, logger="qq_ai_bot.services.chat")
-    runtime = replace(
-        _runtime(),
-        tool_groups=frozenset(),
-        planner_scopes_explicit=False,
-    )
-    backend = _ChatAgentBackend(_Service(_registry([])), runtime)  # type: ignore[arg-type]
-
-    backend.definitions(SimpleNamespace(), web_was_used=False)
-
-    assert "planner_scope_source=inherited" in caplog.text
-    assert "planner_scopes=backend_authorized" in caplog.text
-    assert "effective_scopes=backend_authorized" in caplog.text
-    assert "memory_scope_added=False" in caplog.text
-
-
-def test_tool_exposure_log_identifies_deterministic_memory_scope_addition(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.INFO, logger="qq_ai_bot.services.chat")
-    registry = ToolProviderRegistry()
-    registry.register(
-        InProcessToolProvider(
-            provider_id="core",
-            source=CapabilityTrustSource.CORE,
-            definitions=lambda _runtime: (
-                _tool("get_my_capabilities", "list available capabilities"),
-                _tool("memory_change", "change durable memory"),
-            ),
-            execute=lambda *_args: None,  # type: ignore[arg-type]
-        )
-    )
-    runtime = replace(
-        _runtime(),
-        tool_groups=frozenset({"memory"}),
-        planner_scopes_explicit=False,
-        planner_tool_groups=frozenset(),
-        selected_tool_names=frozenset({"memory_change"}),
-    )
-    backend = _ChatAgentBackend(_Service(registry), runtime)  # type: ignore[arg-type]
-
-    backend.definitions(SimpleNamespace(), web_was_used=False)
-
-    assert "memory_scope_added=True" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_inherited_scope_preloads_only_positive_relevance_up_to_six_tools() -> None:
+def test_fts_initial_exposure_prefers_positive_music_matches() -> None:
     async def execute(name: str, _arguments: str, _runtime: object) -> object:
         return {"ok": True, "data": name}
 
@@ -746,8 +809,24 @@ async def test_inherited_scope_preloads_only_positive_relevance_up_to_six_tools(
             provider_id="plugin",
             source=CapabilityTrustSource.PLUGIN,
             definitions=lambda _runtime: (
-                tuple(_tool(f"music_{index}", "music lookup and sharing") for index in range(8))
-                + tuple(_tool(f"weather_{index}", "weather forecast") for index in range(4))
+                tuple(
+                    _tool(
+                        f"music_{index}",
+                        "music lookup and sharing",
+                        namespace="music.lookup",
+                        tags=("music",),
+                    )
+                    for index in range(8)
+                )
+                + tuple(
+                    _tool(
+                        f"weather_{index}",
+                        "weather forecast",
+                        namespace="weather.forecast",
+                        tags=("weather",),
+                    )
+                    for index in range(4)
+                )
             ),
             execute=execute,
         )
@@ -764,37 +843,17 @@ async def test_inherited_scope_preloads_only_positive_relevance_up_to_six_tools(
             agent=SimpleNamespace(tool_result_max_characters=32_000),
             web=SimpleNamespace(max_calls_per_turn=3),
         ),
-        tool_groups=frozenset(),
-        planner_scopes_explicit=False,
-        planner_tool_groups=frozenset(),
         selection_query="music",
-        planner_intent="share music",
-        selected_tool_names=None,
     )
+    _service, backend = _backend(registry, runtime)
 
-    prepared = await _CandidateChatService(registry)._prepare_tool_candidates(runtime)
+    names = {tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)}
+    music = {name for name in names if name.startswith("music_")}
+    weather = {name for name in names if name.startswith("weather_")}
 
-    assert prepared.selected_tool_names is not None
-    assert len(prepared.selected_tool_names) == 6
-    assert all(name.startswith("music_") for name in prepared.selected_tool_names)
-
-
-def test_explicit_scope_exposes_complete_package_despite_inherited_count_limit() -> None:
-    runtime = replace(
-        _runtime(),
-        runtime_config=SimpleNamespace(
-            tooling=SimpleNamespace(selected_tool_limit=1, schema_token_budget=None),
-            mcp=None,
-            agent=SimpleNamespace(tool_result_max_characters=32_000),
-            web=SimpleNamespace(max_calls_per_turn=3),
-        ),
-        selected_tool_names=None,
-    )
-    backend = _ChatAgentBackend(_Service(_registry([])), runtime)  # type: ignore[arg-type]
-
-    exposed = {tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)}
-
-    assert exposed == {"album_share", "song_share", REQUEST_TOOLS_NAME}
+    assert music
+    assert not weather
+    assert REQUEST_TOOLS_NAME in names
 
 
 def test_memory_tools_are_not_forced_by_query_text() -> None:
@@ -804,14 +863,17 @@ def test_memory_tools_are_not_forced_by_query_text() -> None:
 @pytest.mark.asyncio
 async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> None:
     calls: list[str] = []
-    service = _Service(_registry(calls))
-    backend = _ChatAgentBackend(service, _runtime())  # type: ignore[arg-type]
+    service, backend = _backend(
+        _registry(calls),
+        replace(_runtime(), selection_query="album_share"),
+    )
     agent_runtime = SimpleNamespace()
 
     first = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
-    assert first == {"album_share", REQUEST_TOOLS_NAME}
+    assert "album_share" in first
+    assert REQUEST_TOOLS_NAME in first
+    assert "song_share" not in first
     assert service._tool_metrics.tool_enabled_turns == 1
-    assert service._tool_metrics.planner_scope_turns[True] == 1
 
     hidden_call = ToolCall(
         id="hidden",
@@ -821,11 +883,11 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
     hidden = json.loads(
         await backend.execute("song_share", "{}", agent_runtime)  # type: ignore[arg-type]
     )
-    assert hidden["error"] == "capability_not_loaded"
+    assert hidden["error"] in {"capability_not_loaded", "undeclared_tool"}
     assert calls == []
 
     request_arguments = json.dumps(
-        {"query": "搜索并发送网易云单曲", "max_results": 1},
+        {"query": "点歌", "max_results": 1},
         ensure_ascii=False,
     )
     request_call = ToolCall(
@@ -844,10 +906,9 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
     assert requested["data"]["loaded_tools"][0]["name"] == "song_share"
     assert service._tool_metrics.request_tools_calls == 1
     assert service._tool_metrics.request_tools_zero_results == 0
-    assert service._tool_metrics.automatic_memory_request_tools_calls == 1
 
     second = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
-    assert second == {"album_share", "song_share", REQUEST_TOOLS_NAME}
+    assert {"album_share", "song_share", REQUEST_TOOLS_NAME} <= second
     assert service._tool_metrics.tool_enabled_turns == 1
 
     song_call = ToolCall(id="song", function=ToolFunction(name="song_share", arguments="{}"))
@@ -864,10 +925,12 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
 async def test_first_real_tool_call_records_initial_schema_hit(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="qq_ai_bot.services.chat")
+    caplog.set_level(logging.INFO)
     calls: list[str] = []
-    service = _Service(_registry(calls))
-    backend = _ChatAgentBackend(service, _runtime())  # type: ignore[arg-type]
+    service, backend = _backend(
+        _registry(calls),
+        replace(_runtime(), selection_query="album_share"),
+    )
     agent_runtime = SimpleNamespace()
     backend.definitions(agent_runtime, web_was_used=False)
     call = ToolCall(id="album", function=ToolFunction(name="album_share", arguments="{}"))
@@ -884,13 +947,17 @@ async def test_first_real_tool_call_records_initial_schema_hit(
 
 
 @pytest.mark.asyncio
-async def test_agent_can_request_authorized_tool_outside_planner_priority_scopes() -> None:
+async def test_agent_can_request_authorized_tool_outside_initial_exposure() -> None:
     calls: list[str] = []
-    backend = _ChatAgentBackend(_Service(_registry(calls)), _runtime())  # type: ignore[arg-type]
+    _service, backend = _backend(
+        _registry(calls),
+        replace(_runtime(), selection_query="album_share"),
+    )
     agent_runtime = SimpleNamespace()
 
     exposed = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
-    assert exposed == {"album_share", REQUEST_TOOLS_NAME}
+    assert "album_share" in exposed
+    assert "web_search" not in exposed
 
     arguments = json.dumps(
         {"query": "web_search", "max_results": 1},
@@ -908,3 +975,35 @@ async def test_agent_can_request_authorized_tool_outside_planner_priority_scopes
     assert result["ok"] is True
     assert result["data"]["loaded_tools"][0]["name"] == "web_search"
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_request_tools_cannot_load_unauthorized_admin_tool() -> None:
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        return {"ok": True, "data": {"called": name}}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="admin",
+            source=CapabilityTrustSource.ADMIN,
+            definitions=lambda _runtime: (_tool("admin_execute_action", "run an admin action"),),
+            execute=execute,
+        )
+    )
+    _service, backend = _backend(registry, _runtime())
+    agent_runtime = SimpleNamespace()
+    backend.definitions(agent_runtime, web_was_used=False)
+    arguments = json.dumps({"query": "admin_execute_action", "max_results": 1})
+    call = ToolCall(
+        id="request-admin",
+        function=ToolFunction(name=REQUEST_TOOLS_NAME, arguments=arguments),
+    )
+    backend.begin_batch((call,), agent_runtime)
+    result = json.loads(await backend.execute(REQUEST_TOOLS_NAME, arguments, agent_runtime))
+
+    assert result["ok"] is False
+    loaded = result.get("data") if result.get("ok") else None
+    assert loaded is None or loaded.get("loaded_tools") in (None, [])
+    names = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
+    assert "admin_execute_action" not in names

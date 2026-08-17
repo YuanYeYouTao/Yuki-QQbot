@@ -1,4 +1,4 @@
-"""Host-owned SQLAlchemy models for Plugin API v1."""
+"""Host-owned SQLAlchemy models for Plugin API 2.0."""
 
 from __future__ import annotations
 
