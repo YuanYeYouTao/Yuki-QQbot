@@ -8,7 +8,7 @@ register_command(CommandRegistration) -> None
 register_event_hook(EventHookRegistration) -> None
 register_prompt_fragment(PromptFragment) -> None
 register_automation_action(AutomationActionRegistration) -> None
-register_planner_signal(PlannerSignalRegistration) -> None
+register_admission_signal(AdmissionSignalRegistration) -> None
 register_config_schema(type[BaseModel]) -> None
 register_background_service(BackgroundServiceRegistration) -> None
 ```
@@ -25,6 +25,10 @@ class ToolMetadata(StrictModel):
     allowed_origins: frozenset[TurnOrigin] = {user_message}
     timeout_seconds: float = 10  # >0, <=600
     retry_policy: RetryPolicy = none
+    namespace: str = ""  # empty → Host fills plugin.{plugin_id}
+    aliases: tuple[str, ...] = ()  # <=8, lowercase, unique
+    use_when: tuple[str, ...] = ()  # <=8, each 1..200
+    tags: tuple[str, ...] = ()  # <=8, lowercase, unique
 
 
 class CommandMetadata(StrictModel):
@@ -60,7 +64,7 @@ class BackgroundServiceMetadata(StrictModel):
 - `CommandRegistration(metadata, argument_model, handler)`
 - `AutomationActionRegistration(metadata, input_model, output_model, handler)`
 - `EventHookRegistration(metadata, handler)`
-- `PlannerSignalRegistration(name, provider)`
+- `AdmissionSignalRegistration(name, provider)`
 - `BackgroundServiceRegistration(metadata, runner)`
 
 所有输入/输出/参数/配置 Schema 必须是 Pydantic 模型并设置 `extra='forbid'`。推荐继承 `StrictModel`。

@@ -1,6 +1,6 @@
 # 确定性插件命令
 
-命令不经过 Planner 或 LLM，适合状态查询、开关和参数明确的操作。需要 `command.register`。
+命令不经过 LLM，适合状态查询、开关和参数明确的操作。需要 `command.register`。
 
 ```python
 from yuki_plugin_sdk.models import PermissionLevel, StrictModel
@@ -49,4 +49,4 @@ PLUGIN_DIRECT_COMMAND_BINDINGS={"*":"io.github.example.game:play"}
 
 直达绑定只接受已批准、已启用、正在运行的命令。前缀可以是 `/github` 这类独立命令；Host 会拒绝空白、控制字符、与 `AI_PREFIX` 重叠，以及相同或互为前缀的配置。命令声明的 `USER` / `TRUSTED` / `MODERATOR` / `SUPERUSER` 权限仍在执行时根据真实发送者校验。匹配只是明确触发信号；准入、持久去重、入站账本、命令限流、参数校验、真实 `ToolRuntime`、权限、调用作用域和超时都与普通确定性命令相同。
 
-已配置但暂时不可用的绑定会被消费并返回稳定错误，不会落入 Planner。SUPERUSER 直达命令只有真实超级用户能执行，普通用户会收到权限不足。
+已配置但暂时不可用的绑定会被消费并返回稳定错误，不会落入自主群评分或 Main Agent。SUPERUSER 直达命令只有真实超级用户能执行，普通用户会收到权限不足。

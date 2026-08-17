@@ -1,7 +1,7 @@
 # Yuki 养鲲游戏插件
 
 这是 [`UBC2008/astrbot_plugin_kun_game`](https://github.com/UBC2008/astrbot_plugin_kun_game)
-的 Yuki Plugin API v1 适配版，保留养成、PVP、BOSS、拍卖和群小游戏，并修复原实现中已确认的
+的 Yuki Plugin API 2.0 适配版，保留养成、PVP、BOSS、拍卖和群小游戏，并修复原实现中已确认的
 负数资源、保存顺序、拍卖覆盖、文本 QQ 目标、数星星答案和重复处罚等问题。
 
 插件只注册两个确定性命令：普通用户 `play` 与超级用户 `admin`。`*签到` 等短入口由 Yuki Host

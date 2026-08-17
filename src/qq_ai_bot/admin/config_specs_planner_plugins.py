@@ -1,4 +1,4 @@
-"""Planner-first and Plugin API v1 runtime configuration declarations."""
+"""Planner-first and Plugin API 2.0 runtime configuration declarations."""
 
 from __future__ import annotations
 

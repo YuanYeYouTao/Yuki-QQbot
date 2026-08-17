@@ -1,6 +1,6 @@
 # EmojiFacade
 
-`ctx.emoji` 是 Plugin API v1 的受控表情入口。按需申请 `emoji.read/collect/select/send/manage`；注册 `emoji.selection_signals.v1` 需 `emoji.hook`。
+`ctx.emoji` 是 Plugin API 2.0 的受控表情入口。按需申请 `emoji.read/collect/select/send/manage`；注册 `emoji.selection_signals.v1` 需 `emoji.hook`。
 
 - `list/get/search` 返回安全元数据。
 - `collect_current` 只读取当前真实消息附件。

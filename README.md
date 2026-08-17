@@ -86,12 +86,12 @@ Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCatQQ �
 
 | 模块 | 当前能力 |
 | --- | --- |
-| 对话编排 | 私聊、群聊、回复与 @ 元数据、多轮历史、回复必要性判断、Planner-first 路由 |
+| 对话编排 | 私聊、群聊、回复与 @ 元数据、多轮历史、Conversation Runtime 准入与自主群评分 |
 | Main Agent | OpenAI-compatible Chat Completions / Responses、思考模型、有界工具循环、输出清理与分段发送 |
 | Memory V2 | 身份隔离、自动提炼、混合召回、结构化意图重排、自然衰减、使用强化、冲突与版本链 |
 | Tool Kernel | Core、Admin、Automation、Plugin、MCP、Web 能力统一注册、筛选、授权、预算和审计 |
 | 自动化 | 通过自然语言创建提醒与周期任务，保存真实创建者、作用域、权限和投递结果 |
-| 插件系统 | Plugin API 1.1、独立 SDK、命令、工具、事件、Prompt、Planner Signal、后台服务和持久通知 |
+| 插件系统 | Plugin API 2.0、独立 SDK、命令、工具、事件、Prompt、AdmissionSignal、后台服务和持久通知 |
 | MCP Client | stdio 与 Streamable HTTP、动态发现、Schema 预算、并发控制、结果 Artifact |
 | 联网搜索 | DeepSeek 原生搜索、Tavily 或受控降级链路，最终回答可携带来源 |
 | 多模态 | 可选 Qwen 图片理解、持久化表情包系统、本地 Genie-TTS 语音回复 |
@@ -386,11 +386,11 @@ MCP Gateway、自动化 Scheduler 和后台通知最终都回到同一能力目�
 
 ## 扩展能力
 
-### Plugin API 1.1
+### Plugin API 2.0
 
-插件可以注册命令、工具、事件处理器、Prompt 片段、Planner Signal、后台服务和受控 Agent
+插件可以注册命令、工具、事件处理器、Prompt 片段、AdmissionSignal、后台服务和受控 Agent
 Session，也可以使用存储、网络、媒体、Memory Facade、Automation Facade 与 Notification
-Outbox。插件运行前需通过 Manifest、版本、权限和管理员批准检查。
+Outbox。插件运行前需通过 Manifest、版本、权限和管理员批准检查。声明 1.x 的插件会被拒绝。
 
 - [插件快速开始](docs/plugin-development/quickstart.md)
 - [Plugin API 文档](docs/plugin-development/index.md)
@@ -598,7 +598,7 @@ Yuki-QQbot/
 |   +-- container.py     # dependency composition root
 |   +-- main.py          # NoneBot / FastAPI entrypoint
 |   +-- cli.py           # administration CLI
-+-- src/yuki_plugin_sdk/ # standalone Plugin API 1.1 SDK
++-- src/yuki_plugin_sdk/ # standalone Plugin API 2.0 SDK
 +-- migrations/          # Alembic migrations
 +-- plugins/             # installed local plugins
 +-- services/            # isolated auxiliary workers

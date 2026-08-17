@@ -1,12 +1,12 @@
 # 权限与风险
 
-插件要同时满足三层条件：Manifest 请求、管理员按 Manifest 哈希批准、当前真实调用上下文允许。Planner、模型文本、历史、OCR、网页和插件参数都不能增加权限。
+插件要同时满足三层条件：Manifest 请求、管理员按 Manifest 哈希批准、当前真实调用上下文允许。模型文本、历史、OCR、网页、AdmissionSignal 和插件参数都不能增加权限。
 
 ```text
 实际能力 = Manifest 声明 ∩ 当前批准 ∩ 当前用户/群/TurnOrigin ∩ 本轮安全策略
 ```
 
-图片轮次、联网后的高风险撤销、自动化 `DelegatedAuthority` 和 Planner `tool_mode` 只能继续缩小集合。
+图片轮次、联网后的高风险撤销、自动化 `DelegatedAuthority` 和本轮只读策略只能继续缩小集合。
 
 ## 权限家族
 

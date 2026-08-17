@@ -23,7 +23,7 @@
 
 Memory V2 的写入仍统一经过 Host `MemoryFactService`。插件 update 创建修正版本，delete 只做显式
 失效；插件不能直接访问 Repository、指定事实状态/authority、物理删除审计记录或绕过当前真实
-调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API v1。
+调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 2.0。
 
 ## 独立 AI 会话：跑团示例
 

@@ -138,3 +138,16 @@ def test_discovery_isolates_invalid_plugin(tmp_path: Path) -> None:
     statuses = {item.record.directory.name: item.record.status for item in records}
     assert statuses[valid.name] is PluginStatus.DISCOVERED
     assert statuses[invalid.name] is PluginStatus.INVALID
+
+
+def test_plugin_api_20_docs_replace_planner_signals() -> None:
+    docs = Path(__file__).resolve().parents[2] / "docs" / "plugin-development"
+    assert not (docs / "planner-signals.md").exists()
+    index = (docs / "index.md").read_text(encoding="utf-8")
+    migration = (docs / "api-2.0-migration.md").read_text(encoding="utf-8")
+    admission = (docs / "admission-signals.md").read_text(encoding="utf-8")
+    assert "Yuki Plugin API 2.0" in index
+    assert "register_admission_signal" in admission
+    assert "admission.signal.register" in admission
+    assert 'plugin_api = "2.0"' in migration
+    assert "planner-signals.md" not in index

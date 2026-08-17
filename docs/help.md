@@ -83,8 +83,9 @@
 > 只有当前真实 `SUPERUSERS` 发送者显式 plan/start、人工审阅并 commit 后才会写入事实。
 > 进程重启会暂停而不会自动恢复。操作前仍应备份 `data/`。
 
-当前 Plugin API 为 `1.1`，并兼容声明 `1.0` 的插件。第三方插件若把 `yuki_requires` 上限写成
-`<3.0`，需要在确认兼容后改为 `<4.0`；不要根据 Yuki 产品版本猜测 Plugin API 版本。
+当前 Plugin API 为 `2.0`。声明 `1.0` / `1.1` 的插件会被拒绝；从 1.x 升级见
+[Plugin API 2.0 迁移](plugin-development/api-2.0-migration.md)。第三方插件若把 `yuki_requires`
+上限写成 `<3.0`，需要在确认兼容后改为 `<4.0`；不要根据 Yuki 产品版本猜测 Plugin API 版本。
 
 从 GitHub Release 下载 `install.sh` 或 `install.ps1`。Linux 执行：
 
@@ -157,7 +158,7 @@ Yuki-QQbot 3.5.3 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 普通用户和超级管理员都可以用自然语言创建自己的持久化自动化任务；普通用户严格限于本人和当前群，超级管理员可显式委托现有管理员与 OneBot 能力。
 - 默认启用 Planner-first 会话：后端先做确定性回复必要性评分，再生成受约束 `TurnPlan`，规划回复/等待/沉默、工具上限、消息条数和发送节奏。
 - 新消息可以中断过期的自主 Planner、自主生成和尚未发送的旧消息序列；已经开始的修改型业务操作不会被自动取消。
-- 提供 Plugin API v1、独立 `yuki_plugin_sdk`、Manifest/批准/权限/事件/Prompt/PlannerSignal 扩展点和无网络测试 SDK；插件系统默认关闭。
+- 提供 Plugin API 2.0、独立 `yuki_plugin_sdk`、Manifest/批准/权限/事件/Prompt/AdmissionSignal 扩展点和无网络测试 SDK；插件系统默认关闭。
 - 插件可以创建与主聊天账本、人物记忆分离的持久或临时 AI 会话，适合骰子跑团等连续任务；插件拿不到模型隐藏推理，也不能伪造超级管理员。
 - 内置持久化表情系统会按配置观察图片、保存原图与静态预览、复用 Qwen 视觉分类、自动采用合格表情，并由 Planner 在正常回复序列中选择发送。
 - 可选启用完全本地的 Genie-TTS 2.0.2 Worker，使用部署者自行准备的 GPT-SoVITS V2/V2ProPlus ONNX 声线和多参考风格发送 QQ `record`，不调用云端 TTS。
@@ -528,12 +529,12 @@ Planner 同时是聊天语音的唯一决策边界：它从语义识别本轮明
 
 ### 可选：启用本地插件
 
-插件系统默认关闭。先阅读 [插件开发手册](plugin-development/index.md) 和 [真实安全边界](plugin-development/security.md)：1.6.0 插件运行在 Yuki 进程内，权限系统是官方 API 的访问治理，不是恶意 Python 沙盒，只能安装管理员完全信任并审阅过源码的插件。
+插件系统默认关闭。先阅读 [插件开发手册](plugin-development/index.md) 和 [真实安全边界](plugin-development/security.md)：插件运行在 Yuki 进程内，权限系统是官方 API 的访问治理，不是恶意 Python 沙盒，只能安装管理员完全信任并审阅过源码的插件。
 
 ```dotenv
 PLUGIN_SYSTEM_ENABLED=true
 PLUGIN_DIRECTORY=plugins
-PLUGIN_API_VERSION=1.1
+PLUGIN_API_VERSION=2.0
 # 示例：让“*签到”等消息直达插件的 play 命令。
 PLUGIN_DIRECT_COMMAND_BINDINGS={"*":"io.github.yuanyeyoutao.kun-game:play"}
 ```
@@ -547,7 +548,7 @@ uv run qq-ai-bot-cli plugin validate plugins/com.example.echo
 uv run qq-ai-bot-cli plugin test plugins/com.example.echo
 ```
 
-通过插件 CLI 发现、审阅权限、批准并启用后重启 Bot。Manifest 任何变化都会使批准失效，必须重新审阅。Docker Compose 将 `./plugins` 只读挂载到 `/app/plugins`，插件热更新和在线下载不属于 1.6.0。
+通过插件 CLI 发现、审阅权限、批准并启用后重启 Bot。Manifest 任何变化都会使批准失效，必须重新审阅。Docker Compose 将 `./plugins` 只读挂载到 `/app/plugins`，插件热更新和在线下载不属于当前版本。
 
 `PLUGIN_DIRECT_COMMAND_BINDINGS` 是启动期静态 JSON 对象。前缀不得为空、包含空白或控制字符、
 与 `AI_PREFIX` 重叠，多个前缀之间也不得相同或互为前缀；`/github` 这类斜杠命令可以绑定。
@@ -1381,7 +1382,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `REPLY_PLAN_HARD_MAX_MESSAGES` | `10`（可热更新至 `20`） |
 | `PLUGIN_SYSTEM_ENABLED` | `false` |
 | `PLUGIN_DIRECTORY` | `plugins` |
-| `PLUGIN_API_VERSION` | `1.0` |
+| `PLUGIN_API_VERSION` | `2.0` |
 | `PLUGIN_DIRECT_COMMAND_BINDINGS` | `{}` |
 | `PLUGIN_HOOK_TIMEOUT_SECONDS` | `3` |
 | `PLUGIN_START_TIMEOUT_SECONDS` | `10` |

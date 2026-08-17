@@ -19,7 +19,7 @@ GitHub Monitor 是 Yuki 的只读 GitHub 仓库管家。它定时读取一个或
 ## 运行要求
 
 - Yuki `>=3.4.1,<4.0`
-- Plugin API `1.1`
+- Plugin API `2.0`
 - Bot 可以访问 `https://api.github.com`
 - 私有仓库必须提供可读取目标仓库的 GitHub Token
 
@@ -34,7 +34,7 @@ Personal Access Token，只授权需要监控的仓库，并仅授予读取 Meta
 
 ```dotenv
 PLUGIN_SYSTEM_ENABLED=true
-PLUGIN_API_VERSION=1.1
+PLUGIN_API_VERSION=2.0
 PLUGIN_DIRECT_COMMAND_BINDINGS={"/github":"github-monitor:github"}
 YUKI_PLUGIN__GITHUB_MONITOR__GITHUB_TOKEN=github_pat_replace_with_your_token
 ```

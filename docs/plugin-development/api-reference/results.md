@@ -81,6 +81,6 @@ class AgentSessionRunResult(StrictModel):
 
 结果没有 `reasoning_content` 字段；隐藏推理不会跨 Plugin API 边界。
 
-## PlannerSignal / PromptFragment
+## AdmissionSignal / PromptFragment
 
-`PlannerSignal.score_delta` 为 `-10..10`、`confidence` 为 `0..1`；`PromptFragment.content` 最多 16000 字符，但最终还受更小 Host/Manifest 预算限制。详细规则见 [PlannerSignal](../planner-signals.md) 与 [Prompt](../prompts.md)。
+`AdmissionSignal.score_delta` 为 `-10..10`、`confidence` 为 `0..1`；`PromptFragment.content` 最多 16000 字符，但最终还受更小 Host/Manifest 预算限制。详细规则见 [AdmissionSignal](../admission-signals.md) 与 [Prompt](../prompts.md)。

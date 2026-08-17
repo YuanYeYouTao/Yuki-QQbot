@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import tarfile
 import zipfile
@@ -164,6 +165,7 @@ def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> 
     assert hubert_sentinel.read_text(encoding="utf-8") == "offline-directory"
     assert speaker_sentinel.read_text(encoding="utf-8") == "offline-file-sentinel"
     assert (tmp_path / ".mcp.json").read_text(encoding="utf-8") == '{"mcpServers": {}}\n'
+    assert "PLUGIN_SYSTEM_ENABLED=true" in (tmp_path / ".env").read_text(encoding="utf-8")
 
 
 def test_release_smoke_sentinels_are_idempotent_and_conflict_safe(tmp_path: Path) -> None:
@@ -219,19 +221,75 @@ def test_release_smoke_reads_alembic_version_inside_container(
     class FakeCompose:
         def run(self, *arguments: str, capture: bool = False) -> str:
             calls.append(arguments)
-            if "urllib.request" in arguments[-1]:
-                return '{"status":"ok","version":"3.5.3","database":"ok"}'
-            if "SELECT version_num FROM alembic_version" in arguments[-1]:
-                return "0039"
+            if arguments[:4] == ("exec", "-T", "bot", "python"):
+                if "urllib.request" in arguments[-1]:
+                    return (
+                        '{"status":"ok","version":"3.5.3","database":"ok",'
+                        '"plugin_system_enabled":true,"plugin_running_count":0}'
+                    )
+                if "SELECT version_num FROM alembic_version" in arguments[-1]:
+                    return "0039"
+            if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
+                return ""
+            if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
+                return ""
             raise AssertionError(arguments)
 
     monkeypatch.setattr("scripts.release_smoke.wait_healthy", lambda *args: "container-id")
 
     verify_bot(FakeCompose(), tmp_path, VERSION)  # type: ignore[arg-type]
 
-    assert len(calls) == 2
-    assert all(call[:4] == ("exec", "-T", "bot", "python") for call in calls)
+    assert [call[:5] for call in calls] == [
+        ("exec", "-T", "bot", "python", "-c"),
+        ("exec", "-T", "bot", "python", "-c"),
+        ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"),
+        ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"),
+    ]
+    pending = json.loads((tmp_path / "data/setup/pending.json").read_text(encoding="utf-8"))
+    assert pending == {"schema_version": 1, "selected_plugins": []}
     assert not (tmp_path / "data/qq_ai_bot.db").exists()
+
+
+def test_release_smoke_applies_builtin_plugin_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin_root = tmp_path / "plugins/io.github.yuanyeyoutao.kun-game"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.toml").write_text(
+        'id = "io.github.yuanyeyoutao.kun-game"\n', encoding="utf-8"
+    )
+    calls: list[tuple[str, ...]] = []
+    health_payloads = iter(
+        (
+            '{"status":"ok","version":"3.5.3","database":"ok",'
+            '"plugin_system_enabled":true,"plugin_running_count":0}',
+            '{"status":"ok","version":"3.5.3","database":"ok",'
+            '"plugin_system_enabled":true,"plugin_running_count":1}',
+        )
+    )
+
+    class FakeCompose:
+        def run(self, *arguments: str, capture: bool = False) -> str:
+            calls.append(arguments)
+            if arguments[:4] == ("exec", "-T", "bot", "python"):
+                if "urllib.request" in arguments[-1]:
+                    return next(health_payloads)
+                return "0039"
+            if arguments[:3] == ("up", "-d", "--no-deps"):
+                return ""
+            if arguments[3:5] == ("qq-ai-bot-cli", "plugin"):
+                return "discovered: io.github.yuanyeyoutao.kun-game"
+            if arguments[3:6] == ("qq-ai-bot-cli", "setup", "apply-pending"):
+                return "applied"
+            raise AssertionError(arguments)
+
+    monkeypatch.setattr("scripts.release_smoke.wait_healthy", lambda *args: "container-id")
+
+    verify_bot(FakeCompose(), tmp_path, VERSION)  # type: ignore[arg-type]
+
+    pending = json.loads((tmp_path / "data/setup/pending.json").read_text(encoding="utf-8"))
+    assert pending["selected_plugins"] == ["io.github.yuanyeyoutao.kun-game"]
+    assert ("up", "-d", "--no-deps", "--force-recreate", "bot") in calls
 
 
 def test_release_smoke_cleans_root_owned_permission_fixture_in_container(
