@@ -1,6 +1,6 @@
 # Yuki-QQbot
 
-> **3.6.0：**删除强制 Planner。普通聊天由 Conversation Runtime 准入后直接进入 Main Agent；
+> **3.6.0 正式版：**删除强制 Planner。普通聊天由 Conversation Runtime 准入后直接进入 Main Agent；
 > Memory Runtime 与 Capability Runtime 在模型前完成本地准备。Alembic head 为 `0040`，
 > Plugin API 为 `2.0`。从 3.5.3 升级见 [3.6.0 升级指南](upgrade-3.6.0.md)。
 

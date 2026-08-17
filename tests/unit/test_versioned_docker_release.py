@@ -29,14 +29,14 @@ from scripts.release_validate import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "3.5.3"
+VERSION = "3.6.0"
 
 
 def test_release_identity_matches_all_version_surfaces() -> None:
-    assert validate_release_identity(ROOT, "v3.5.3") == VERSION
+    assert validate_release_identity(ROOT, "v3.6.0") == VERSION
 
 
-@pytest.mark.parametrize("tag", ["3.5.3", "v3.5", "v3.5.3-rc1", "v03.5.3", "latest"])
+@pytest.mark.parametrize("tag", ["3.6.0", "v3.5", "v3.5.3-rc1", "v03.5.3", "latest"])
 def test_release_identity_rejects_non_final_tags(tag: str) -> None:
     with pytest.raises(ReleaseValidationError, match=r"vX\.Y\.Z"):
         validate_release_identity(ROOT, tag)
@@ -67,7 +67,7 @@ def test_bundle_allowlist_requires_persona() -> None:
     tracked = {
         "docker-compose.yml",
         ".env.example",
-        "docs/releases/v3.5.3.md",
+        "docs/releases/v3.6.0.md",
         "install.sh",
         "install.ps1",
         "config/memory_contracts.toml",
@@ -82,22 +82,22 @@ def test_bundle_allowlist_requires_persona() -> None:
 
 
 def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Path) -> None:
-    tracked = tracked_files(ROOT) | {"docs/releases/v3.5.3.md", "install.sh", "install.ps1"}
+    tracked = tracked_files(ROOT) | {"docs/releases/v3.6.0.md", "install.sh", "install.ps1"}
     assets = build_release_bundle(ROOT, tmp_path, VERSION, tracked=tracked)
     assert {path.name for path in assets} == {
-        "yuki-3.5.3-deploy.zip",
-        "yuki-3.5.3-deploy.tar.gz",
+        "yuki-3.6.0-deploy.zip",
+        "yuki-3.6.0-deploy.tar.gz",
         "docker-compose.yml",
         ".env.example",
-        "Yuki-3.5.3-Upgrade.md",
+        "Yuki-3.6.0-Upgrade.md",
         "install.sh",
         "install.ps1",
         "SHA256SUMS",
     }
-    with zipfile.ZipFile(tmp_path / "yuki-3.5.3-deploy.zip") as archive:
+    with zipfile.ZipFile(tmp_path / "yuki-3.6.0-deploy.zip") as archive:
         names = set(archive.namelist())
-        shell_mode = archive.getinfo("yuki-3.5.3-deploy/install.sh").external_attr >> 16
-    prefix = "yuki-3.5.3-deploy/"
+        shell_mode = archive.getinfo("yuki-3.6.0-deploy/install.sh").external_attr >> 16
+    prefix = "yuki-3.6.0-deploy/"
     assert f"{prefix}docker-compose.yml" in names
     assert f"{prefix}.env.example" in names
     assert f"{prefix}config/persona.md" in names
@@ -113,7 +113,7 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}.mcp.json" not in names
     assert f"{prefix}config/system_prompt.md" not in names
     assert f"{prefix}config/model_profiles.toml" not in names
-    with tarfile.open(tmp_path / "yuki-3.5.3-deploy.tar.gz", "r:gz") as archive:
+    with tarfile.open(tmp_path / "yuki-3.6.0-deploy.tar.gz", "r:gz") as archive:
         assert archive.getmember(f"{prefix}install.sh").mode & 0o111
     checksum_lines = (tmp_path / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
     checksums = {
@@ -154,7 +154,7 @@ def test_oci_revision_label_does_not_invalidate_system_dependency_layers(
 
 
 def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> None:
-    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.3\n", encoding="utf-8")
+    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.6.0\n", encoding="utf-8")
 
     sentinels = prepare_deployment(tmp_path)
 
@@ -169,7 +169,7 @@ def test_release_smoke_uses_non_model_genie_import_sentinels(tmp_path: Path) -> 
 
 
 def test_release_smoke_sentinels_are_idempotent_and_conflict_safe(tmp_path: Path) -> None:
-    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.5.3\n", encoding="utf-8")
+    (tmp_path / ".env.example").write_text("YUKI_VERSION=3.6.0\n", encoding="utf-8")
     sentinels = prepare_deployment(tmp_path)
 
     assert prepare_deployment(tmp_path) == sentinels
@@ -224,7 +224,7 @@ def test_release_smoke_reads_alembic_version_inside_container(
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "urllib.request" in arguments[-1]:
                     return (
-                        '{"status":"ok","version":"3.5.3","database":"ok",'
+                        '{"status":"ok","version":"3.6.0","database":"ok",'
                         '"plugin_system_enabled":true,"plugin_running_count":0}'
                     )
                 if "SELECT version_num FROM alembic_version" in arguments[-1]:
@@ -261,9 +261,9 @@ def test_release_smoke_applies_builtin_plugin_pending(
     calls: list[tuple[str, ...]] = []
     health_payloads = iter(
         (
-            '{"status":"ok","version":"3.5.3","database":"ok",'
+            '{"status":"ok","version":"3.6.0","database":"ok",'
             '"plugin_system_enabled":true,"plugin_running_count":0}',
-            '{"status":"ok","version":"3.5.3","database":"ok",'
+            '{"status":"ok","version":"3.6.0","database":"ok",'
             '"plugin_system_enabled":true,"plugin_running_count":1}',
         )
     )

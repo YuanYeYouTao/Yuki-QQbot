@@ -9,7 +9,7 @@
 <p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.5.3"><img src="https://img.shields.io/badge/Version-3.5.3-orange" alt="Version 3.5.3"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.6.0"><img src="https://img.shields.io/badge/Version-3.6.0-orange" alt="Version 3.6.0"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2 and OneBot v11">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -37,7 +37,7 @@ Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCatQQ �
 Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份隔离的 Memory V2、持久化自动化和插件系统，
 让一个可自托管的 QQ 角色能够长期对话、记住人与共同经历，并安全地执行外部操作。
 
-项目主要通过 Codex 协作开发，当前稳定版本为 **3.5.3**。它适合愿意自行维护模型配置、QQ
+项目主要通过 Codex 协作开发，当前稳定版本为 **3.6.0**。它适合愿意自行维护模型配置、QQ
 登录态和本地数据的个人用户；不是面向多租户的托管机器人平台。
 
 ## 项目概览
@@ -430,7 +430,7 @@ MCP Client 支持 stdio 和 Streamable HTTP，包含动态发现、元数据缓�
 
 ### 1. 运行引导安装器
 
-从 [Yuki 3.5.3 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.5.3)
+从 [Yuki 3.6.0 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.6.0)
 下载对应安装器。它会校验部署包、拉取正式镜像，并在一次性容器中启动彩色向导；宿主机不需要
 Python、uv 或源码。
 
@@ -494,8 +494,9 @@ docker compose up -d
 ```
 
 版本镜像不可变；`docker compose pull` 只拉取 `.env` 当前指定的版本。不要用新部署包直接覆盖
-旧目录，保留现有 `config/`、`plugins/`、`data/` 和 `napcat-*`。完整步骤见
-[3.5.3 发布与升级说明](docs/releases/v3.5.3.md)。
+旧目录，保留现有 `config/`、`plugins/`、`data/` 和 `napcat-*`。从 3.5.3 升级必须走安装器
+快照与 `setup migrate-3-6`，见 [3.6.0 发布与升级说明](docs/releases/v3.6.0.md) 和
+[3.6.0 升级指南](docs/upgrade-3.6.0.md)。
 
 停止全部服务：
 
@@ -640,7 +641,9 @@ GitHub Actions 还会验证 Docker Compose、运行时镜像、隔离的 Genie-T
 
 - [完整使用帮助](docs/help.md)
 - [3.6.0 运行时架构](docs/architecture/yuki-3.6.0-runtime.md)
+- [3.6.0 发布与升级说明](docs/releases/v3.6.0.md)
 - [从 3.5.3 升级到 3.6.0](docs/upgrade-3.6.0.md)
+- [3.6.0 Runtime 性能报告](docs/performance/3.6.0-runtime-report.md)
 - [3.5.3 发布与升级说明](docs/releases/v3.5.3.md)
 - [3.5.2 发布与升级说明](docs/releases/v3.5.2.md)
 - [Memory V2 架构](docs/architecture/memory-v2.md)

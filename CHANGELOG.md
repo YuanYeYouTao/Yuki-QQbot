@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 3.6.0 - 2026-08-18
+
+### Conversation / Memory / Capability Runtime
+
+- 删除强制 Planner 与 Flash Tool Selection。普通文本进入 Main Agent 前不再有生成式路由请求。
+- 私聊、@、回复机器人直接准入，不再计 necessity 分；群聊自主参与只做本地评分，默认只读。
+- Plugin API 2.0 生效。`planner.signal.register` 批准在 `0038` 被撤销，须按
+  `admission.signal.register` 重新批准。
+- `model_profiles` schema v3 与 `qq-ai-bot-cli setup migrate-3-6` 成为 3.5.3 升级的前置步骤。
+- Alembic `0040` 删除 `planner_runs` 并改写剩余 Planner 覆盖；downgrade 显式拒绝。
+- 安装器在迁移前快照 SQLite 与 WAL/SHM；备份或校验失败不得启动 migrate-3-6。
+
+### 升级与观测
+
+- 从 3.5.3 升级见 [3.6.0 升级指南](docs/upgrade-3.6.0.md) 与
+  [发布说明](docs/releases/v3.6.0.md)。
+- 本地 Runtime 测量见 [3.6.0 性能报告](docs/performance/3.6.0-runtime-report.md)。
+  端到端成对回放门槛尚未认证。
+
 ## 3.5.3 - 2026-08-16
 
 ### Guided Deployment v1
