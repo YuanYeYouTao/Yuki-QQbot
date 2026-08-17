@@ -103,6 +103,25 @@ def test_schema_validation_rejects_invalid_arguments() -> None:
     assert ok.ok is True
 
 
+def test_unknown_dialect_and_unsafe_regex_are_quarantined() -> None:
+    validator = JsonSchemaCapabilityValidator()
+    dialect = _descriptor(
+        "legacy",
+        namespace="web.search",
+        schema={"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
+    )
+    nested = _descriptor(
+        "nested",
+        namespace="web.search",
+        schema={
+            "type": "object",
+            "properties": {"query": {"type": "string", "pattern": "(a+)+"}},
+        },
+    )
+    assert validator.admit((_entry(dialect),)) == ("legacy",)
+    assert validator.admit((_entry(nested),)) == ("nested",)
+
+
 def test_remote_ref_schema_is_quarantined() -> None:
     descriptor = _descriptor(
         "unsafe",
