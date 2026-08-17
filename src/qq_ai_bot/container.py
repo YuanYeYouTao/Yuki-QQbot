@@ -29,6 +29,7 @@ from qq_ai_bot.application.modules import (
     ModelRuntimeModule,
     PersistenceModule,
     PluginModule,
+    RuntimeFoundationModule,
     SpeechModule,
     WebModule,
 )
@@ -155,6 +156,10 @@ class ApplicationContainer:
         self.relationships = persistence.relationships
         self.relationship_jobs = persistence.relationship_jobs
         self.turn_observations = persistence.turn_observations
+        self.runtime_foundation = RuntimeFoundationModule(
+            turn_observability=self.turn_observations,
+            superusers=settings.superusers,
+        ).build()
         model_runtime = ModelRuntimeModule(
             settings.model_runtime,
             self.database,
@@ -493,6 +498,7 @@ class ApplicationContainer:
             voice_preferences=self.voice_preference_service,
             turn_observations=self.turn_observations,
         )
+        self.runtime_foundation.provider_registry.freeze()
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
         self._register_lifecycle()
