@@ -24,6 +24,7 @@ from qq_ai_bot.admin.models import (
     ConfigSpec,
     ConfigValue,
     ContextRuntimeConfig,
+    ConversationRuntimeConfig,
     EffectiveConfigValue,
     EmojiRuntimeConfig,
     LLMRuntimeConfig,
@@ -1016,6 +1017,25 @@ class RuntimeConfigService:
                 group_id=group_id,
             ).value
 
+        def dual(new_key: str, old_key: str) -> ConfigValue:
+            new_effective = self._resolve(
+                self.registry.get(new_key),
+                records,
+                user_id=user_id,
+                group_id=group_id,
+            )
+            old_effective = self._resolve(
+                self.registry.get(old_key),
+                records,
+                user_id=user_id,
+                group_id=group_id,
+            )
+            if str(new_effective.source).startswith("runtime:"):
+                return new_effective.value
+            if str(old_effective.source).startswith("runtime:"):
+                return old_effective.value
+            return new_effective.value
+
         delay_min = float(cast(float | int, value("reply.delay_min_seconds")))
         delay_max = float(cast(float | int, value("reply.delay_max_seconds")))
         return RuntimeConfigSnapshot(
@@ -1194,7 +1214,9 @@ class RuntimeConfigService:
                 delay_max_seconds=delay_max,
                 max_qq_message_chars=int(cast(int, value("reply.max_qq_message_chars"))),
                 cancel_on_new_message=bool(value("reply.cancel_on_new_message")),
-                plan_hard_max_messages=int(cast(int, value("reply.plan_hard_max_messages"))),
+                plan_hard_max_messages=int(
+                    cast(int, dual("reply.hard_max_messages", "reply.plan_hard_max_messages"))
+                ),
             ),
             llm=LLMRuntimeConfig(
                 model=str(value("llm.model") or ""),
@@ -1364,7 +1386,9 @@ class RuntimeConfigService:
                 root=str(value("speech.root")),
                 genie_data_dir=str(value("genie.data_dir")),
                 default_profile=str(value("speech.default_profile") or ""),
-                planner_enabled=bool(value("speech.planner_enabled")),
+                planner_enabled=bool(
+                    dual("speech.agent_effects_enabled", "speech.planner_enabled")
+                ),
                 default_mode=str(value("speech.default_mode")),
                 split_sentence=bool(value("speech.split_sentence")),
                 max_synthesis_characters=(
@@ -1389,6 +1413,53 @@ class RuntimeConfigService:
                 text_fallback_enabled=bool(value("speech.text_fallback_enabled")),
                 spontaneous_frequency=float(
                     cast(float | int, value("speech.spontaneous_frequency"))
+                ),
+            ),
+            conversation=ConversationRuntimeConfig(
+                autonomous_enabled=bool(
+                    dual("conversation.autonomous_enabled", "planner.group_enabled")
+                ),
+                autonomous_debounce_seconds=float(
+                    cast(
+                        float | int,
+                        dual(
+                            "conversation.autonomous_debounce_seconds",
+                            "planner.group_debounce_seconds",
+                        ),
+                    )
+                ),
+                autonomous_admission_threshold=int(
+                    cast(
+                        int,
+                        dual(
+                            "conversation.autonomous_admission_threshold",
+                            "planner.reply_necessity_threshold",
+                        ),
+                    )
+                ),
+                autonomous_batch_limit=int(
+                    cast(
+                        int,
+                        dual(
+                            "conversation.autonomous_batch_limit",
+                            "planner.max_pending_messages",
+                        ),
+                    )
+                ),
+                autonomous_presence_window_seconds=int(
+                    cast(
+                        int,
+                        dual(
+                            "conversation.autonomous_presence_window_seconds",
+                            "planner.recent_presence_window_seconds",
+                        ),
+                    )
+                ),
+                interrupt_autonomous_on_new_message=bool(
+                    dual(
+                        "conversation.interrupt_autonomous_on_new_message",
+                        "planner.interrupt_autonomous_on_new_message",
+                    )
                 ),
             ),
         )

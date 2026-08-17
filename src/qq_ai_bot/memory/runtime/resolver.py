@@ -29,7 +29,7 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 if TYPE_CHECKING:
     from qq_ai_bot.domain.conversations import ConversationIdentity
 
-_WRITE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
+_WRITE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE})
 _MESSAGE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 
 
@@ -91,7 +91,7 @@ class MemoryAccessDecision:
 
 
 def origin_allows_persistent_write(origin: TurnOrigin) -> bool:
-    """3.5.3 ``memory_change`` origins: user message and autonomous group."""
+    """3.6.0: only user-message turns may persist memory writes by default."""
 
     return origin in _WRITE_ORIGINS
 

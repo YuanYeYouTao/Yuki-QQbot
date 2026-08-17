@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -13,37 +14,64 @@ from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
+    ChatRequest,
+    ChatResponse,
     InboundMessage,
     OutboundMessage,
     OutboundSendReceipt,
     SenderIdentity,
+    ToolCall,
+    ToolFunction,
 )
 from qq_ai_bot.emoji.db_models import EmojiUsageEventModel
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.emoji.grid import EmojiGridBuilder
-from qq_ai_bot.emoji.models import (
-    EmojiIntent,
-    EmojiPlacement,
-    EmojiReplyMode,
-    EmojiReplyPlan,
-)
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.retriever import EmojiRetriever
 from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.emoji.storage import EmojiStorage
+from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.planner import (
-    DeliveryMode,
-    FakePlannerProvider,
-    PlannerDecision,
-    PlannerObservability,
-    PlannerReasonCode,
-    TurnPlan,
-)
-from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from yuki_plugin_sdk.events import EventEnvelope, EventName
+
+
+class _SendEmojiProvider(LLMProvider):
+    """Drive reply-effect tests through the real send_emoji tool, not Planner."""
+
+    def __init__(self, *, mode: str, placement: str, final_text: str) -> None:
+        self.requests: list[ChatRequest] = []
+        self._mode = mode
+        self._placement = placement
+        self._final_text = final_text
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if "send_emoji" not in {tool.name for tool in request.tools}:
+            return ChatResponse(content="send_emoji not exposed", latency_seconds=0)
+        if any(message.role == "tool" for message in request.messages):
+            return ChatResponse(content=self._final_text, latency_seconds=0)
+        return ChatResponse(
+            content="",
+            latency_seconds=0,
+            tool_calls=(
+                ToolCall(
+                    id="emoji-1",
+                    function=ToolFunction(
+                        name="send_emoji",
+                        arguments=json.dumps(
+                            {
+                                "mode": self._mode,
+                                "placement": self._placement,
+                                "goal": "回应表情",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                ),
+            ),
+        )
 
 
 class _EventCollector:
@@ -134,9 +162,11 @@ async def test_group_emoji_fast_path_sends_records_and_marks_usage(
     database: Database,
     tmp_path: Path,
 ) -> None:
+    provider = _SendEmojiProvider(mode="emoji_only", placement="only", final_text="好")
     harness = build_harness(
         database,
         make_settings(database.url, emoji_enabled=True),
+        provider,
     )
     _repository, events = await _install_real_emoji_effect(
         database,
@@ -150,7 +180,7 @@ async def test_group_emoji_fast_path_sends_records_and_marks_usage(
 
     assert result.sent_messages == 1
     assert len(sender.messages) == 1 and sender.messages[0].media
-    assert harness.provider.requests == []  # type: ignore[attr-defined]
+    assert len(provider.requests) == 2
     recent = await EventLedgerRepository(database).list_recent(
         scope_type=ScopeType.GROUP,
         user_id="1001",
@@ -169,9 +199,11 @@ async def test_group_emoji_repository_failure_becomes_truthful_text(
     database: Database,
     tmp_path: Path,
 ) -> None:
+    provider = _SendEmojiProvider(mode="emoji_only", placement="only", final_text="好")
     harness = build_harness(
         database,
         make_settings(database.url, emoji_enabled=True),
+        provider,
     )
     repository, events = await _install_real_emoji_effect(
         database,
@@ -196,9 +228,11 @@ async def test_group_emoji_no_candidate_is_not_silent(
     database: Database,
     tmp_path: Path,
 ) -> None:
+    provider = _SendEmojiProvider(mode="emoji_only", placement="only", final_text="好")
     harness = build_harness(
         database,
         make_settings(database.url, emoji_enabled=True),
+        provider,
     )
     await _install_real_emoji_effect(database, tmp_path, harness, with_asset=False)
     sender = MemorySender()
@@ -214,9 +248,11 @@ async def test_group_emoji_send_failure_records_only_fallback_text(
     database: Database,
     tmp_path: Path,
 ) -> None:
+    provider = _SendEmojiProvider(mode="emoji_only", placement="only", final_text="好")
     harness = build_harness(
         database,
         make_settings(database.url, emoji_enabled=True),
+        provider,
     )
     _repository, events = await _install_real_emoji_effect(
         database,
@@ -249,27 +285,15 @@ async def test_optional_emoji_transport_failure_keeps_normal_text_reply(
     database: Database,
     tmp_path: Path,
 ) -> None:
+    provider = _SendEmojiProvider(
+        mode="with_text",
+        placement="after_text",
+        final_text="你好呀",
+    )
     harness = build_harness(
         database,
         make_settings(database.url, emoji_enabled=True),
-    )
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="普通文字回复可选附带表情",
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
-        confidence=1,
-        reason_code=PlannerReasonCode.DIRECT_REQUEST,
-        emoji=EmojiReplyPlan(
-            intent=EmojiIntent.NEUTRAL,
-            mode=EmojiReplyMode.OPTIONAL,
-            placement=EmojiPlacement.AFTER_TEXT,
-            goal="自然回应",
-        ),
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
+        provider,
     )
     _repository, events = await _install_real_emoji_effect(
         database,
@@ -278,14 +302,16 @@ async def test_optional_emoji_transport_failure_keeps_normal_text_reply(
         with_asset=True,
     )
     sender = _MediaFailingSender()
-    message = replace(_message("optional-emoji-send-failure"), text="你好")
+    message = replace(_message("optional-emoji-send-failure"), text="你好，发个表情")
 
     result = await harness.processor.handle(message, sender)
 
-    assert result.sent_messages == 1
-    assert len(sender.messages) == 1
-    assert sender.messages[0].text
-    assert not sender.messages[0].media
-    assert sender.calls == 2
+    assert result.sent_messages == 2
+    assert [message.text for message in sender.messages] == [
+        "你好呀",
+        "表情没发出去，先用文字回你。",
+    ]
+    assert all(not message.media for message in sender.messages)
+    assert sender.calls == 3
     assert await _usage_count(database) == 0
     assert all(event.name is not EventName.EMOJI_SENT for event in events.events)

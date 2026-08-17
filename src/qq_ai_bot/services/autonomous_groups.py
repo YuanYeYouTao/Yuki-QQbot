@@ -1,4 +1,4 @@
-"""Debounced group observation delegated to the same Planner-first chat path."""
+"""Debounced group observation scored locally, then one Main Agent turn."""
 
 from __future__ import annotations
 
@@ -11,16 +11,14 @@ from dataclasses import dataclass, field
 from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.admin.models import ConversationRuntimeConfig, RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.conversation.participation import LocalAutonomousParticipationPolicy
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.planner.context import PlannerContextBuilder
-from qq_ai_bot.planner.models import PlannerDecision
-from qq_ai_bot.planner.provider import PlannerInterruptedError as ProviderPlannerInterruptedError
-from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
@@ -53,23 +51,23 @@ class _GroupState:
 
 
 class AutonomousGroupService:
-    """Only debounce batches; Planner owns all participation decisions."""
+    """Only debounce batches; local scoring owns participation, not Planner."""
 
     def __init__(
         self,
         *,
         chat: ChatService,
         planner_context: PlannerContextBuilder,
-        planner: PlannerService,
+        planner: object | None = None,
         runtime_config: RuntimeConfigService | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
         admission_signals: PluginAdmissionSignalAdapter | None = None,
         turn_observations: TurnObservationRecorder | None = None,
     ) -> None:
+        del planner
         self._chat = chat
         self._runtime_config = runtime_config or chat._runtime_config
         self._planner_context = planner_context
-        self._planner = planner
         self._coordinator = turn_coordinator or chat._turn_coordinator
         self._admission_signals = admission_signals
         self._turn_observations = turn_observations
@@ -111,7 +109,7 @@ class AutonomousGroupService:
             return
         task = asyncio.create_task(
             self._after_silence(group_id),
-            name=f"planner-group-{group_id}",
+            name=f"conversation-group-{group_id}",
         )
         state.task = task
 
@@ -147,19 +145,20 @@ class AutonomousGroupService:
             revision = -1
             try:
                 runtime = await self._runtime_config.snapshot(group_id=group_id)
-                if not runtime.planner.group_enabled:
+                policy = _conversation_policy(runtime)
+                if not policy.autonomous_enabled:
                     return
                 state = self._states.get(group_id)
                 if state is None or not state.messages:
                     return
                 # One worker absorbs every update until the group has remained
-                # quiet for a full debounce interval. No cancelled Planner calls.
+                # quiet for a full debounce interval.
                 state.changed.clear()
                 revision = state.revision
                 try:
                     await asyncio.wait_for(
                         state.changed.wait(),
-                        timeout=runtime.planner.group_debounce_seconds,
+                        timeout=policy.autonomous_debounce_seconds,
                     )
                 except TimeoutError:
                     pass
@@ -170,7 +169,6 @@ class AutonomousGroupService:
                 raise
             except (
                 PlannerInterruptedError,
-                ProviderPlannerInterruptedError,
                 TurnSupersededError,
             ):
                 pass
@@ -264,81 +262,17 @@ class AutonomousGroupService:
             if self._admission_signals is not None
             else ()
         )
-        planner_input = await self._planner_context.build(
+        policy = _conversation_policy(runtime)
+        features = await self._planner_context.admission_features(
             inbound=last,
-            conversation_key=token.conversation_key,
             content=last.text,
-            origin=TurnOrigin.AUTONOMOUS_GROUP,
             runtime=runtime,
-            visual_input_present=False,
             plugin_signals=plugin_signals,
         )
-        if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
-            return
-        async with self._coordinator.track(token, "planner"):
-            outcome = await self._planner.plan(
-                planner_input,
-                runtime=runtime,
-                turn_version=token.version,
-            )
-        if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
-            await self._planner.record_delivery(
-                outcome.run_id,
-                messages_sent=0,
-                interrupted=True,
-            )
-            return
-        plan = outcome.planned_turn.plan
-        if plan.decision is PlannerDecision.WAIT:
-            if plan.wait_seconds > 0:
-                await asyncio.sleep(plan.wait_seconds)
-            if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
-                await self._planner.record_delivery(
-                    outcome.run_id,
-                    messages_sent=0,
-                    interrupted=True,
-                )
-                return
-            await self._planner.record_delivery(
-                outcome.run_id,
-                messages_sent=0,
-                interrupted=False,
-            )
-            # Re-plan exactly once after a bounded wait. A second wait becomes
-            # silence, so one group message cannot create an endless loop.
-            refreshed = await self._planner_context.build(
-                inbound=last,
-                conversation_key=token.conversation_key,
-                content=last.text,
-                origin=TurnOrigin.AUTONOMOUS_GROUP,
-                runtime=runtime,
-                visual_input_present=False,
-                plugin_signals=plugin_signals,
-            )
-            if not self._is_latest(group_id, revision):
-                return
-            async with self._coordinator.track(token, "planner"):
-                outcome = await self._planner.plan(
-                    refreshed,
-                    runtime=runtime,
-                    turn_version=token.version,
-                )
-            if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
-                await self._planner.record_delivery(
-                    outcome.run_id,
-                    messages_sent=0,
-                    interrupted=True,
-                )
-                return
-            plan = outcome.planned_turn.plan
-            if plan.decision is PlannerDecision.WAIT:
-                await self._planner.record_delivery(
-                    outcome.run_id,
-                    messages_sent=0,
-                    interrupted=False,
-                )
-                return
-        if plan.decision is not PlannerDecision.REPLY:
+        snapshot = LocalAutonomousParticipationPolicy(
+            threshold=policy.autonomous_admission_threshold,
+        ).evaluate(features)
+        if not snapshot.should_participate:
             return
         if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
             return
@@ -347,7 +281,7 @@ class AutonomousGroupService:
             last.sender.user_id,
             ConversationMode.SHARED,
         )
-        sent = await self._chat.respond(
+        await self._chat.respond(
             last,
             identity,
             profile,
@@ -355,13 +289,7 @@ class AutonomousGroupService:
             sender,
             autonomous=True,
             runtime_snapshot=runtime,
-            planned_turn=outcome.planned_turn,
             turn_token=token,
-        )
-        await self._planner.record_delivery(
-            outcome.run_id,
-            messages_sent=sent,
-            interrupted=not self._coordinator.is_current(token),
         )
 
     async def wait_until_idle(self, group_id: str) -> None:
@@ -386,3 +314,22 @@ class AutonomousGroupService:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _conversation_policy(runtime: object) -> ConversationRuntimeConfig:
+    getter = getattr(runtime, "conversation_policy", None)
+    if callable(getter):
+        return getter()
+    planner = getattr(runtime, "planner", None)
+    return ConversationRuntimeConfig(
+        autonomous_enabled=bool(getattr(planner, "group_enabled", False)),
+        autonomous_debounce_seconds=float(getattr(planner, "group_debounce_seconds", 8.0)),
+        autonomous_admission_threshold=int(getattr(planner, "reply_necessity_threshold", 80)),
+        autonomous_batch_limit=int(getattr(planner, "max_pending_messages", 20)),
+        autonomous_presence_window_seconds=int(
+            getattr(planner, "recent_presence_window_seconds", 120)
+        ),
+        interrupt_autonomous_on_new_message=bool(
+            getattr(planner, "interrupt_autonomous_on_new_message", True)
+        ),
+    )

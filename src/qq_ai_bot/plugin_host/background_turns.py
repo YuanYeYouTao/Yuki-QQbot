@@ -8,12 +8,6 @@ import time
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.planner.context import PlannerContextBuilder
-from qq_ai_bot.planner.models import PlannerDecision
-from qq_ai_bot.planner.provider import (
-    PlannerInterruptedError as ProviderPlannerInterruptedError,
-)
-from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.plugin_host.notification_repository import (
     BackgroundTurnJobRecord,
     PluginNotificationRepository,
@@ -46,17 +40,16 @@ class PluginBackgroundTurnWorker:
         repository: PluginNotificationRepository,
         ledger: EventLedgerRepository,
         runtime_config: RuntimeConfigService,
-        planner_context: PlannerContextBuilder,
-        planner: PlannerService,
         chat: ChatService,
         turns: ConversationTurnCoordinator,
         turn_observations: TurnObservationRecorder | None = None,
+        planner_context: object | None = None,
+        planner: object | None = None,
     ) -> None:
+        del planner_context, planner
         self._repository = repository
         self._ledger = ledger
         self._runtime_config = runtime_config
-        self._planner_context = planner_context
-        self._planner = planner
         self._chat = chat
         self._turns = turns
         self._turn_observations = turn_observations
@@ -169,34 +162,10 @@ class PluginBackgroundTurnWorker:
         self._turns.configure_policy(
             cancel_replies_on_new_message=runtime.reply.cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
-                runtime.planner.interrupt_autonomous_on_new_message
+                runtime.conversation_policy().interrupt_autonomous_on_new_message
             ),
         )
-        run_id: int | None = None
         try:
-            planner_input = await self._planner_context.build_external(
-                event=event,
-                authorization_user_id=context_user_id,
-                conversation_key=conversation_key,
-                runtime=runtime,
-                agent_intent=job.agent_intent,
-            )
-            async with self._turns.track(token, "planner"):
-                outcome = await self._planner.plan(
-                    planner_input,
-                    runtime=runtime,
-                    turn_version=token.version,
-                )
-            run_id = outcome.run_id
-            if outcome.planned_turn.plan.decision is not PlannerDecision.REPLY:
-                await self._repository.finish_turn(
-                    job.id,
-                    text="",
-                    tool_calls_used=0,
-                    model_requests=0,
-                )
-                await self._planner.record_delivery(run_id, messages_sent=0)
-                return
             async with self._turns.track(token, "generation"):
                 result = await self._chat.generate_external_reply(
                     event=event,
@@ -204,7 +173,6 @@ class PluginBackgroundTurnWorker:
                     conversation_key=conversation_key,
                     runtime=runtime,
                     agent_intent=job.agent_intent,
-                    planned_turn=outcome.planned_turn,
                     turn_token=token,
                 )
             await self._repository.finish_turn(
@@ -212,10 +180,6 @@ class PluginBackgroundTurnWorker:
                 text=result.text,
                 tool_calls_used=result.tool_calls_used,
                 model_requests=result.model_requests,
-            )
-            await self._planner.record_delivery(
-                run_id,
-                messages_sent=1 if result.text else 0,
             )
             logger.info(
                 "plugin_background_turn_completed plugin_id=%s event_id=%d "
@@ -227,7 +191,6 @@ class PluginBackgroundTurnWorker:
             )
         except (
             PlannerInterruptedError,
-            ProviderPlannerInterruptedError,
             TurnSupersededError,
         ):
             if job.attempts >= 2:
@@ -241,11 +204,6 @@ class PluginBackgroundTurnWorker:
                     error_category="interrupted_by_user",
                     delay_seconds=5,
                 )
-            await self._planner.record_delivery(
-                run_id,
-                messages_sent=0,
-                interrupted=True,
-            )
         except asyncio.CancelledError:
             await self._repository.defer_turn(
                 job.id,
@@ -263,10 +221,5 @@ class PluginBackgroundTurnWorker:
             )
             await self._repository.fail_turn(
                 job.id,
-                error_category=type(exc).__name__,
-            )
-            await self._planner.record_delivery(
-                run_id,
-                messages_sent=0,
                 error_category=type(exc).__name__,
             )

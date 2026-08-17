@@ -29,7 +29,7 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
-_ALEMBIC_HEAD = "0038"
+_ALEMBIC_HEAD = "0039"
 _EXPECTED_RELEASE_VERSION = "3.5.3"
 
 
@@ -208,6 +208,7 @@ class MemoryReleaseCheck:
             "0036_async_memory_attribution.py",
             "0037_runtime_turn_correlation.py",
             "0038_revoke_legacy_planner_signal_approvals.py",
+            "0039_reply_effect_events.py",
         }
         missing = sorted(required - versions)
         return self._item(

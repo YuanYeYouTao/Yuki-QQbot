@@ -205,7 +205,7 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     alembic_version = compose.run(
         "exec", "-T", "bot", "python", "-c", migration_command, capture=True
     )
-    if alembic_version != "0038":
+    if alembic_version != "0039":
         raise SmokeError(f"unexpected Alembic version: {alembic_version!r}")
 
 

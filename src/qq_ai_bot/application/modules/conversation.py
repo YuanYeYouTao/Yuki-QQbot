@@ -12,6 +12,7 @@ from qq_ai_bot.application.modules.model_runtime import ModelRuntimeBundle
 from qq_ai_bot.application.modules.persistence import PersistenceBundle
 from qq_ai_bot.capabilities import ToolArtifactWriter
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.cadence import ReplyEffectRepository
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.memory.attribution import MemoryAttributionWorker
 from qq_ai_bot.memory.auditing import (
@@ -233,6 +234,7 @@ class ConversationModule:
             web_sources=persistence.web_sources,
             runtime_config=self._runtime_config,
             permission_catalog=self._permission_catalog,
+            voice_preferences=self._voice_preferences,
         )
         plugin_agent_tools = PluginAgentToolBackend(agent_tools)
         memory_attribution_worker = MemoryAttributionWorker(
@@ -262,6 +264,8 @@ class ConversationModule:
             reply_sequence=reply_sequence,
             emoji_effects=self._emoji_effects,
             speech_effects=self._speech_effects,
+            reply_effects=ReplyEffectRepository(persistence.database),
+            voice_preferences=self._voice_preferences,
             tool_artifacts=self._tool_artifacts,
             tool_invocations=self._tool_invocations,
         )

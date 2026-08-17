@@ -43,6 +43,8 @@ from qq_ai_bot.capabilities.runtime import (
 )
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.cadence import ReplyEffectRepository
+from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
@@ -60,7 +62,6 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.emoji.models import (
-    EmojiIntent,
     EmojiPlacement,
     EmojiPreparationResult,
     EmojiPreparationStatus,
@@ -97,10 +98,6 @@ from qq_ai_bot.persistence.repositories import (
     WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.planner.models import (
-    PlannedTurn,
-    PlannerReasonCode,
-)
 from qq_ai_bot.planner.observability import identifier_hash
 from qq_ai_bot.runtime.authority import TurnAuthority
 from qq_ai_bot.runtime.contracts import DeliverySummary
@@ -119,6 +116,7 @@ from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     publish_notification,
 )
+from qq_ai_bot.services.policies import replies_to_bot
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.services.renderer import clean_model_output, split_qq_message
 from qq_ai_bot.services.reply_sequence import (
@@ -129,7 +127,8 @@ from qq_ai_bot.services.reply_target import ReplyTargetControl, ReplyTargetResol
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator, TurnToken
-from qq_ai_bot.speech.models import VoiceAgentToolPolicy
+from qq_ai_bot.speech.models import VoiceMode, VoicePreferenceMode
+from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.speech.reply_effect import (
     PendingVoiceReplyEffect,
     PreparedVoiceReply,
@@ -147,18 +146,10 @@ logger = logging.getLogger(__name__)
 _ARTIFACT_PROVIDER_ID = "artifacts"
 _ARTIFACT_READER_NAME = "read_tool_artifact"
 _SET_REPLY_TARGET_NAME = "set_reply_target"
-_PLANNER_FAIL_CLOSED_MESSAGE = "本轮规划服务暂时不可用，未执行任何工具或持久化操作，请稍后重试。"
 _MEMORY_MUTATION_EXECUTION_CONTRACT = (
     "本轮是后端授权的长期记忆变更终端轮次。必须先调用当前唯一暴露的长期记忆写能力，"
     "并严格以真实工具回执为准；不得直接用正文确认、模拟或承诺变更。定位失败时也必须"
     "保留真实失败回执，不得改用管理员能力。本轮不继续处理其他问答。"
-)
-_PLANNER_FAIL_CLOSED_REASONS = frozenset(
-    {
-        PlannerReasonCode.PLANNER_TIMEOUT_FALLBACK,
-        PlannerReasonCode.PLANNER_INVALID_RESPONSE_FALLBACK,
-        PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
-    }
 )
 _SET_REPLY_TARGET_TOOL = ChatTool(
     name=_SET_REPLY_TARGET_NAME,
@@ -382,6 +373,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._request_tools_called = False
         self._first_real_tool_recorded = False
         self._native_web_fallback = runtime.native_web_fallback
+        self._batch_rejected: str = ""
 
     def enable_native_web_fallback(self) -> None:
         """Allow Tavily tools only after the Runner verifies a fallback condition."""
@@ -583,6 +575,8 @@ class _ChatAgentBackend(AgentToolBackend):
             names.extend(("web_search", "read_webpage"))
         if self._runtime.allow_generic_onebot:
             names.append("call_onebot_api")
+        if self._runtime.origin is TurnOrigin.AUTONOMOUS_GROUP:
+            names.append("decline_reply")
         return tuple(dict.fromkeys(names))
 
     def _scene_facts(self) -> Any:
@@ -597,6 +591,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 group_id=inbound.group_id,
                 image_present=bool(inbound.attachments or inbound.reply_attachments),
                 mentions_bot=inbound.mentions_bot,
+                replies_to_bot=replies_to_bot(inbound),
                 reply_present=bool(inbound.reply_text or inbound.reply_sender_user_id),
             )
         return TurnSceneFacts(
@@ -604,6 +599,7 @@ class _ChatAgentBackend(AgentToolBackend):
             group_id=None,
             image_present=bool(inbound.attachments or inbound.reply_attachments),
             mentions_bot=inbound.mentions_bot,
+            replies_to_bot=replies_to_bot(inbound),
             reply_present=bool(inbound.reply_text or inbound.reply_sender_user_id),
         )
 
@@ -629,7 +625,24 @@ class _ChatAgentBackend(AgentToolBackend):
 
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
         del runtime
+        self._batch_rejected = ""
+        names = {call.function.name for call in calls}
+        if "decline_reply" in names and (len(calls) != 1 or self.has_prior_reply_effects()):
+            self._batch_rejected = "decline_reply_batch_rejected"
+            self._batch = []
+            return
         self._batch = list(calls)
+
+    def has_prior_reply_effects(self) -> bool:
+        control = self._runtime.reply_control
+        return bool(
+            control is not None
+            and (control.had_effect or control.layout_applied or control.declined)
+        )
+
+    def declined_reply(self) -> bool:
+        control = self._runtime.reply_control
+        return bool(control is not None and control.declined)
 
     def did_use_web(self) -> bool:
         """Expose a provider-metadata-derived effect to the shared Agent loop."""
@@ -637,6 +650,15 @@ class _ChatAgentBackend(AgentToolBackend):
         return self._web_was_used
 
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        if self._batch_rejected:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": self._batch_rejected,
+                    "detail": "decline_reply 必须是尚未产生效果时的单独调用。",
+                },
+                ensure_ascii=False,
+            )
         if not self._batch:
             return json.dumps(
                 {"ok": False, "error": "tool_batch_state_missing"}, ensure_ascii=False
@@ -1331,6 +1353,8 @@ class ChatService:
         reply_sequence: ReplySequenceManager | None = None,
         emoji_effects: EmojiReplyEffectService | None = None,
         speech_effects: VoiceReplyEffectService | None = None,
+        reply_effects: ReplyEffectRepository | None = None,
+        voice_preferences: VoicePreferenceService | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_invocations: ToolInvocationRecorder | None = None,
@@ -1399,6 +1423,8 @@ class ChatService:
         self._reply_target_resolver = ReplyTargetResolver(self._ledger)
         self._emoji_effects = emoji_effects
         self._speech_effects = speech_effects
+        self._reply_effects = reply_effects
+        self._voice_preferences = voice_preferences
         self._event_publisher = event_publisher
 
     def set_admin_tools(self, service: AdminToolService) -> None:
@@ -1671,7 +1697,7 @@ class ChatService:
         return registry
 
     def configure_runtime_controls(self, runtime: RuntimeConfigSnapshot) -> None:
-        """Apply HOT controls shared by the Agent and Planner prompt pipeline."""
+        """Apply HOT controls shared by the Agent prompt pipeline."""
 
         self._prompt_composer.configure_plugin_limits(runtime)
 
@@ -1697,7 +1723,6 @@ class ChatService:
         visual_observation: VisualObservation | None = None,
         visual_input_present: bool = False,
         visual_failure: bool = False,
-        planned_turn: PlannedTurn | None = None,
         turn_token: TurnToken | None = None,
         structured_memory_command: MemoryStructuredCommand = MemoryStructuredCommand.NONE,
     ) -> int:
@@ -1720,60 +1745,33 @@ class ChatService:
                 return 1
 
             source_display_requested = self._source_policy.requested(content)
-            planner_emoji_only = bool(
-                planned_turn is not None and planned_turn.plan.emoji.is_exclusive
-            )
-            fallback_plan = planned_turn is not None and planned_turn.fallback_used
-            if (
-                planned_turn is not None
-                and planned_turn.plan.reason_code in _PLANNER_FAIL_CLOSED_REASONS
-                and not planner_emoji_only
-            ):
-                self._record_memory_mutation_turn_outcome("planner_fail_closed")
-                logger.warning(
-                    "planner_fallback_fail_closed conversation_hash=%s reason=%s",
-                    identifier_hash(identity.key) or "missing",
-                    planned_turn.plan.reason_code.value,
-                )
-                result = await sender.send(OutboundMessage(text=_PLANNER_FAIL_CLOSED_MESSAGE))
-                await self._record_outbound(inbound, _PLANNER_FAIL_CLOSED_MESSAGE, result)
-                return 1
             turn_origin = TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
-            memory_session: TurnMemorySession | None = None
-            if planner_emoji_only:
-                messages: tuple[ChatMessage, ...] = ()
-                visible_event_ids: frozenset[int] = frozenset()
-                memory_turn_id = ""
-                automatic_memory_exposures: tuple[MemoryExposure, ...] = ()
-                memory_intent: MemoryQueryIntent | None = None
-            else:
-                memory_session = self._open_memory_session(
-                    inbound,
-                    identity,
-                    content,
-                    runtime_config,
-                    autonomous=autonomous,
-                    visual_input_present=visual_input_present,
-                    structured_command=structured_memory_command,
-                )
-                (
-                    messages,
-                    visible_event_ids,
-                    memory_turn_id,
-                    automatic_memory_exposures,
-                    memory_intent,
-                ) = await self._build_messages(
-                    inbound,
-                    identity,
-                    profile,
-                    content,
-                    runtime_config,
-                    visual_observation=visual_observation,
-                    visual_failure=visual_failure,
-                    planned_turn=planned_turn,
-                    turn_origin=turn_origin,
-                    memory_session=memory_session,
-                )
+            memory_session = self._open_memory_session(
+                inbound,
+                identity,
+                content,
+                runtime_config,
+                autonomous=autonomous,
+                visual_input_present=visual_input_present,
+                structured_command=structured_memory_command,
+            )
+            (
+                messages,
+                visible_event_ids,
+                memory_turn_id,
+                automatic_memory_exposures,
+                memory_intent,
+            ) = await self._build_messages(
+                inbound,
+                identity,
+                profile,
+                content,
+                runtime_config,
+                visual_observation=visual_observation,
+                visual_failure=visual_failure,
+                turn_origin=turn_origin,
+                memory_session=memory_session,
+            )
             exclusive_write = memory_session is not None and memory_session.exclusive_write
             scheduled_automation_intent = bool(
                 not autonomous
@@ -1786,7 +1784,7 @@ class ChatService:
                 and is_scheduled_automation_request(content)
             )
             scheduled_automation_allowed = bool(
-                scheduled_automation_intent and not fallback_plan and not exclusive_write
+                scheduled_automation_intent and not exclusive_write
             )
             if scheduled_automation_allowed:
                 messages = (
@@ -1802,32 +1800,17 @@ class ChatService:
                         ),
                     ),
                 )
-            if not planner_emoji_only:
-                messages = _with_memory_mutation_contract(messages, exclusive_write)
+            messages = _with_memory_mutation_contract(messages, exclusive_write)
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
                 else None
             )
-            reply_target_control = (
-                ReplyTargetControl(visible_event_ids=visible_event_ids)
-                if not planner_emoji_only
-                else None
+            reply_target_control = ReplyTargetControl(visible_event_ids=visible_event_ids)
+            reply_control = ReplyControlState(
+                spec=default_reply_spec(hard_max_messages=runtime_config.reply.hard_max_messages)
             )
             reply_effects: list[ReplyEffect] = []
-            if planned_turn is not None and planned_turn.plan.emoji.mode is not EmojiReplyMode.NONE:
-                reply_effects.append(
-                    PendingReplyEffect(
-                        mode=planned_turn.plan.emoji.mode,
-                        placement=planned_turn.plan.emoji.placement,
-                        goal=planned_turn.plan.emoji.goal,
-                        emotion=planned_turn.plan.emoji.emotion,
-                        explicit_request=(
-                            planned_turn.plan.emoji.intent is EmojiIntent.EXPLICIT_REQUEST
-                        ),
-                        source="planner",
-                    )
-                )
             if self._memory_context is not None and memory_session is not None:
                 self._memory_context.metrics.record_runtime_access(memory_session.contract)
             web_route = self._web_router.select(content, runtime_config.web.mode)
@@ -1842,24 +1825,25 @@ class ChatService:
                     web_route.attempt,
                     web_route.fallback_allowed,
                 )
+            voice_spontaneous_allowed = await self._voice_spontaneous_allowed(
+                identity.key,
+                inbound.sender.user_id,
+                runtime_config,
+            )
             runtime = ToolRuntime(
                 inbound=inbound,
                 gateway=gateway,
                 allow_generic_onebot=(
                     not autonomous
                     and not visual_input_present
-                    and not fallback_plan
                     and inbound.sender.user_id in self._settings.superusers
                 ),
                 allow_admin_actions=(
                     not autonomous
                     and not visual_input_present
-                    and not fallback_plan
                     and inbound.sender.user_id in self._settings.superusers
                 ),
-                allow_automation=(
-                    not autonomous and not visual_input_present and not fallback_plan
-                ),
+                allow_automation=(not autonomous and not visual_input_present),
                 conversation_key=identity.key,
                 trigger_message_id=inbound.message_id,
                 source_display_requested=source_display_requested,
@@ -1868,18 +1852,15 @@ class ChatService:
                 current_group_id=inbound.group_id,
                 mentioned_user_ids=inbound.mentioned_user_ids,
                 runtime_config=runtime_config,
-                origin=(TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE),
-                tools_closed=planner_emoji_only,
+                origin=turn_origin,
+                read_only=autonomous,
                 turn_token=turn_token,
                 reply_effects=reply_effects,
                 reply_target_control=reply_target_control,
-                voice_tool_authorized=(
-                    planned_turn is not None
-                    and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
-                ),
+                reply_control=reply_control,
+                voice_spontaneous_allowed=voice_spontaneous_allowed,
                 selection_query=content,
                 scheduled_automation_intent=scheduled_automation_allowed,
-                max_model_requests_override=(1 if fallback_plan else None),
                 native_web_fallback=bool(
                     web_route is not None and web_route.provider is WebProvider.TAVILY
                 ),
@@ -1888,70 +1869,75 @@ class ChatService:
                 memory_exposures=automatic_memory_exposures,
                 memory_intent=memory_intent,
                 memory_session=memory_session,
-                planner_fallback=fallback_plan,
             )
-            if planner_emoji_only:
-                response_text = ""
-            elif turn_token is not None:
+            if turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
                     completed_agent = await self._run_agent(identity.key, messages, runtime)
             else:
                 completed_agent = await self._run_agent(identity.key, messages, runtime)
-            if not planner_emoji_only:
-                agent_result = completed_agent.result
-                response_text = agent_result.text
-                if agent_result.native_tool_events:
-                    native_response = recover_native_web_response(
-                        events=agent_result.native_tool_events,
-                        citations=agent_result.citations,
-                        answer_text=agent_result.text,
+            agent_result = completed_agent.result
+            if agent_result.suppress_delivery:
+                await self._finish_memory_turn(
+                    memory_session,
+                    run_id=inbound.message_id,
+                    delivered_text="",
+                    delivered=False,
+                    cancelled=False,
+                )
+                return 0
+            response_text = agent_result.text
+            if agent_result.native_tool_events:
+                native_response = recover_native_web_response(
+                    events=agent_result.native_tool_events,
+                    citations=agent_result.citations,
+                    answer_text=agent_result.text,
+                )
+                await self._web_sources.save_response(
+                    conversation_key=identity.key,
+                    trigger_message_id=inbound.message_id,
+                    provider="deepseek_native",
+                    response=native_response,
+                    max_runs=runtime_config.web.source_max_runs_per_conversation,
+                )
+                if not native_response.sources:
+                    logger.warning(
+                        "native_web_source_parse_failed conversation_hash=%s action_count=%d",
+                        identifier_hash(identity.key) or "missing",
+                        len(agent_result.native_tool_events),
                     )
-                    await self._web_sources.save_response(
-                        conversation_key=identity.key,
-                        trigger_message_id=inbound.message_id,
-                        provider="deepseek_native",
-                        response=native_response,
-                        max_runs=runtime_config.web.source_max_runs_per_conversation,
+                    completed_route = agent_result.web_route
+                    source_failure = self._web_router.missing_source_failure(
+                        completed_route,
+                        source_display_requested=source_display_requested,
+                        source_count=len(native_response.sources),
                     )
-                    if not native_response.sources:
+                    if source_failure is not None and completed_route is not None:
                         logger.warning(
-                            "native_web_source_parse_failed conversation_hash=%s action_count=%d",
-                            identifier_hash(identity.key) or "missing",
-                            len(agent_result.native_tool_events),
+                            "web_provider_fallback from_provider=deepseek_native "
+                            "to_provider=tavily reason_category=%s",
+                            source_failure.value,
                         )
-                        completed_route = agent_result.web_route
-                        source_failure = self._web_router.missing_source_failure(
-                            completed_route,
-                            source_display_requested=source_display_requested,
-                            source_count=len(native_response.sources),
+                        fallback_limit = min(
+                            2,
+                            runtime.max_model_requests_override
+                            or runtime_config.agent.max_model_requests,
                         )
-                        if source_failure is not None and completed_route is not None:
-                            logger.warning(
-                                "web_provider_fallback from_provider=deepseek_native "
-                                "to_provider=tavily reason_category=%s",
-                                source_failure.value,
-                            )
-                            fallback_limit = min(
-                                2,
-                                runtime.max_model_requests_override
-                                or runtime_config.agent.max_model_requests,
-                            )
-                            fallback_runtime = replace(
-                                runtime,
-                                native_web_fallback=True,
-                                web_route=self._web_router.fallback(
-                                    completed_route,
-                                    source_failure,
-                                ),
-                                max_model_requests_override=fallback_limit,
-                            )
-                            completed_agent = await self._run_agent(
-                                identity.key,
-                                messages,
-                                fallback_runtime,
-                            )
-                            agent_result = completed_agent.result
-                            response_text = agent_result.text
+                        fallback_runtime = replace(
+                            runtime,
+                            native_web_fallback=True,
+                            web_route=self._web_router.fallback(
+                                completed_route,
+                                source_failure,
+                            ),
+                            max_model_requests_override=fallback_limit,
+                        )
+                        completed_agent = await self._run_agent(
+                            identity.key,
+                            messages,
+                            fallback_runtime,
+                        )
+                        agent_result = completed_agent.result
+                        response_text = agent_result.text
             sources = await self._web_sources.for_trigger(
                 conversation_key=identity.key,
                 trigger_message_id=inbound.message_id,
@@ -1959,7 +1945,6 @@ class ChatService:
             reply_to_message_id = await self._resolve_reply_target(
                 inbound=inbound,
                 conversation_key=identity.key,
-                planned_turn=planned_turn,
                 control=reply_target_control,
             )
             response_text = self._source_renderer.sanitize_model_text(response_text, sources)
@@ -2017,7 +2002,7 @@ class ChatService:
                         preparation_fallbacks.append(OutboundMessage(text=fallback_text))
             prepared_voice: PreparedVoiceReply | None = None
             if (
-                planned_turn is not None
+                queued_voice is not None
                 and turn_token is not None
                 and self._speech_effects is not None
             ):
@@ -2026,18 +2011,10 @@ class ChatService:
                     response_text=rendered,
                     runtime=runtime_config,
                     token=turn_token,
-                    mode=planned_turn.plan.voice.mode,
-                    style_hint=(
-                        queued_voice.style_hint
-                        if queued_voice is not None
-                        else planned_turn.plan.voice.style_hint
-                    ),
-                    language_hint=(
-                        queued_voice.language_hint
-                        if queued_voice is not None
-                        else planned_turn.plan.voice.language.value
-                    ),
-                    profile_id=queued_voice.profile_id if queued_voice is not None else "",
+                    mode=queued_voice.mode,
+                    style_hint=queued_voice.style_hint,
+                    language_hint=queued_voice.language_hint,
+                    profile_id=queued_voice.profile_id,
                 )
             if (
                 not rendered
@@ -2049,7 +2026,7 @@ class ChatService:
                 # into silence. AgentRunner normally prevents this, while this
                 # guard also covers selectors/synthesizers that decline an effect.
                 rendered = "我在，刚才没有生成可用的回复。"
-            if planned_turn is not None and turn_token is not None:
+            if turn_token is not None:
                 if source_display_requested:
                     source_text = self._source_renderer.render(
                         sources,
@@ -2098,6 +2075,12 @@ class ChatService:
                                 "speech_post_send_record_failed exception_category=%s",
                                 type(exc).__name__,
                             )
+                    if any(media.kind is AttachmentKind.AUDIO for media in message.media):
+                        reply_control.voice_sent = True
+                    elif message.media:
+                        reply_control.emoji_sent = True
+                    if message.text.strip() and not message.media:
+                        reply_control.text_sent = True
                     if id(message) in fallback_message_ids:
                         await publish_notification(
                             self._event_publisher,
@@ -2176,19 +2159,58 @@ class ChatService:
                     if effect.placement is not EmojiPlacement.BEFORE_TEXT
                 )
                 after = (*after, *preparation_fallbacks)
-                if prepared_voice is not None:
+                voice_only_confirmed = False
+                if (
+                    queued_voice is not None
+                    and queued_voice.mode is VoiceMode.VOICE
+                    and prepared_voice is not None
+                ):
+                    voice_message = prepared_voice.message
+                    if reply_to_message_id is not None:
+                        voice_message = replace(
+                            voice_message,
+                            reply_to_message_id=reply_to_message_id,
+                        )
+                    try:
+                        await before_send(voice_message)
+                        receipt = await sender.send(voice_message)
+                        if not isinstance(receipt, OutboundSendReceipt):
+                            raise TypeError("outbound sender returned no delivery receipt")
+                    except Exception as exc:
+                        retried = False
+                        if voice_message.reply_to_message_id is not None:
+                            voice_message = replace(voice_message, reply_to_message_id=None)
+                            try:
+                                receipt = await sender.send(voice_message)
+                                if not isinstance(receipt, OutboundSendReceipt):
+                                    raise TypeError("outbound sender returned no delivery receipt")
+                            except Exception as retry_exc:
+                                await record_failure(prepared_voice.message, retry_exc)
+                            else:
+                                retried = True
+                        if not retried:
+                            await record_failure(prepared_voice.message, exc)
+                            prepared_voice = None
+                        else:
+                            await record_chunk(voice_message, receipt)
+                            voice_only_confirmed = True
+                            prepared_voice = None
+                    else:
+                        await record_chunk(voice_message, receipt)
+                        voice_only_confirmed = True
+                        prepared_voice = None
+                elif prepared_voice is not None:
                     after = (*after, prepared_voice.message)
                 suppress_text = bool(prepared_effects) and any(
                     effect.mode is EmojiReplyMode.EMOJI_ONLY
                     or effect.placement is EmojiPlacement.ONLY
                     for effect, _message in prepared_effects
                 )
-                if prepared_voice is not None:
-                    suppress_text = suppress_text or prepared_voice.suppress_text
+                suppress_text = suppress_text or voice_only_confirmed
 
                 sequence = await self._reply_sequence.send(
                     text=rendered,
-                    plan=planned_turn.plan,
+                    spec=reply_control.spec,
                     runtime=runtime_config,
                     token=turn_token,
                     sender=sender,
@@ -2201,14 +2223,20 @@ class ChatService:
                     suppress_text=suppress_text,
                     reply_to_message_id=reply_to_message_id,
                 )
-                if not planner_emoji_only:
-                    await self._finish_memory_turn(
-                        memory_session,
-                        run_id=inbound.message_id,
-                        delivered_text=attribution_response_text,
-                        delivered=agent_body_delivered,
-                        cancelled=sequence.cancelled,
-                    )
+                await self._record_reply_effects(
+                    conversation_key=identity.key,
+                    source_event_id=inbound.message_id,
+                    user_id=inbound.sender.user_id,
+                    control=reply_control,
+                    cancelled=sequence.cancelled,
+                )
+                await self._finish_memory_turn(
+                    memory_session,
+                    run_id=inbound.message_id,
+                    delivered_text=attribution_response_text,
+                    delivered=agent_body_delivered,
+                    cancelled=sequence.cancelled,
+                )
                 return sequence.sent_messages
             chunks = self._render_chunks(rendered, runtime_config) if rendered else ()
             legacy_messages = [
@@ -2350,14 +2378,13 @@ class ChatService:
                     receipt = await sender.send(OutboundMessage(text=source_text))
                     await self._record_outbound(inbound, source_text, receipt)
                     sent_count += 1
-            if not planner_emoji_only:
-                await self._finish_memory_turn(
-                    memory_session,
-                    run_id=inbound.message_id,
-                    delivered_text=attribution_response_text,
-                    delivered=agent_body_delivered,
-                    cancelled=False,
-                )
+            await self._finish_memory_turn(
+                memory_session,
+                run_id=inbound.message_id,
+                delivered_text=attribution_response_text,
+                delivered=agent_body_delivered,
+                cancelled=False,
+            )
             return sent_count
 
     def _open_memory_session(
@@ -2426,6 +2453,65 @@ class ChatService:
         )
         await session.close()
 
+    async def _voice_spontaneous_allowed(
+        self,
+        conversation_key: str,
+        user_id: str,
+        runtime: RuntimeConfigSnapshot,
+    ) -> bool:
+        if self._voice_preferences is not None:
+            mode = await self._voice_preferences.current_mode(user_id)
+            if mode is VoicePreferenceMode.TEXT_ONLY:
+                return False
+        if self._reply_effects is None:
+            return True
+        cadence = await self._reply_effects.voice_cadence(conversation_key)
+        return self._reply_effects.spontaneous_allowed(
+            cadence,
+            frequency=runtime.speech.spontaneous_frequency,
+        )
+
+    async def _record_reply_effects(
+        self,
+        *,
+        conversation_key: str,
+        source_event_id: str,
+        user_id: str,
+        control: ReplyControlState,
+        cancelled: bool,
+    ) -> None:
+        if cancelled or self._reply_effects is None:
+            return
+        if not (control.text_sent or control.voice_sent or control.emoji_sent):
+            return
+        eligible = None
+        if self._voice_preferences is not None:
+            mode = await self._voice_preferences.current_mode(user_id)
+            if mode is VoicePreferenceMode.TEXT_ONLY:
+                eligible = False
+        await self._reply_effects.record(
+            conversation_key=conversation_key,
+            source_event_id=source_event_id,
+            text_sent=control.text_sent,
+            voice_sent=control.voice_sent,
+            emoji_sent=control.emoji_sent,
+            voice_request_basis=control.voice_request_basis or "none",
+            voice_cadence_eligible=eligible,
+        )
+
+    async def handle_turn(
+        self,
+        inbound: InboundMessage,
+        identity: ConversationIdentity,
+        profile: UserProfileSnapshot,
+        content: str,
+        sender: OutboundSender,
+        **kwargs: Any,
+    ) -> int:
+        """Production ConversationRuntime entry that never accepts a PlannedTurn."""
+
+        return await self.respond(inbound, identity, profile, content, sender, **kwargs)
+
     async def _build_messages(
         self,
         inbound: InboundMessage,
@@ -2436,7 +2522,6 @@ class ChatService:
         *,
         visual_observation: VisualObservation | None = None,
         visual_failure: bool = False,
-        planned_turn: PlannedTurn | None = None,
         turn_origin: TurnOrigin = TurnOrigin.USER_MESSAGE,
         memory_session: TurnMemorySession | None = None,
     ) -> tuple[
@@ -2484,7 +2569,6 @@ class ChatService:
                 runtime=runtime,
                 visual_observation=visual_observation,
                 visual_failure=visual_failure,
-                planned_turn=planned_turn,
             ),
             context.visible_event_ids,
             context.memory_turn_id,
@@ -2497,7 +2581,6 @@ class ChatService:
         *,
         inbound: InboundMessage,
         conversation_key: str,
-        planned_turn: PlannedTurn | None,
         control: ReplyTargetControl | None,
     ) -> str | None:
         source = "none"
@@ -2505,9 +2588,6 @@ class ChatService:
         if control is not None and control.override_applied:
             source = "agent"
             event_id = control.event_id
-        elif planned_turn is not None and planned_turn.plan.reply_to_event_id is not None:
-            source = "planner"
-            event_id = planned_turn.plan.reply_to_event_id
         if event_id is None:
             if source == "agent":
                 logger.info(
@@ -2589,7 +2669,6 @@ class ChatService:
         conversation_key: str,
         runtime: RuntimeConfigSnapshot,
         agent_intent: str,
-        planned_turn: PlannedTurn,
         turn_token: TurnToken,
     ) -> AgentRunResult:
         """Generate one tool-free reply for a persisted external event.
@@ -2612,7 +2691,6 @@ class ChatService:
             external_source=event.external_source or "external",
             event_type=event.external_event_type or "event",
             agent_intent=agent_intent,
-            planned_turn=planned_turn,
         )
         inbound = InboundMessage(
             message_id=event.platform_message_id,

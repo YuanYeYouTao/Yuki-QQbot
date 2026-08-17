@@ -9,22 +9,11 @@ from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
-    AttachmentKind,
     ChatMessage,
     InboundMessage,
-    OutboundMedia,
-    OutboundMessage,
     SenderIdentity,
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.emoji.models import (
-    EmojiIntent,
-    EmojiPlacement,
-    EmojiPreparationResult,
-    EmojiPreparationStatus,
-    EmojiReplyMode,
-    EmojiReplyPlan,
-)
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.enums import (
     MemoryScopeType,
@@ -37,15 +26,6 @@ from qq_ai_bot.memory.runtime.turn_session import apply_memory_tool_groups
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.planner import (
-    DeliveryMode,
-    FakePlannerProvider,
-    PlannerDecision,
-    PlannerObservability,
-    PlannerReasonCode,
-    TurnPlan,
-)
-from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.services.chat import _with_memory_mutation_contract
 from qq_ai_bot.services.processor import MENTION_ONLY_CONTEXT, _vision_failure_message
@@ -191,7 +171,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：227 项" in admin_text
+    assert "可修改运行时配置参数：235 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "planner.max_pending_messages" in admin_text
     assert "relationship.set_affection" in admin_text
@@ -438,24 +418,12 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_planner_none_keeps_generic_tool_request_gateway(
+async def test_ordinary_chat_keeps_generic_tool_request_gateway(
     database: Database,
 ) -> None:
     provider = FakeLLMProvider(lambda _request: "我会按工具回执确认是否记住。")
     harness = build_harness(database, make_settings(database.url), provider)
     harness.processor._chat._tools._memory_mutations = object()  # type: ignore[assignment]
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="回应用户",
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
-        confidence=1.0,
-        reason_code=PlannerReasonCode.DIRECT_REQUEST,
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
-    )
 
     await harness.processor.handle(
         inbound("请记住我喜欢美式咖啡", message_id="memory-scope-fallback"),
@@ -500,214 +468,41 @@ async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract
 
 
 @pytest.mark.asyncio
-async def test_planner_fallback_fails_closed_before_agent_or_tools(
+async def test_unused_planner_fallback_no_longer_blocks_the_agent(
     database: Database,
 ) -> None:
-    provider = FakeLLMProvider(lambda _request: "不应运行主 Agent")
+    provider = FakeLLMProvider(lambda _request: "主 Agent 仍然会回复")
     harness = build_harness(database, make_settings(database.url), provider)
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="fallback",
-        delivery_mode=DeliveryMode.SINGLE,
-        confidence=0,
-        reason_code=PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
-    )
     sender = MemorySender()
 
-    await harness.processor.handle(
-        inbound("请记住一个测试配置", message_id="planner-fail-closed"),
+    result = await harness.processor.handle(
+        inbound("请记住一个测试配置", message_id="no-planner-fail-closed"),
         sender,
     )
 
-    assert provider.requests == []
-    assert len(sender.messages) == 1
-    assert "未执行任何工具或持久化操作" in sender.messages[0].text
-
-
-@pytest.mark.asyncio
-async def test_intentionally_disabled_planner_keeps_legacy_safe_fallback(
-    database: Database,
-) -> None:
-    provider = FakeLLMProvider(lambda _request: "普通安全降级回复")
-    harness = build_harness(database, make_settings(database.url), provider)
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="fallback",
-        delivery_mode=DeliveryMode.SINGLE,
-        confidence=0,
-        reason_code=PlannerReasonCode.PLANNER_FALLBACK,
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
-    )
-    sender = MemorySender()
-
-    await harness.processor.handle(
-        inbound("普通问题", message_id="planner-disabled-fallback"),
-        sender,
-    )
-
+    assert result.reason == "chat"
     assert len(provider.requests) == 1
-    assert sender.messages[0].text == "普通安全降级回复"
+    assert sender.messages[0].text == "主 Agent 仍然会回复"
 
 
 @pytest.mark.asyncio
-async def test_planner_preferred_emoji_can_complete_without_text(database: Database) -> None:
-    provider = FakeLLMProvider(lambda _request: "   ")
+async def test_ordinary_chat_always_assembles_agent_context(database: Database) -> None:
+    provider = FakeLLMProvider(lambda _request: "表情也要先走 Main Agent")
     harness = build_harness(
         database,
         make_settings(database.url, emoji_enabled=True),
         provider,
     )
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="直接发送一个轻松的表情回应用户",
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
-        confidence=1.0,
-        reason_code=PlannerReasonCode.DIRECT_REQUEST,
-        emoji=EmojiReplyPlan(
-            intent=EmojiIntent.EXPLICIT_REQUEST,
-            mode=EmojiReplyMode.PREFERRED,
-            placement=EmojiPlacement.AFTER_TEXT,
-            goal="随便发个表情",
-        ),
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
-    )
-
-    class PreparedEmojiEffect:
-        async def prepare(self, *_args: object, **_kwargs: object) -> EmojiPreparationResult:
-            message = OutboundMessage(
-                media=(
-                    OutboundMedia(
-                        kind=AttachmentKind.IMAGE,
-                        content=b"GIF89a",
-                        mime_type="image/gif",
-                        summary="测试表情",
-                        emoji_id="emoji-test",
-                        animated=True,
-                    ),
-                )
-            )
-            return EmojiPreparationResult(
-                status=EmojiPreparationStatus.READY,
-                message=message,
-                emoji_id="emoji-test",
-                reason_code="selected",
-            )
-
-        async def record_send_attempted(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-        async def record_send_accepted(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-        async def record_success(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-        async def record_failure(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-    harness.processor._chat._emoji_effects = PreparedEmojiEffect()  # type: ignore[assignment]
     sender = MemorySender()
 
     result = await harness.processor.handle(
-        inbound("发个表情", message_id="planner-emoji-no-text"),
+        inbound("发个表情", message_id="emoji-still-calls-agent"),
         sender,
     )
 
     assert result.reason == "chat"
-    assert result.sent_messages == 1
-    assert provider.requests == []
-    assert sender.messages[0].text == ""
-    assert sender.messages[0].media[0].emoji_id == "emoji-test"
-
-
-@pytest.mark.asyncio
-async def test_planner_emoji_only_skips_agent_context_and_embedding(database: Database) -> None:
-    provider = FakeLLMProvider(lambda _request: "must not be called")
-    harness = build_harness(
-        database,
-        make_settings(database.url, emoji_enabled=True),
-        provider,
-    )
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="只发送表情",
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
-        confidence=1.0,
-        reason_code=PlannerReasonCode.DIRECT_REQUEST,
-        emoji=EmojiReplyPlan(
-            intent=EmojiIntent.EXPLICIT_REQUEST,
-            mode=EmojiReplyMode.EMOJI_ONLY,
-            placement=EmojiPlacement.ONLY,
-            goal="轻松回应",
-        ),
-    )
-    harness.processor._planner = PlannerService(
-        provider=FakePlannerProvider(plan),
-        observability=PlannerObservability(),
-    )
-
-    class ContextMustNotRun:
-        async def assemble(self, **_kwargs: object) -> object:
-            raise AssertionError("emoji-only reply must not assemble Agent context")
-
-    class PreparedEmojiEffect:
-        async def prepare(self, *_args: object, **_kwargs: object) -> EmojiPreparationResult:
-            message = OutboundMessage(
-                media=(
-                    OutboundMedia(
-                        kind=AttachmentKind.IMAGE,
-                        content=b"GIF89a",
-                        mime_type="image/gif",
-                        summary="测试表情",
-                        emoji_id="emoji-only-test",
-                        animated=True,
-                    ),
-                )
-            )
-            return EmojiPreparationResult(
-                status=EmojiPreparationStatus.READY,
-                message=message,
-                emoji_id="emoji-only-test",
-                reason_code="selected",
-            )
-
-        async def record_send_attempted(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-        async def record_send_accepted(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-        async def record_success(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-        async def record_failure(self, *_args: object, **_kwargs: object) -> None:
-            return None
-
-    harness.processor._chat._context_assembler = ContextMustNotRun()  # type: ignore[assignment]
-    harness.processor._chat._emoji_effects = PreparedEmojiEffect()  # type: ignore[assignment]
-    sender = MemorySender()
-
-    result = await harness.processor.handle(
-        inbound("发个表情", message_id="planner-emoji-only-no-context"),
-        sender,
-    )
-
-    assert result.reason == "chat"
-    assert result.sent_messages == 1
-    assert provider.requests == []
-    assert sender.messages[0].media[0].emoji_id == "emoji-only-test"
+    assert len(provider.requests) == 1
+    assert sender.messages[0].text == "表情也要先走 Main Agent"
 
 
 @pytest.mark.asyncio

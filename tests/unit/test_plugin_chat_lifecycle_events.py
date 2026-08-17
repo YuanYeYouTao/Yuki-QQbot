@@ -31,7 +31,6 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
     for event_name in (
         EventName.MESSAGE_NORMALIZED,
         EventName.MESSAGE_TRIGGERED,
-        EventName.PLANNER_PLANNED,
         EventName.REPLY_SENT,
     ):
         bus.subscribe(
@@ -60,7 +59,6 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
     assert [event.name for event in events] == [
         EventName.MESSAGE_NORMALIZED,
         EventName.MESSAGE_TRIGGERED,
-        EventName.PLANNER_PLANNED,
         EventName.REPLY_SENT,
     ]
     assert set(events[0].payload) == {
@@ -81,23 +79,6 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
         "mentions_bot",
     }
     assert set(events[2].payload) == {
-        "trigger_message_id",
-        "scope_type",
-        "origin",
-        "decision",
-        "reason_code",
-        "delivery_mode",
-        "desired_messages",
-        "voice_mode",
-        "voice_intent",
-        "voice_tool_policy",
-        "confidence",
-        "planner_used",
-        "fallback_used",
-        "latency_milliseconds",
-        "turn_version",
-    }
-    assert set(events[3].payload) == {
         "trigger_message_id",
         "platform_message_id",
         "scope_type",

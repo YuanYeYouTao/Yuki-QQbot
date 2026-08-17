@@ -22,6 +22,13 @@ from qq_ai_bot.domain.messages import ChatTool
 
 _ALL_ORIGINS = frozenset(TurnOrigin)
 _DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE})
+_AUTONOMOUS_ORIGIN = frozenset({TurnOrigin.AUTONOMOUS_GROUP})
+_REPLY_LAYOUT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
+_ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
+    "decline_reply": _AUTONOMOUS_ORIGIN,
+    "set_voice_preference": _DIRECT_ORIGINS,
+    "set_reply_layout": _REPLY_LAYOUT_ORIGINS,
+}
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "get_my_capabilities": (
@@ -87,8 +94,24 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         CapabilityRisk.MUTATE,
     ),
     "send_voice": ("reply.voice", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
+    "send_emoji": ("reply.emoji", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
+    "set_reply_layout": (
+        "reply.layout",
+        CapabilityEffect.REPLY_EFFECT,
+        CapabilityRisk.READ,
+    ),
     "set_reply_target": (
         "reply.target",
+        CapabilityEffect.REPLY_EFFECT,
+        CapabilityRisk.READ,
+    ),
+    "set_voice_preference": (
+        "speech.preference.write",
+        CapabilityEffect.WRITE_STATE,
+        CapabilityRisk.MUTATE,
+    ),
+    "decline_reply": (
+        "reply.decline",
         CapabilityEffect.REPLY_EFFECT,
         CapabilityRisk.READ,
     ),
@@ -107,7 +130,11 @@ _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
     "read_webpage": ("打开网页", "阅读链接", "看这个URL"),
     "call_onebot_api": ("禁言", "踢人", "QQ群操作"),
     "send_voice": ("语音", "朗读", "说出来"),
+    "send_emoji": ("表情", "表情包", "发个表情"),
+    "set_reply_layout": ("分条", "拆成几条", "分开发"),
     "set_reply_target": ("引用这条", "回复那条消息"),
+    "set_voice_preference": ("以后用语音", "默认语音", "不要语音"),
+    "decline_reply": ("不用回", "先不插话"),
     "read_tool_artifact": ("读取工具结果", "artifact"),
 }
 
@@ -196,6 +223,10 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
     "read_webpage": ("网页", "链接", "URL", "打开网页", "读取页面", "看这个链接"),
     "call_onebot_api": ("QQ群", "好友", "禁言", "踢人", "群设置", "QQ操作"),
     "send_voice": ("语音", "朗读", "说出来", "用语音"),
+    "send_emoji": ("表情", "表情包", "发个表情", "来张图"),
+    "set_reply_layout": ("分条", "拆成几条", "分开发", "一条一条"),
+    "set_voice_preference": ("以后用语音", "默认语音", "不要语音", "语音偏好"),
+    "decline_reply": ("不用回", "先不插话", "这条无关"),
 }
 
 _ADMIN_READ = frozenset({"admin_get_config", "admin_get_history"})
@@ -252,10 +283,13 @@ class ChatToolCapabilityProvider:
             effect=effect,
             risk=risk,
             trust_source=self._source,
-            allowed_origins=(
-                _DIRECT_ORIGINS
-                if self._source is CapabilityTrustSource.ADMIN or namespace.startswith("qq.")
-                else _ALL_ORIGINS
+            allowed_origins=_ORIGIN_OVERRIDES.get(
+                tool.name,
+                (
+                    _DIRECT_ORIGINS
+                    if self._source is CapabilityTrustSource.ADMIN or namespace.startswith("qq.")
+                    else _ALL_ORIGINS
+                ),
             ),
             required_permissions=permissions,
             uses_external_data=effect is CapabilityEffect.EXTERNAL_READ,

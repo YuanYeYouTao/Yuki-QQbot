@@ -222,7 +222,7 @@ def test_release_smoke_reads_alembic_version_inside_container(
             if "urllib.request" in arguments[-1]:
                 return '{"status":"ok","version":"3.5.3","database":"ok"}'
             if "SELECT version_num FROM alembic_version" in arguments[-1]:
-                return "0038"
+                return "0039"
             raise AssertionError(arguments)
 
     monkeypatch.setattr("scripts.release_smoke.wait_healthy", lambda *args: "container-id")

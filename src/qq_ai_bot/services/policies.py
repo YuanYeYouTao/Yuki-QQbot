@@ -87,6 +87,12 @@ def _command_and_content(text: str, ai_prefix: str) -> tuple[CommandName | None,
     return None, remainder, triggered
 
 
+def replies_to_bot(message: InboundMessage) -> bool:
+    """Return whether this inbound message is a platform reply to Yuki."""
+
+    return bool(message.reply_sender_user_id) and message.reply_sender_user_id == message.bot_user_id
+
+
 def evaluate_message(
     message: InboundMessage,
     settings: Settings,
@@ -95,7 +101,7 @@ def evaluate_message(
     private_policy: EffectivePrivatePolicy | None = None,
     direct_triggered: bool = False,
 ) -> PolicyDecision:
-    """Apply self/bot, allowlist, group, mention, prefix, and command rules."""
+    """Apply self/bot, allowlist, group, mention, reply-to-bot, prefix, and command rules."""
 
     if message.is_self_message or message.sender.is_bot:
         return PolicyDecision(False, reason="bot_message")
@@ -127,12 +133,16 @@ def evaluate_message(
                 reason="superuser_group_enable",
             )
         return PolicyDecision(False, reason="group_disabled")
-    if message.mentions_bot or prefix_triggered or direct_triggered:
+    reply_to_bot = replies_to_bot(message)
+    if message.mentions_bot or prefix_triggered or direct_triggered or reply_to_bot:
+        reason = "group_triggered"
+        if reply_to_bot and not (message.mentions_bot or prefix_triggered or direct_triggered):
+            reason = "group_reply_to_bot"
         return PolicyDecision(
             True,
             content=content,
             command=command,
-            reason="group_triggered",
+            reason=reason,
         )
     return PolicyDecision(False, reason="group_not_triggered")
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import time
@@ -43,9 +42,9 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
 )
 from qq_ai_bot.planner.context import PlannerContextBuilder
-from qq_ai_bot.planner.models import PlannerDecision, PlannerSignal
+from qq_ai_bot.planner.models import PlannerSignal
 from qq_ai_bot.planner.provider import PlannerInterruptedError as ProviderPlannerInterruptedError
-from qq_ai_bot.planner.service import PlannerOutcome, PlannerService
+from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
@@ -85,7 +84,6 @@ from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
     PlannerInterruptedError,
     TurnSupersededError,
-    TurnToken,
 )
 from qq_ai_bot.services.user_profiles import (
     UserProfileResolver,
@@ -527,7 +525,7 @@ class MessageProcessor:
         self._turn_coordinator.configure_policy(
             cancel_replies_on_new_message=runtime_snapshot.reply.cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
-                runtime_snapshot.planner.interrupt_autonomous_on_new_message
+                runtime_snapshot.conversation_policy().interrupt_autonomous_on_new_message
             ),
         )
         configure_signal_timeout = getattr(self._planner_signals, "configure_timeout", None)
@@ -643,7 +641,7 @@ class MessageProcessor:
             if (
                 message.scope_type is ScopeType.GROUP
                 and group_policy is not None
-                and runtime_snapshot.planner.group_enabled
+                and runtime_snapshot.conversation_policy().autonomous_enabled
                 and group_policy.autonomous_enabled
             ):
                 if self._autonomous is not None:
@@ -745,33 +743,7 @@ class MessageProcessor:
             return ProcessResult(True, int(sent), "input_too_long")
 
         try:
-            planner_outcome = await self._plan_turn(
-                message=message,
-                content=content,
-                runtime=runtime_snapshot,
-                turn_token=turn_token,
-                visual_input_present=has_visual_input,
-                administrator_request=admin_candidate,
-            )
-            if planner_outcome is None:
-                return ProcessResult(True, reason="planner_interrupted")
-            planned_turn = planner_outcome.planned_turn
-            if planned_turn.plan.decision is PlannerDecision.SILENT:
-                return ProcessResult(True, reason="planner_silent")
-            if self._voice_preferences is not None:
-                try:
-                    await self._voice_preferences.apply(
-                        planned_turn.plan.voice,
-                        user_id=message.sender.user_id,
-                        source_message_id=message.message_id,
-                        origin=TurnOrigin.USER_MESSAGE,
-                    )
-                except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
-                    logger.warning(
-                        "voice_preference_update_failed exception_category=%s",
-                        type(exc).__name__,
-                    )
-            sent_count = await self._chat.respond(
+            sent_count = await self._chat.handle_turn(
                 message,
                 identity,
                 profile,
@@ -781,13 +753,7 @@ class MessageProcessor:
                 visual_observation=visual.observation,
                 visual_input_present=has_visual_input,
                 visual_failure=visual.failed,
-                planned_turn=planned_turn,
                 turn_token=turn_token,
-            )
-            await self._planner.record_delivery(
-                planner_outcome.run_id,
-                messages_sent=sent_count,
-                interrupted=not self._turn_coordinator.is_current(turn_token),
             )
         except (PlannerInterruptedError, ProviderPlannerInterruptedError, TurnSupersededError):
             return ProcessResult(True, reason="planner_interrupted")
@@ -829,75 +795,6 @@ class MessageProcessor:
             success=True,
         )
         return ProcessResult(True, sent_count, "chat")
-
-    async def _plan_turn(
-        self,
-        *,
-        message: InboundMessage,
-        content: str,
-        runtime: RuntimeConfigSnapshot,
-        turn_token: TurnToken,
-        visual_input_present: bool,
-        administrator_request: bool,
-    ) -> PlannerOutcome | None:
-        plugin_signals = (
-            await self._planner_signals.collect(
-                message=message,
-                origin=TurnOrigin.USER_MESSAGE,
-                runtime=runtime,
-            )
-            if self._planner_signals is not None
-            else ()
-        )
-        planner_input = await self._planner_context.build(
-            inbound=message,
-            conversation_key=turn_token.conversation_key,
-            content=content,
-            origin=TurnOrigin.USER_MESSAGE,
-            runtime=runtime,
-            visual_input_present=visual_input_present,
-            plugin_signals=plugin_signals,
-        )
-        async with self._turn_coordinator.track(turn_token, "planner"):
-            outcome = await self._planner.plan(
-                planner_input,
-                runtime=runtime,
-                turn_version=turn_token.version,
-                administrator_request=administrator_request,
-            )
-        if outcome.planned_turn.plan.decision is not PlannerDecision.WAIT:
-            return outcome
-        wait_seconds = outcome.planned_turn.plan.wait_seconds
-        if wait_seconds > 0:
-            await asyncio.sleep(wait_seconds)
-        if not self._turn_coordinator.is_current(turn_token):
-            await self._planner.record_delivery(
-                outcome.run_id,
-                messages_sent=0,
-                interrupted=True,
-            )
-            return None
-        # Rebuild once after a bounded wait.  A second wait is treated as silence so
-        # one message can never create an unbounded background planning loop.
-        refreshed = await self._planner_context.build(
-            inbound=message,
-            conversation_key=turn_token.conversation_key,
-            content=content,
-            origin=TurnOrigin.USER_MESSAGE,
-            runtime=runtime,
-            visual_input_present=visual_input_present,
-            plugin_signals=plugin_signals,
-        )
-        async with self._turn_coordinator.track(turn_token, "planner"):
-            second = await self._planner.plan(
-                refreshed,
-                runtime=runtime,
-                turn_version=turn_token.version,
-                administrator_request=administrator_request,
-            )
-        if second.planned_turn.plan.decision is PlannerDecision.WAIT:
-            return None
-        return second
 
     async def _analyze_visual_input(
         self,

@@ -45,6 +45,7 @@ class PendingVoiceReplyEffect:
     style_hint: str = ""
     language_hint: str = "auto"
     mode: VoiceMode = VoiceMode.OPTIONAL
+    request_basis: str = "none"
     source: str = "plugin"
 
 

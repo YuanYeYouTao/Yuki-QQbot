@@ -202,12 +202,43 @@ class MemoryRetrievalRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversationRuntimeConfig:
+    """Effective autonomous-conversation policy for one turn."""
+
+    autonomous_enabled: bool
+    autonomous_debounce_seconds: float
+    autonomous_admission_threshold: int
+    autonomous_batch_limit: int
+    autonomous_presence_window_seconds: int
+    interrupt_autonomous_on_new_message: bool
+
+    @classmethod
+    def from_planner(cls, planner: PlannerRuntimeConfig) -> ConversationRuntimeConfig:
+        """Derive R4 conversation policy from still-live Planner snapshot keys."""
+
+        return cls(
+            autonomous_enabled=planner.group_enabled,
+            autonomous_debounce_seconds=planner.group_debounce_seconds,
+            autonomous_admission_threshold=planner.reply_necessity_threshold,
+            autonomous_batch_limit=planner.max_pending_messages,
+            autonomous_presence_window_seconds=planner.recent_presence_window_seconds,
+            interrupt_autonomous_on_new_message=planner.interrupt_autonomous_on_new_message,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ReplyRuntimeConfig:
     delay_min_seconds: float
     delay_max_seconds: float
     max_qq_message_chars: int
     cancel_on_new_message: bool
     plan_hard_max_messages: int
+
+    @property
+    def hard_max_messages(self) -> int:
+        """Canonical R4 name; values still come from the dual-read snapshot."""
+
+        return self.plan_hard_max_messages
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +405,12 @@ class SpeechRuntimeConfig:
     text_fallback_enabled: bool
     spontaneous_frequency: float = 0.15
 
+    @property
+    def agent_effects_enabled(self) -> bool:
+        """Canonical R4 name for the former speech.planner_enabled gate."""
+
+        return self.planner_enabled
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfigSnapshot:
@@ -393,3 +430,11 @@ class RuntimeConfigSnapshot:
     speech: SpeechRuntimeConfig
     tooling: ToolingRuntimeConfig | None = None
     mcp: MCPRuntimeConfig | None = None
+    conversation: ConversationRuntimeConfig | None = None
+
+    def conversation_policy(self) -> ConversationRuntimeConfig:
+        """Return R4 conversation policy, falling back to Planner-era keys."""
+
+        if self.conversation is not None:
+            return self.conversation
+        return ConversationRuntimeConfig.from_planner(self.planner)

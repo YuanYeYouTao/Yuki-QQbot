@@ -8,7 +8,6 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.relationships import RelationshipSnapshot, style_policy
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, entity_memory_rule
-from qq_ai_bot.planner.models import PlannedTurn
 from qq_ai_bot.prompting import (
     CORE_CONTRACT,
     PromptChannel,
@@ -61,7 +60,6 @@ class PromptComposer:
         runtime: RuntimeConfigSnapshot,
         visual_observation: VisualObservation | None,
         visual_failure: bool,
-        planned_turn: PlannedTurn | None = None,
     ) -> tuple[ChatMessage, ...]:
         contributions: list[PromptContribution] = [
             static_text(
@@ -195,8 +193,6 @@ class PromptComposer:
                     required=True,
                 )
             )
-        if planned_turn is not None:
-            contributions.append(self._plan_contribution(planned_turn))
         if runtime.speech.enabled:
             contributions.append(
                 PromptContribution(
@@ -227,7 +223,6 @@ class PromptComposer:
         external_source: str,
         event_type: str,
         agent_intent: str,
-        planned_turn: PlannedTurn | None,
     ) -> tuple[ChatMessage, ...]:
         """Compile a main-chat turn whose trigger is untrusted external data."""
 
@@ -301,8 +296,6 @@ class PromptComposer:
                     priority=96,
                 )
             )
-        if planned_turn is not None:
-            contributions.append(self._plan_contribution(planned_turn))
         compiled = self._compiler.compile(
             PromptProgram(contributions=tuple(contributions)),
             history=context.history_messages,
@@ -313,33 +306,6 @@ class PromptComposer:
         )
         self._last_metrics = compiled.metrics
         return compiled.messages
-
-    @staticmethod
-    def _plan_contribution(planned_turn: PlannedTurn) -> PromptContribution:
-        plan = planned_turn.plan
-        payload: dict[str, object] = {
-            "decision": plan.decision.value,
-            "intent": plan.intent,
-        }
-        if plan.reply_to_event_id is not None:
-            payload["reply_to_event_id"] = plan.reply_to_event_id
-        if plan.emoji.mode.value != "none":
-            payload["emoji"] = plan.emoji.model_dump(mode="json", exclude_defaults=True)
-        if plan.voice.mode.value != "text" or plan.voice.intent.value != "neutral":
-            payload["voice"] = plan.voice.model_dump(
-                mode="json",
-                exclude_defaults=True,
-                exclude_none=True,
-            )
-        return PromptContribution(
-            id="plan.turn",
-            channel=PromptChannel.PLAN,
-            trust=PromptTrust.TRUSTED,
-            priority=100,
-            stability=PromptStability.TURN,
-            payload=payload,
-            required=True,
-        )
 
     @staticmethod
     def relationship_policy(

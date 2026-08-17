@@ -385,7 +385,7 @@ async def test_agent_can_queue_a_path_free_voice_reply(database: Database) -> No
     assert "send_voice" in {tool.name for tool in tools.definitions(runtime)}
     result = await tools.execute(
         "send_voice",
-        '{"style_hint":"gentle","language":"jp"}',
+        '{"mode":"text_and_voice","request_basis":"user_requested","style_hint":"gentle","language":"jp"}',
         runtime,
     )
 
@@ -394,39 +394,66 @@ async def test_agent_can_queue_a_path_free_voice_reply(database: Database) -> No
         PendingVoiceReplyEffect(
             style_hint="gentle",
             language_hint="jp",
-            mode=VoiceMode.OPTIONAL,
+            mode=VoiceMode.TEXT_AND_VOICE,
+            request_basis="user_requested",
             source="agent_explicit_request",
         )
     ]
 
 
 @pytest.mark.asyncio
-async def test_agent_voice_tool_is_hidden_without_planner_authorization(database: Database) -> None:
-    settings = make_settings(database.url, speech_enabled=True, speech_default_profile="roxy")
-    config = RuntimeConfigService(settings=settings, database=database)
-    await config.initialize()
-    tools = AgentToolService(
-        settings=settings,
+async def test_agent_voice_tool_follows_speech_feature_not_planner(database: Database) -> None:
+    enabled_settings = make_settings(
+        database.url,
+        speech_enabled=True,
+        speech_default_profile="roxy",
+    )
+    enabled_config = RuntimeConfigService(settings=enabled_settings, database=database)
+    await enabled_config.initialize()
+    enabled_tools = AgentToolService(
+        settings=enabled_settings,
         ledger=EventLedgerRepository(database),
         memories=MemoryFactService(MemoryFactRepository(database)),
         actions=AgentActionRepository(database),
-        runtime_config=config,
+        runtime_config=enabled_config,
     )
-    runtime = ToolRuntime(
-        inbound("普通聊天", message_id="voice-neutral"),
+    enabled_runtime = ToolRuntime(
+        inbound("普通聊天", message_id="voice-feature-on"),
         None,
         False,
-        runtime_config=await config.snapshot(user_id="1001"),
+        runtime_config=await enabled_config.snapshot(user_id="1001"),
         reply_effects=[],
     )
+    assert "send_voice" in {tool.name for tool in enabled_tools.definitions(enabled_runtime)}
 
-    assert "send_voice" not in {tool.name for tool in tools.definitions(runtime)}
-    result = await tools.execute("send_voice", "{}", runtime)
-    assert '"error": "voice_not_authorized"' in result
+    disabled_settings = make_settings(database.url, speech_enabled=False)
+    disabled_config = RuntimeConfigService(settings=disabled_settings, database=database)
+    await disabled_config.initialize()
+    disabled_tools = AgentToolService(
+        settings=disabled_settings,
+        ledger=EventLedgerRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
+        actions=AgentActionRepository(database),
+        runtime_config=disabled_config,
+    )
+    disabled_runtime = ToolRuntime(
+        inbound("普通聊天", message_id="voice-feature-off"),
+        None,
+        False,
+        runtime_config=await disabled_config.snapshot(user_id="1001"),
+        reply_effects=[],
+    )
+    assert "send_voice" not in {tool.name for tool in disabled_tools.definitions(disabled_runtime)}
+    result = await disabled_tools.execute(
+        "send_voice",
+        '{"mode":"voice_only","request_basis":"user_requested"}',
+        disabled_runtime,
+    )
+    assert '"error": "speech_unavailable"' in result
 
 
 @pytest.mark.asyncio
-async def test_agent_never_exposes_planner_owned_emoji_effect_as_a_tool(
+async def test_agent_exposes_send_emoji_when_emoji_feature_is_enabled(
     database: Database,
 ) -> None:
     settings = make_settings(database.url, emoji_enabled=True)
@@ -441,16 +468,20 @@ async def test_agent_never_exposes_planner_owned_emoji_effect_as_a_tool(
     )
     snapshot = await config.snapshot(user_id="1001")
     runtime = ToolRuntime(
-        inbound("普通聊天", message_id="emoji-unplanned"),
+        inbound("普通聊天", message_id="emoji-available"),
         None,
         False,
         runtime_config=snapshot,
         reply_effects=[],
     )
 
-    assert "send_emoji" not in {tool.name for tool in tools.definitions(runtime)}
-    result = await tools.execute("send_emoji", "{}", runtime)
-    assert '"error": "unknown_tool"' in result
+    assert "send_emoji" in {tool.name for tool in tools.definitions(runtime)}
+    result = await tools.execute(
+        "send_emoji",
+        '{"mode":"emoji_only","placement":"only","goal":"回应晚安"}',
+        runtime,
+    )
+    assert '"queued": true' in result
 
 
 @pytest.mark.asyncio

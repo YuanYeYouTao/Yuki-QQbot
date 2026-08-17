@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
@@ -9,10 +8,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
+from qq_ai_bot.conversation.participation import AdmissionFeatures
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.planner.models import PlannerDecision, PlannerReasonCode, TurnPlan
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService, _GroupState
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 
@@ -65,24 +64,16 @@ def _group_message(message_id: str, text: str) -> InboundMessage:
 
 
 @pytest.mark.asyncio
-async def test_after_silence_observes_sqlalchemy_failure(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_after_silence_observes_sqlalchemy_failure() -> None:
     service = _service()
-    caplog.set_level(logging.WARNING, logger="qq_ai_bot.services.autonomous_groups")
     await service._after_silence("2001")
     assert service.task_failures == 1
-    assert "autonomous_group_task_failed" in caplog.text
-    assert "SQLAlchemyError" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_task_owner_consumes_unexpected_failure_and_clears_reference(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_task_owner_consumes_unexpected_failure_and_clears_reference() -> None:
     service = _service()
     service._states["2001"] = _GroupState()
-    caplog.set_level(logging.ERROR, logger="qq_ai_bot.services.autonomous_groups")
 
     async def fail() -> None:
         raise LookupError("unexpected")
@@ -95,8 +86,6 @@ async def test_task_owner_consumes_unexpected_failure_and_clears_reference(
 
     assert service._states["2001"].task is None
     assert service.task_failures == 1
-    assert "autonomous_group_task_failed" in caplog.text
-    assert "Traceback" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -146,34 +135,21 @@ async def test_group_updates_share_one_worker_and_plan_only_latest_quiet_revisio
 
 
 @pytest.mark.asyncio
-async def test_stale_planner_result_cannot_start_agent_or_tools() -> None:
+async def test_stale_admission_result_cannot_start_agent_or_tools() -> None:
     started = asyncio.Event()
     release = asyncio.Event()
-    deliveries: list[tuple[int, int, bool]] = []
 
-    class BlockingPlanner:
-        async def plan(self, *_args: object, **_kwargs: object) -> object:
+    class BlockingContext:
+        async def admission_features(self, **_kwargs: object) -> AdmissionFeatures:
             started.set()
             await release.wait()
-            return SimpleNamespace(
-                run_id=7,
-                planned_turn=SimpleNamespace(
-                    plan=TurnPlan(
-                        decision=PlannerDecision.REPLY,
-                        confidence=0.9,
-                        reason_code=PlannerReasonCode.USEFUL_CONTRIBUTION,
-                    )
-                ),
+            return AdmissionFeatures(
+                scope_type=ScopeType.GROUP,
+                text="请帮我查一下这是什么？你觉得怎么样",
+                pending_message_count=8,
+                idle_seconds=90,
+                recent_total_messages=8,
             )
-
-        async def record_delivery(
-            self,
-            run_id: int,
-            *,
-            messages_sent: int,
-            interrupted: bool,
-        ) -> None:
-            deliveries.append((run_id, messages_sent, interrupted))
 
     runtime_service = _WorkingRuntime()
     coordinator = ConversationTurnCoordinator()
@@ -182,11 +158,9 @@ async def test_stale_planner_result_cannot_start_agent_or_tools() -> None:
         _turn_coordinator=coordinator,
         respond=AsyncMock(),
     )
-    context = SimpleNamespace(build=AsyncMock(return_value=object()))
     service = AutonomousGroupService(
         chat=cast(Any, chat),
-        planner_context=cast(Any, context),
-        planner=cast(Any, BlockingPlanner()),
+        planner_context=cast(Any, BlockingContext()),
         runtime_config=cast(Any, runtime_service),
         turn_coordinator=coordinator,
     )
@@ -218,5 +192,4 @@ async def test_stale_planner_result_cannot_start_agent_or_tools() -> None:
     await task
 
     assert chat.respond.await_count == 0
-    assert deliveries == [(7, 0, True)]
     await service.close()

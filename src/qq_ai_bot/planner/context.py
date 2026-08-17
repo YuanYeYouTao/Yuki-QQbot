@@ -10,6 +10,7 @@ from typing import Protocol
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot, SpeechRuntimeConfig
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.conversation.participation import AdmissionScoreSnapshot
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
 from qq_ai_bot.emoji.request_detector import EmojiRequestDetector
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
@@ -21,6 +22,7 @@ from qq_ai_bot.planner.models import (
     PlannerMemoryContext,
     PlannerSignal,
     PlannerSpeechContext,
+    ReplyNecessitySnapshot,
 )
 from qq_ai_bot.planner.necessity import ReplyNecessityFeatures, ReplyNecessityScorer
 from qq_ai_bot.planner.repository import PlannerRepository, PlannerVoiceCadence
@@ -29,6 +31,28 @@ from qq_ai_bot.speech.preference_repository import VoicePreferenceRepository
 from qq_ai_bot.time.formatting import local_iso
 
 _PLANNER_HISTORY_LIMIT = 10
+
+
+def planner_necessity_from_score(snapshot: AdmissionScoreSnapshot) -> ReplyNecessitySnapshot:
+    """Adapt the R4 dataclass score for leftover PlannerInput until R5."""
+
+    return ReplyNecessitySnapshot(
+        score=snapshot.score,
+        should_enter_planner=snapshot.should_participate,
+        relevance_score=snapshot.relevance_score,
+        content_score=snapshot.content_score,
+        pressure_score=snapshot.pressure_score,
+        presence_penalty=snapshot.presence_penalty,
+        activity_penalty=snapshot.activity_penalty,
+        relationship_adjustment=snapshot.relationship_adjustment,
+        plugin_adjustment=snapshot.plugin_adjustment,
+        reasons=snapshot.reasons,
+        pending_message_count=snapshot.pending_message_count,
+        recent_bot_messages=snapshot.recent_bot_messages,
+        recent_total_messages=snapshot.recent_total_messages,
+        average_human_interval_seconds=snapshot.average_human_interval_seconds,
+        idle_seconds=snapshot.idle_seconds,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +104,54 @@ class PlannerContextBuilder:
         self._bot_aliases = bot_aliases
         self._timezone = timezone
         self._emoji_requests = emoji_requests or EmojiRequestDetector(bot_aliases)
+
+    async def admission_features(
+        self,
+        *,
+        inbound: InboundMessage,
+        content: str,
+        runtime: RuntimeConfigSnapshot,
+        plugin_signals: tuple[PlannerSignal, ...] = (),
+        now: datetime | None = None,
+    ) -> ReplyNecessityFeatures:
+        """Build local participation features without a Planner LLM call."""
+
+        current_time = now or datetime.now(UTC)
+        recent = await self._ledger.list_recent(
+            scope_type=inbound.scope_type,
+            user_id=inbound.sender.user_id,
+            group_id=inbound.group_id,
+            limit=_PLANNER_HISTORY_LIMIT + 1,
+        )
+        relationship = await self._relationships.get(inbound.sender.user_id)
+        metrics = self._metrics(recent, inbound.bot_user_id, current_time)
+        relationship_adjustment = 0.0
+        if relationship is not None:
+            relationship_adjustment = max(
+                -5.0,
+                min(5.0, (relationship.relationship_weight - 50) / 10),
+            )
+        return ReplyNecessityFeatures(
+            scope_type=inbound.scope_type,
+            text=content,
+            reply_target_is_bot=(
+                bool(inbound.reply_sender_user_id)
+                and inbound.reply_sender_user_id == inbound.bot_user_id
+            ),
+            mentions_bot=inbound.mentions_bot,
+            continuation=metrics.last_was_bot,
+            pending_message_count=metrics.pending,
+            recent_bot_messages=metrics.bot_count,
+            recent_total_messages=len(recent),
+            average_human_interval_seconds=metrics.average_interval,
+            idle_seconds=metrics.idle,
+            seconds_since_last_bot_message=metrics.since_bot,
+            relationship_adjustment=relationship_adjustment,
+            plugin_signals=plugin_signals,
+            new_message_count=max(1, metrics.pending),
+            media_only=not content.strip() and bool(inbound.attachments),
+            now=current_time,
+        )
 
     async def build(
         self,
@@ -244,7 +316,7 @@ class PlannerContextBuilder:
             visual_input_present=visual_input_present,
             relationship_stage=relationship.stage if relationship is not None else None,
             current_time=current_time,
-            necessity=necessity,
+            necessity=planner_necessity_from_score(necessity),
             plugin_signals=plugin_signals,
             emoji=emoji_context,
             speech=speech_context or PlannerSpeechContext(),

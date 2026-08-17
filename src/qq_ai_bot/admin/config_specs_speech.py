@@ -143,6 +143,17 @@ def speech_config_specs() -> tuple[ConfigSpec, ...]:
                     "speech_planner_enabled",
                 ),
                 (
+                    "speech.agent_effects_enabled",
+                    "Agent 语音效果",
+                    "允许 Main Agent 通过 send_voice 请求语音效果。未设置时读取 speech.planner_enabled。",
+                    (),
+                    "boolean",
+                    None,
+                    (),
+                    "SPEECH_AGENT_EFFECTS_ENABLED",
+                    "speech_planner_enabled",
+                ),
+                (
                     "speech.default_mode",
                     "全局语音偏好基线",
                     "未保存人物语音偏好时使用：text 禁止日常主动语音，optional 自动决定，"

@@ -6,8 +6,6 @@ import json
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
-from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -40,7 +38,6 @@ from qq_ai_bot.planner import (
     DeliveryMode,
     FakePlannerProvider,
     LLMPlannerProvider,
-    PlannedTurn,
     PlannerDecision,
     PlannerInput,
     PlannerInterruptedError,
@@ -53,7 +50,7 @@ from qq_ai_bot.planner import (
     TurnPlan,
     constrain_turn_plan,
 )
-from qq_ai_bot.planner.context import PlannerContextBuilder
+from qq_ai_bot.planner.context import PlannerContextBuilder, planner_necessity_from_score
 from qq_ai_bot.planner.models import (
     PlannerEmojiContext,
     PlannerModelOutput,
@@ -271,7 +268,15 @@ async def test_intentionally_disabled_planner_uses_non_error_fallback_reason() -
         planner=replace(_runtime().planner, direct_enabled=False),
     )
 
-    outcome = await service.plan(_planner_input(), runtime=runtime, turn_version=1)
+    planner_input = _planner_input()
+    planner_input = planner_input.model_copy(
+        update={
+            "necessity": planner_input.necessity.model_copy(
+                update={"should_enter_planner": True}
+            )
+        }
+    )
+    outcome = await service.plan(planner_input, runtime=runtime, turn_version=1)
 
     assert provider.inputs == []
     assert outcome.planned_turn.fallback_used is True
@@ -343,7 +348,7 @@ def _planner_input(
         mentioned_user_ids=("1002",),
         visual_input_present=visual,
         current_time=datetime.now(UTC),
-        necessity=necessity,
+        necessity=planner_necessity_from_score(necessity),
     )
 
 
@@ -615,15 +620,16 @@ def test_planner_messages_use_the_shared_chat_message_shape() -> None:
     assert "trusted_history_event_ids" not in payload
 
 
-def test_private_message_has_base_relevance_and_enters_planner() -> None:
+def test_private_message_has_base_relevance_but_is_not_forced() -> None:
     result = ReplyNecessityScorer().score(
         ReplyNecessityFeatures(scope_type=ScopeType.PRIVATE, text="在吗")
     )
     assert result.relevance_score > 0
-    assert result.should_enter_planner
+    assert "private_scope" in result.reasons
+    assert not result.should_participate
 
 
-def test_mention_and_reply_to_yuki_are_strong_forced_signals() -> None:
+def test_mention_and_reply_to_yuki_add_relevance_without_forcing_entry() -> None:
     scorer = ReplyNecessityScorer()
     mention = scorer.score(
         ReplyNecessityFeatures(scope_type=ScopeType.GROUP, text="嗯", mentions_bot=True)
@@ -631,8 +637,10 @@ def test_mention_and_reply_to_yuki_are_strong_forced_signals() -> None:
     reply = scorer.score(
         ReplyNecessityFeatures(scope_type=ScopeType.GROUP, text="嗯", reply_target_is_bot=True)
     )
-    assert mention.should_enter_planner and mention.relevance_score >= 50
-    assert reply.should_enter_planner and reply.relevance_score >= 50
+    assert mention.relevance_score >= 50
+    assert reply.relevance_score >= 50
+    assert not mention.should_participate
+    assert not reply.should_participate
 
 
 def test_low_value_reaction_scores_below_question_request_and_opinion() -> None:
@@ -1004,23 +1012,10 @@ def test_agent_speech_runtime_policy_contains_no_internal_transport_details() ->
     assert "8080" not in source and "6099" not in source
 
 
-def test_main_agent_plan_projection_excludes_planner_delivery_constraints() -> None:
-    plan = TurnPlan(
-        **_valid_plan_payload(
-            delivery_mode="natural_multi",
-            desired_messages=4,
-        )
-    )
-    planned_turn = cast(PlannedTurn, SimpleNamespace(plan=plan))
-
-    contribution = PromptComposer._plan_contribution(planned_turn)
-
-    assert isinstance(contribution.payload, dict)
-    assert contribution.payload["decision"] == "reply"
-    assert contribution.payload["intent"] == plan.intent
-    assert "tools" not in contribution.payload
-    assert "delivery" not in contribution.payload
-    assert "messages" not in contribution.payload
+def test_main_agent_prompt_does_not_project_planner_plan() -> None:
+    source = inspect.getsource(PromptComposer)
+    assert "_plan_contribution" not in source
+    assert "planned_turn" not in source
 
 
 @pytest.mark.parametrize(

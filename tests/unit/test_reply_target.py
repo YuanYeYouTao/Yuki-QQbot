@@ -132,14 +132,13 @@ async def test_resolver_rejects_external_or_non_onebot_events() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_override_and_clear_take_precedence_over_planner() -> None:
+async def test_agent_override_and_clear_control_quote_target() -> None:
     planner_event = _event(1)
     agent_event = _event(2, platform_message_id="12346")
     service = object.__new__(ChatService)
     service._reply_target_resolver = ReplyTargetResolver(  # type: ignore[attr-defined]
         _Ledger(planner_event, agent_event)
     )
-    planned = SimpleNamespace(plan=SimpleNamespace(reply_to_event_id=1))
     override = ReplyTargetControl(frozenset({1, 2}))
     assert override.apply(2)[0] is True
 
@@ -147,7 +146,6 @@ async def test_agent_override_and_clear_take_precedence_over_planner() -> None:
         service,
         inbound=_inbound(),
         conversation_key="group:2001",
-        planned_turn=planned,  # type: ignore[arg-type]
         control=override,
     )
 
@@ -159,7 +157,6 @@ async def test_agent_override_and_clear_take_precedence_over_planner() -> None:
         service,
         inbound=_inbound(),
         conversation_key="group:2001",
-        planned_turn=planned,  # type: ignore[arg-type]
         control=cleared,
     )
     assert selected_after_clear is None

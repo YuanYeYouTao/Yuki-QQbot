@@ -78,6 +78,7 @@ class AgentRunResult:
     citations: tuple[ResponseCitation, ...] = ()
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
     web_route: WebRouteDecision | None = None
+    suppress_delivery: bool = False
 
 
 class AgentToolBackend(Protocol):
@@ -620,6 +621,19 @@ class AgentRunner:
                 else:
                     messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
             if tools is not None:
+                declined = getattr(tools, "declined_reply", None)
+                if callable(declined) and declined():
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        native_tool_events=tuple(native_events),
+                        citations=tuple(citations),
+                        response_status=response_status,
+                        web_route=web_route,
+                        suppress_delivery=True,
+                    )
                 terminal_reply = getattr(tools, "terminal_memory_reply", None)
                 if callable(terminal_reply):
                     terminal_text = terminal_reply()
@@ -763,6 +777,27 @@ class AgentRunner:
                             "ok": False,
                             "error": "memory_mutation_exclusive_violation",
                             "detail": "记忆写入批次不能夹带其他副作用工具。",
+                        },
+                        ensure_ascii=False,
+                    )
+                    return CoordinatedToolResult(
+                        calls=tuple((call, violation, False) for call in calls),
+                        executed_count=0,
+                        reused_count=0,
+                    )
+            decline_calls = [
+                call for call in unique_calls if call.function.name == "decline_reply"
+            ]
+            if decline_calls:
+                prior_effects = getattr(tools, "has_prior_reply_effects", None)
+                mixed = len(unique_calls) != 1 or len(calls) != 1
+                already_used = bool(callable(prior_effects) and prior_effects())
+                if mixed or already_used:
+                    violation = json.dumps(
+                        {
+                            "ok": False,
+                            "error": "decline_reply_batch_rejected",
+                            "detail": "decline_reply 必须是尚未产生效果时的单独调用。",
                         },
                         ensure_ascii=False,
                     )
