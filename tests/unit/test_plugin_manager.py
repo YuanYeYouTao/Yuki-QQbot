@@ -52,7 +52,7 @@ class ExamplePlugin:
             if _events is not None:
                 await _events.publish(
                     EventEnvelope(
-                        name=EventName.PLANNER_ENTERED,
+                        name=EventName.TURN_ADMITTED,
                         payload={"observed": event.name.value},
                     )
                 )

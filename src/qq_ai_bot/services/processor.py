@@ -64,6 +64,7 @@ from qq_ai_bot.services.deduplication import DeduplicationService, build_event_k
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
+    content_free_turn_payload,
     publish_notification,
 )
 from qq_ai_bot.services.policies import (
@@ -471,6 +472,7 @@ class MessageProcessor:
             direct_triggered=direct_match is not None,
         )
         if decision.reason == "bot_message":
+            await self._publish_turn_rejected(message, decision.reason)
             return ProcessResult(False, reason=decision.reason)
         is_superuser = message.sender.user_id in self._settings.superusers
         admin_candidate = bool(
@@ -492,6 +494,7 @@ class MessageProcessor:
             message.scope_type is ScopeType.PRIVATE and decision.should_respond
         ) or bool(self._settings.observe_enabled_groups and group_policy and group_policy.enabled)
         if not decision.should_respond and not should_observe and not admin_candidate:
+            await self._publish_turn_rejected(message, decision.reason)
             return ProcessResult(False, reason=decision.reason)
 
         identity = (
@@ -505,6 +508,7 @@ class MessageProcessor:
         )
         event_key = build_event_key(message, identity.key)
         if not await self._deduplication.claim(event_key):
+            await self._publish_turn_rejected(message, "duplicate")
             return ProcessResult(False, reason="duplicate")
 
         runtime_snapshot = await self._runtime_config.snapshot(
@@ -732,6 +736,17 @@ class MessageProcessor:
             )
             return ProcessResult(True, int(sent), "input_too_long")
 
+        await publish_notification(
+            self._event_publisher,
+            EventName.TURN_ADMITTED,
+            content_free_turn_payload(
+                origin=TurnOrigin.USER_MESSAGE.value,
+                scope_type=message.scope_type.value,
+                conversation_key=identity.key,
+                reason=decision.reason,
+            ),
+        )
+        result: ProcessResult
         try:
             sent_count = await self._chat.handle_turn(
                 message,
@@ -746,45 +761,59 @@ class MessageProcessor:
                 turn_token=turn_token,
             )
         except (TurnInterruptedError, TurnSupersededError):
-            return ProcessResult(True, reason="turn_interrupted")
+            result = ProcessResult(True, reason="turn_interrupted")
         except RequestCancelledError:
-            return ProcessResult(True, reason="cancelled")
+            result = ProcessResult(True, reason="cancelled")
         except LLMConfigurationError:
             sent = await self._send_text(message, sender, "AI 服务尚未配置，请联系管理员。")
-            return ProcessResult(True, int(sent), "llm_not_configured")
+            result = ProcessResult(True, int(sent), "llm_not_configured")
         except LLMEmptyResponseError:
             sent = await self._send_text(message, sender, "AI 返回了空内容，请稍后重试。")
-            return ProcessResult(True, int(sent), "empty_llm_response")
+            result = ProcessResult(True, int(sent), "empty_llm_response")
         except LLMError as exc:
             logger.warning("llm_failure exception_category=%s", type(exc).__name__)
             sent = await self._send_text(message, sender, "AI 服务暂时不可用，请稍后重试。")
-            return ProcessResult(True, int(sent), "llm_failure")
+            result = ProcessResult(True, int(sent), "llm_failure")
         except (OSError, RuntimeError, TypeError) as exc:
             logger.error("message_send_or_storage_failure", exc_info=exc)
-            return ProcessResult(True, reason="send_or_storage_failure")
+            result = ProcessResult(True, reason="send_or_storage_failure")
+        else:
+            if created and sent_count > 0:
+                try:
+                    await self._relationship_worker.enqueue(
+                        trigger_event_id=record.id,
+                        user_id=message.sender.user_id,
+                        conversation_key=identity.key,
+                    )
+                except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
+                    logger.warning(
+                        "relationship_enqueue_failed exception_category=%s",
+                        type(exc).__name__,
+                    )
 
-        if created and sent_count > 0:
-            try:
-                await self._relationship_worker.enqueue(
-                    trigger_event_id=record.id,
-                    user_id=message.sender.user_id,
-                    conversation_key=identity.key,
-                )
-            except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
-                logger.warning(
-                    "relationship_enqueue_failed exception_category=%s",
-                    type(exc).__name__,
-                )
-
-        self._log_result(
-            event_key,
-            identity,
-            message,
-            handler="chat",
-            started=started,
-            success=True,
+            self._log_result(
+                event_key,
+                identity,
+                message,
+                handler="chat",
+                started=started,
+                success=True,
+            )
+            result = ProcessResult(True, sent_count, "chat")
+        await publish_notification(
+            self._event_publisher,
+            EventName.TURN_CLOSED,
+            content_free_turn_payload(
+                origin=TurnOrigin.USER_MESSAGE.value,
+                scope_type=message.scope_type.value,
+                conversation_key=identity.key,
+                outcome=result.reason,
+                handled=result.handled,
+                sent_messages=result.sent_messages,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            ),
         )
-        return ProcessResult(True, sent_count, "chat")
+        return result
 
     async def _analyze_visual_input(
         self,
@@ -1043,6 +1072,18 @@ class MessageProcessor:
         except (OSError, RuntimeError) as exc:
             logger.error("outbound_media_send_failed", exc_info=exc)
             return False
+
+    async def _publish_turn_rejected(self, message: InboundMessage, reason: str) -> None:
+        await publish_notification(
+            self._event_publisher,
+            EventName.TURN_REJECTED,
+            content_free_turn_payload(
+                origin=TurnOrigin.USER_MESSAGE.value,
+                scope_type=message.scope_type.value,
+                conversation_key=self._turn_coordinator.key_for(message),
+                reason=reason,
+            ),
+        )
 
     @staticmethod
     def _log_result(

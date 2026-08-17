@@ -6,6 +6,7 @@ fields are not read.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
@@ -40,6 +41,19 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 
 EnsureMetadata = Callable[[str], Awaitable[None]]
 RefreshRegistry = Callable[[], tuple[DescriptorRegistrySnapshot, FtsCapabilitySearchIndex]]
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilitySearchReport:
+    """Content-free local search outcome for host observability."""
+
+    origin: str
+    hit_count: int
+    latency_ms: int
+    capability_ids: tuple[str, ...]
+
+
+OnCapabilitySearched = Callable[[CapabilitySearchReport], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +102,7 @@ class TurnCapabilityRuntime:
         mcp_tool_limit: int | None = None,
         ensure_metadata: EnsureMetadata | None = None,
         refresh_registry: RefreshRegistry | None = None,
+        on_searched: OnCapabilitySearched | None = None,
     ) -> None:
         self._registry = registry
         self._index = index
@@ -104,6 +119,7 @@ class TurnCapabilityRuntime:
         self._validator = JsonSchemaCapabilityValidator()
         self._ensure_metadata = ensure_metadata
         self._refresh_registry = refresh_registry
+        self._on_searched = on_searched
         self._mcp_schema_token_budget = mcp_schema_token_budget
         self._mcp_tool_limit = mcp_tool_limit
         self._discovered_mcp_providers: tuple[str, ...] = ()
@@ -186,7 +202,9 @@ class TurnCapabilityRuntime:
         return tuple(sorted(tools, key=lambda item: item.name))
 
     def initial_exposure(self, query: CapabilityQuery) -> CapabilityExposureSnapshot:
+        started = time.perf_counter()
         hits = self._search_local(query, limit=10)
+        self._notify_searched(query, hits, started)
         kernel = (request_tools_definition(),) if not self._policy_context.tools_closed else ()
         self._plan = self._planner.plan_initial(
             catalog=self._authorized.catalog,
@@ -212,7 +230,10 @@ class TurnCapabilityRuntime:
 
     async def search(self, query: CapabilityQuery) -> tuple[CapabilitySearchHit, ...]:
         await self._hydrate_lazy_mcp(query)
-        return self._search_local(query, limit=query.limit)
+        started = time.perf_counter()
+        hits = self._search_local(query, limit=query.limit)
+        self._notify_searched(query, hits, started)
+        return hits
 
     async def request_tools(self, query: CapabilityQuery) -> dict[str, object]:
         hits = await self.search(query)
@@ -315,6 +336,23 @@ class TurnCapabilityRuntime:
             entry.descriptor.model_name not in exposed
             for entry in self._authorized.catalog.entries
             if entry.descriptor.model_name in self._authorized.requestable_ids
+        )
+
+    def _notify_searched(
+        self,
+        query: CapabilityQuery,
+        hits: tuple[CapabilitySearchHit, ...],
+        started: float,
+    ) -> None:
+        if self._on_searched is None:
+            return
+        self._on_searched(
+            CapabilitySearchReport(
+                origin=query.origin.value,
+                hit_count=len(hits),
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                capability_ids=tuple(hit.capability_id for hit in hits),
+            )
         )
 
     def _search_local(
@@ -442,5 +480,6 @@ def _document_from_entry(entry: UnifiedToolCatalogEntry) -> CapabilitySearchDocu
 __all__ = [
     "CapabilityIndexCache",
     "CapabilityQuery",
+    "CapabilitySearchReport",
     "TurnCapabilityRuntime",
 ]

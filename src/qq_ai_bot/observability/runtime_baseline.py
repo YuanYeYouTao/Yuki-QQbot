@@ -29,11 +29,11 @@ BOOTSTRAP_SAMPLES = 1000
 BOOTSTRAP_SEED = 36
 _REQUIRED_CORRELATED_TABLES = (
     "runtime_turn_observations",
-    "planner_runs",
     "model_invocations",
     "tool_invocations",
     "memory_recall_receipts",
 )
+_OPTIONAL_HISTORICAL_TABLES = ("planner_runs",)
 _CONTENT_BEARING_KEYS = frozenset(
     {
         "prompt",
@@ -173,11 +173,15 @@ def _latency_block(values: Sequence[float]) -> dict[str, Any]:
     }
 
 
-def _require_tables(connection: sqlite3.Connection) -> None:
-    names = {
+def _table_names(connection: sqlite3.Connection) -> set[str]:
+    return {
         row[0]
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
+
+
+def _require_tables(connection: sqlite3.Connection) -> None:
+    names = _table_names(connection)
     missing = [table for table in _REQUIRED_CORRELATED_TABLES if table not in names]
     if missing:
         raise BaselineExportError(
@@ -236,12 +240,15 @@ def _window_bounds(
     ).fetchone()
     observed_min, observed_max = (row[0], row[1]) if row else (None, None)
     if observed_min is None or observed_max is None:
-        fallback = connection.execute(
-            "SELECT MIN(created_at), MAX(created_at) FROM planner_runs"
-        ).fetchone()
-        observed_min = observed_min or (fallback[0] if fallback else None)
-        observed_max = observed_max or (fallback[1] if fallback else None)
-        source = "planner_runs.created_at"
+        if "planner_runs" in _table_names(connection):
+            fallback = connection.execute(
+                "SELECT MIN(created_at), MAX(created_at) FROM planner_runs"
+            ).fetchone()
+            observed_min = observed_min or (fallback[0] if fallback else None)
+            observed_max = observed_max or (fallback[1] if fallback else None)
+            source = "planner_runs.created_at"
+        else:
+            source = "runtime_turn_observations.created_at"
     else:
         source = "runtime_turn_observations.created_at"
     if observed_min is None or observed_max is None:
@@ -344,13 +351,18 @@ def _aggregate(
         f"WHERE {_in_window()}",
         window,
     )
-    planner_rows = _fetchall(
-        connection,
-        "SELECT runtime_turn_id, conversation_key_hash, planner_decision, origin, "
-        "scope_type, latency_seconds, fallback_used, interrupted, planner_used, "
-        "tool_mode, gate_decision, created_at FROM planner_runs "
-        f"WHERE {_in_window()}",
-        window,
+    names = _table_names(connection)
+    planner_rows = (
+        _fetchall(
+            connection,
+            "SELECT runtime_turn_id, conversation_key_hash, planner_decision, origin, "
+            "scope_type, latency_seconds, fallback_used, interrupted, planner_used, "
+            "tool_mode, gate_decision, created_at FROM planner_runs "
+            f"WHERE {_in_window()}",
+            window,
+        )
+        if "planner_runs" in names
+        else []
     )
     model_rows = _fetchall(
         connection,
@@ -461,7 +473,11 @@ def _aggregate(
             "private_latency_ms": _latency_block(private_latencies),
             "tool_scene_latency_ms": _latency_block(tool_scene_latencies),
             "join_coverage": {
-                "planner_runs": _join_coverage(connection, "planner_runs", window),
+                "planner_runs": (
+                    _join_coverage(connection, "planner_runs", window)
+                    if "planner_runs" in names
+                    else {"total": 0, "with_runtime_turn_id": 0, "ratio": None}
+                ),
                 "model_invocations": _join_coverage(connection, "model_invocations", window),
                 "tool_invocations": _join_coverage(connection, "tool_invocations", window),
                 "memory_recall_receipts": _join_coverage(
@@ -526,33 +542,48 @@ def _aggregate(
                 "joinable": False,
             },
         },
-        "gaps": [
-            {
-                "metric": "first_round_tool_hit_rate",
-                "status": "log_approximated",
-                "reason": "ToolKernelMetrics.first_round_tool_hits is an in-process counter",
-            },
-            {
-                "metric": "request_tools_usage_and_zero_result_rate",
-                "status": "log_approximated",
-                "reason": "request_tools counters are process-local and have no history table",
-            },
-            {
-                "metric": "tool_schema_token_distribution",
-                "status": "log_approximated",
-                "reason": "schema token sizes are not persisted on tool_invocations",
-            },
-            {
-                "metric": "memory_tool_and_mutation_turn_join",
-                "status": "log_approximated",
-                "reason": (
-                    "0037 does not add runtime_turn_id to memory_tool_receipts "
-                    "or memory_mutation_receipts; counts are window totals only"
-                ),
-            },
-        ],
+        "gaps": _baseline_gaps(
+            planner_runs_present=all(table in names for table in _OPTIONAL_HISTORICAL_TABLES)
+        ),
         "corpus_manifest_sha256": None,
     }
+
+
+def _baseline_gaps(*, planner_runs_present: bool) -> list[dict[str, str]]:
+    gaps = [
+        {
+            "metric": "first_round_tool_hit_rate",
+            "status": "log_approximated",
+            "reason": "ToolKernelMetrics.first_round_tool_hits is an in-process counter",
+        },
+        {
+            "metric": "request_tools_usage_and_zero_result_rate",
+            "status": "log_approximated",
+            "reason": "request_tools counters are process-local and have no history table",
+        },
+        {
+            "metric": "tool_schema_token_distribution",
+            "status": "log_approximated",
+            "reason": "schema token sizes are not persisted on tool_invocations",
+        },
+        {
+            "metric": "memory_tool_and_mutation_turn_join",
+            "status": "log_approximated",
+            "reason": (
+                "0037 does not add runtime_turn_id to memory_tool_receipts "
+                "or memory_mutation_receipts; counts are window totals only"
+            ),
+        },
+    ]
+    if not planner_runs_present:
+        gaps.append(
+            {
+                "metric": "planner_runs",
+                "status": "optional_historical",
+                "reason": "planner_runs was dropped by 0040; 3.6.0 exports record an empty gap",
+            }
+        )
+    return gaps
 
 
 def _count_optional(

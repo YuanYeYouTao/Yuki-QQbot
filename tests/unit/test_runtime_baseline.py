@@ -262,6 +262,53 @@ async def test_export_joins_one_turn_and_stays_content_free(database, tmp_path: 
     assert output.read_text(encoding="utf-8").startswith("{")
 
 
+@pytest.mark.asyncio
+async def test_export_records_gap_when_planner_runs_table_is_absent(database) -> None:
+    turn_id = new_runtime_turn_id()
+    correlation = RuntimeTurnCorrelation(turn_id=turn_id, origin=TurnOrigin.USER_MESSAGE)
+    with bind_runtime_turn(correlation):
+        await ModelInvocationRepository(database).record(
+            task=ModelTask.CHAT_AGENT,
+            profile_id="main",
+            provider="fake",
+            model="fake-chat",
+            success=True,
+            prompt_tokens=10,
+            completion_tokens=4,
+            total_tokens=14,
+            cached_prompt_tokens=0,
+            latency_seconds=0.2,
+            error_category=None,
+        )
+        await RuntimeTurnObservationRepository(database).record_turn(
+            build_turn_observation(
+                correlation,
+                scope_type="private",
+                conversation_key=SECRET_CONVERSATION,
+                admission_outcome="chat",
+                handled=True,
+                sent_messages=1,
+                error_category=None,
+                total_latency_ms=400,
+                now=T1,
+            )
+        )
+
+    document = export_runtime_baseline(
+        database.url,
+        identity=_identity(),
+        since=T0.isoformat(),
+        until=datetime.now(UTC).isoformat(),
+    )
+    assert document["sample_size"]["planner_runs"] == 0
+    assert document["planner"]["decisions"] == {}
+    assert document["turns"]["join_coverage"]["planner_runs"]["ratio"] is None
+    gap = next(item for item in document["gaps"] if item["metric"] == "planner_runs")
+    assert gap["status"] == "optional_historical"
+    rendered = json.dumps(document, ensure_ascii=False)
+    assert SECRET_CONVERSATION not in rendered
+
+
 def test_refuses_to_write_inside_the_working_tree(tmp_path: Path) -> None:
     with pytest.raises(BaselineExportError, match="inside the git working tree"):
         assert_output_outside_git(ROOT / "tmp" / "baseline-v1.json", ROOT)

@@ -15,14 +15,13 @@
 - `message.observed`
 - `message.triggered`
 
-## Planner
+## 回合与能力
 
-- `planner.necessity_evaluated`
-- `planner.entered`
-- `planner.planned`
-- `planner.silent`
-- `planner.interrupted`
-- `planner.fallback`
+- `turn.admitted`
+- `turn.rejected`
+- `turn.autonomous_declined`
+- `turn.closed`
+- `capability.searched`
 
 ## 上下文与 Prompt
 

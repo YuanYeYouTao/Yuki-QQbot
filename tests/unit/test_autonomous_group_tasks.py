@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
+from qq_ai_bot.admin.models import ConversationRuntimeConfig
 from qq_ai_bot.conversation.participation import AdmissionFeatures
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
@@ -21,10 +22,23 @@ class _FailingRuntime:
         raise SQLAlchemyError("database unavailable")
 
 
+def _conversation_config() -> ConversationRuntimeConfig:
+    return ConversationRuntimeConfig(
+        autonomous_enabled=True,
+        autonomous_debounce_seconds=0.02,
+        autonomous_admission_threshold=80,
+        autonomous_batch_limit=20,
+        autonomous_presence_window_seconds=120,
+        interrupt_autonomous_on_new_message=True,
+    )
+
+
 class _WorkingRuntime:
     async def snapshot(self, **_kwargs: object) -> object:
+        policy = _conversation_config()
         return SimpleNamespace(
-            planner=SimpleNamespace(group_enabled=True, group_debounce_seconds=0.02)
+            conversation=policy,
+            conversation_policy=lambda: policy,
         )
 
 

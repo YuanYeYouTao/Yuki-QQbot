@@ -39,6 +39,7 @@ from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME
 from qq_ai_bot.capabilities.runtime import (
     CapabilityIndexCache,
     CapabilityQuery,
+    CapabilitySearchReport,
     TurnCapabilityRuntime,
 )
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
@@ -356,6 +357,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._web_was_used = False
         self._web_calls_used = 0
         self._capability_was_used = False
+        self._search_event_tasks: list[asyncio.Task[None]] = []
         self._admin_retry_constraint: tuple[str, str] | None = None
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
@@ -557,8 +559,32 @@ class _ChatAgentBackend(AgentToolBackend):
             mcp_tool_limit=mcp.selected_tool_limit if mcp is not None else None,
             ensure_metadata=ensure_metadata,
             refresh_registry=self._refresh_capability_registry,
+            on_searched=self._publish_capability_searched,
         )
         return self._capability_runtime
+
+    def _publish_capability_searched(self, report: CapabilitySearchReport) -> None:
+        publisher = getattr(self._service, "_event_publisher", None)
+        if publisher is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._search_event_tasks.append(
+            loop.create_task(
+                publish_notification(
+                    publisher,
+                    EventName.CAPABILITY_SEARCHED,
+                    {
+                        "origin": report.origin,
+                        "hit_count": report.hit_count,
+                        "latency_ms": report.latency_ms,
+                        "capability_ids": list(report.capability_ids),
+                    },
+                )
+            )
+        )
 
     def _host_priority_capability_ids(self) -> tuple[str, ...]:
         """Pin tools implied by trusted host facts, not Planner output."""

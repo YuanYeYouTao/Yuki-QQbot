@@ -29,12 +29,14 @@ from qq_ai_bot.runtime.observability import (
     record_observation_safely,
 )
 from qq_ai_bot.services.chat import ChatService, OutboundSender
+from qq_ai_bot.services.plugin_events import content_free_turn_payload, publish_notification
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
     TurnInterruptedError,
     TurnSupersededError,
     TurnToken,
 )
+from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
 
@@ -270,7 +272,21 @@ class AutonomousGroupService:
         snapshot = LocalAutonomousParticipationPolicy(
             threshold=policy.autonomous_admission_threshold,
         ).evaluate(features)
+        conversation_key = f"group:{group_id}"
+        publisher = getattr(self._chat, "_event_publisher", None)
         if not snapshot.should_participate:
+            await publish_notification(
+                publisher,
+                EventName.AUTONOMOUS_DECLINED,
+                content_free_turn_payload(
+                    origin=TurnOrigin.AUTONOMOUS_GROUP.value,
+                    scope_type="group",
+                    conversation_key=conversation_key,
+                    score=snapshot.score,
+                    threshold=snapshot.threshold,
+                    reasons=list(snapshot.reasons),
+                ),
+            )
             return
         if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
             return
@@ -279,16 +295,46 @@ class AutonomousGroupService:
             last.sender.user_id,
             ConversationMode.SHARED,
         )
-        await self._chat.respond(
-            last,
-            identity,
-            profile,
-            last.text,
-            sender,
-            autonomous=True,
-            runtime_snapshot=runtime,
-            turn_token=token,
+        await publish_notification(
+            publisher,
+            EventName.TURN_ADMITTED,
+            content_free_turn_payload(
+                origin=TurnOrigin.AUTONOMOUS_GROUP.value,
+                scope_type="group",
+                conversation_key=conversation_key,
+                reason="autonomous_group",
+            ),
         )
+        started = time.perf_counter()
+        outcome = "autonomous_group"
+        try:
+            await self._chat.respond(
+                last,
+                identity,
+                profile,
+                last.text,
+                sender,
+                autonomous=True,
+                runtime_snapshot=runtime,
+                turn_token=token,
+            )
+        except (TurnInterruptedError, TurnSupersededError):
+            outcome = "turn_interrupted"
+            raise
+        finally:
+            await publish_notification(
+                publisher,
+                EventName.TURN_CLOSED,
+                content_free_turn_payload(
+                    origin=TurnOrigin.AUTONOMOUS_GROUP.value,
+                    scope_type="group",
+                    conversation_key=conversation_key,
+                    outcome=outcome,
+                    handled=True,
+                    sent_messages=0,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                ),
+            )
 
     async def wait_until_idle(self, group_id: str) -> None:
         while True:
@@ -317,17 +363,10 @@ class AutonomousGroupService:
 def _conversation_policy(runtime: object) -> ConversationRuntimeConfig:
     getter = getattr(runtime, "conversation_policy", None)
     if callable(getter):
-        return getter()
-    planner = getattr(runtime, "planner", None)
-    return ConversationRuntimeConfig(
-        autonomous_enabled=bool(getattr(planner, "group_enabled", False)),
-        autonomous_debounce_seconds=float(getattr(planner, "group_debounce_seconds", 8.0)),
-        autonomous_admission_threshold=int(getattr(planner, "reply_necessity_threshold", 80)),
-        autonomous_batch_limit=int(getattr(planner, "max_pending_messages", 20)),
-        autonomous_presence_window_seconds=int(
-            getattr(planner, "recent_presence_window_seconds", 120)
-        ),
-        interrupt_autonomous_on_new_message=bool(
-            getattr(planner, "interrupt_autonomous_on_new_message", True)
-        ),
-    )
+        policy = getter()
+        if isinstance(policy, ConversationRuntimeConfig):
+            return policy
+    conversation = getattr(runtime, "conversation", None)
+    if isinstance(conversation, ConversationRuntimeConfig):
+        return conversation
+    raise TypeError("runtime snapshot is missing conversation policy")

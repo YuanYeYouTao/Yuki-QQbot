@@ -16,6 +16,11 @@ Plugin API `2.0` 是破坏性升级。Host 在导入插件代码前校验 `plugi
 | `PromptTarget.PLANNER` / `BOTH` | `PromptTarget.AGENT` 或 `PLUGIN_SESSION` |
 | `PromptStage.PLANNER_PLAN` | 删除；第三方只能注册 `plugin_context` / `tool_guidance` |
 | 本地工具名作为全局身份 | `ToolMetadata.namespace`（可留空，Host 填 `plugin.{plugin_id}`）以及可选 `aliases` / `use_when` / `tags` |
+| `planner.necessity_evaluated` / `planner.silent` | `turn.rejected` / `turn.autonomous_declined` |
+| `planner.entered` / `planner.planned` | `turn.admitted` |
+| `planner.interrupted` | 复用 `agent.interrupted` |
+| `planner.fallback` | 删除；无同义事件 |
+| （无） | `capability.searched`、`turn.closed` |
 
 Alembic `0038` 会撤销旧 `planner.signal.register` 批准。Manifest、权限、入口或 API 版本变化后，插件进入 `pending_approval`，必须重新审阅，不能沿用旧批准。
 
@@ -27,6 +32,8 @@ yuki_requires = ">=3.5.3,<4.0"
 ```
 
 `yuki_requires` 仍独立于 Plugin API。把上限写成 `<3.0` 的插件需要在确认兼容后改为 `<4.0`。
+
+观测事件只携带 origin、scope、hash、分数、原因码、工具 id 和延迟；不含聊天正文、Tool arguments 或 Memory refs。`agent.starting` / `agent.finished` / `agent.interrupted` 与 `reply.sent` / `reply.failed` / `reply.cancelled` 继续复用，没有同义的 `agent.started` / `agent.completed` / `turn.delivered`。
 
 ## AdmissionSignal
 
