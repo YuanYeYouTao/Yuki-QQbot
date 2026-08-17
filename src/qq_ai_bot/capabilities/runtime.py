@@ -132,6 +132,7 @@ class TurnCapabilityRuntime:
             append_only=append_only,
         )
         self._plan: ExposurePlan | None = None
+        self._restart_provider_chain = False
         self._affinity: tuple[str, ...] = ()
         self._exclusive_write = bool(memory_view and memory_view.exclusive_namespace)
         quarantined = self._validator.admit(self._authorized.catalog.entries)
@@ -200,9 +201,14 @@ class TurnCapabilityRuntime:
 
     def definitions(self) -> tuple[ChatTool, ...]:
         tools = list(self._ledger.declared_tools())
-        if self._append_request_tools(tools):
+        if self._append_request_tools(tools) and REQUEST_TOOLS_NAME not in {
+            tool.name for tool in tools
+        }:
             tools.append(request_tools_definition())
-        return tuple(sorted(tools, key=lambda item: item.name))
+        unique: dict[str, ChatTool] = {}
+        for tool in tools:
+            unique.setdefault(tool.name, tool)
+        return tuple(sorted(unique.values(), key=lambda item: item.name))
 
     def initial_exposure(self, query: CapabilityQuery) -> CapabilityExposureSnapshot:
         started = time.perf_counter()
@@ -276,7 +282,9 @@ class TurnCapabilityRuntime:
         self._plan = plan
         conflict = self._apply_plan(plan)
         if conflict == SCHEMA_REVISION_CONFLICT:
-            return {"ok": False, "error": SCHEMA_REVISION_CONFLICT}
+            if not self.rebuild_after_schema_conflict():
+                return {"ok": False, "error": SCHEMA_REVISION_CONFLICT}
+            self._restart_provider_chain = True
         return {
             "ok": True,
             "data": {
@@ -306,6 +314,26 @@ class TurnCapabilityRuntime:
 
     def mark_side_effect(self) -> None:
         self._ledger.had_side_effect = True
+
+    def can_rebuild_provider_chain(self) -> bool:
+        return not self._ledger.had_side_effect
+
+    def rebuild_after_schema_conflict(self) -> bool:
+        """Restart the declared set only when no side effect has committed."""
+
+        if self._ledger.had_side_effect or self._plan is None:
+            return False
+        self._ledger = DeclaredSchemaLedger(
+            registry_revision=self._registry.revision,
+            append_only=self._ledger.append_only,
+        )
+        self._restart_provider_chain = True
+        return self._apply_plan(self._plan) is None
+
+    def consume_provider_chain_restart(self) -> bool:
+        restart = self._restart_provider_chain
+        self._restart_provider_chain = False
+        return restart
 
     def descriptor(self, name: str) -> CapabilityDescriptor | None:
         entry = self._authorized.catalog.by_model_name(name)

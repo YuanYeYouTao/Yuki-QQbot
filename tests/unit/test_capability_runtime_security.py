@@ -5,11 +5,21 @@ from __future__ import annotations
 import json
 
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalogEntry
+from qq_ai_bot.capabilities.catalog import (
+    DescriptorRegistrySnapshot,
+    UnifiedToolCatalog,
+    UnifiedToolCatalogEntry,
+)
 from qq_ai_bot.capabilities.exposure import (
     NO_LONGER_AUTHORIZED,
     SCHEMA_REVISION_CONFLICT,
     DeclaredSchemaLedger,
+)
+from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME, request_tools_definition
+from qq_ai_bot.capabilities.runtime import (
+    CapabilityIndexCache,
+    CapabilityQuery,
+    TurnCapabilityRuntime,
 )
 from qq_ai_bot.capabilities.models import (
     AuthorityContext,
@@ -24,8 +34,11 @@ from qq_ai_bot.capabilities.validation import (
     TOOL_INPUT_VALIDATION_FAILED,
     JsonSchemaCapabilityValidator,
 )
+from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool
+from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
+from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 
 
 def _descriptor(
@@ -265,3 +278,70 @@ def test_catalog_entry_round_trip_for_security_fixtures() -> None:
     )
     assert catalog.by_model_name("web_search") is not None
     assert catalog.by_model_name("missing") is None
+
+
+def _runtime(*entries: UnifiedToolCatalogEntry, append_only: bool = True) -> TurnCapabilityRuntime:
+    catalog = UnifiedToolCatalog(entries=entries, scopes=(), revision="abcd1234")
+    snapshot = DescriptorRegistrySnapshot(catalog)
+    return TurnCapabilityRuntime(
+        registry=snapshot,
+        index=CapabilityIndexCache().index_for(snapshot),
+        authority=TurnAuthority(
+            actor_user_id="1001",
+            bot_user_id="9999",
+            origin=RuntimeTurnOrigin.USER_MESSAGE,
+            permission_ceiling=frozenset(),
+            delegated_authority=None,
+            authority_revision=1,
+        ),
+        scene=TurnSceneFacts(scope_type=ScopeType.PRIVATE, group_id=None),
+        memory_view=None,
+        policy_context=CapabilityPolicyContext(
+            authority=AuthorityContext(actor_user_id="1001", is_superuser=False),
+            origin=TurnOrigin.USER_MESSAGE,
+        ),
+        append_only=append_only,
+    )
+
+
+def test_definitions_never_duplicate_request_tools() -> None:
+    runtime = _runtime(_entry(_descriptor("web_search", namespace="web.search")))
+    runtime.initial_exposure(
+        CapabilityQuery(text="search the public web", origin=RuntimeTurnOrigin.USER_MESSAGE)
+    )
+    names = [tool.name for tool in runtime.definitions()]
+    assert names.count(REQUEST_TOOLS_NAME) == 1
+
+
+def test_schema_conflict_rebuilds_only_without_side_effects() -> None:
+    first = _entry(_descriptor("web_search", namespace="web.search", revision="1"))
+    runtime = _runtime(first, append_only=True)
+    runtime.initial_exposure(
+        CapabilityQuery(text="search the public web", origin=RuntimeTurnOrigin.USER_MESSAGE)
+    )
+    second = _entry(_descriptor("web_search", namespace="web.search", revision="2"))
+    runtime._plan = runtime._planner.plan_initial(
+        catalog=UnifiedToolCatalog(entries=(second,), scopes=(), revision="abcd1234"),
+        requestable_ids=frozenset({"web_search"}),
+        hits=(),
+        memory_view=None,
+        kernel_tools=(request_tools_definition(),),
+        query="search",
+        artifact_available=False,
+        reply_target_available=False,
+        priority_ids=("web_search",),
+    )
+    assert runtime._apply_plan(runtime._plan) == SCHEMA_REVISION_CONFLICT
+    runtime.mark_side_effect()
+    assert runtime.can_rebuild_provider_chain() is False
+    assert runtime.rebuild_after_schema_conflict() is False
+
+    clean = _runtime(first, append_only=True)
+    clean.initial_exposure(
+        CapabilityQuery(text="search the public web", origin=RuntimeTurnOrigin.USER_MESSAGE)
+    )
+    clean._plan = runtime._plan
+    assert clean._apply_plan(clean._plan) == SCHEMA_REVISION_CONFLICT
+    assert clean.rebuild_after_schema_conflict() is True
+    assert clean.consume_provider_chain_restart() is True
+    assert clean.consume_provider_chain_restart() is False

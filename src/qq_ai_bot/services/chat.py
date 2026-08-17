@@ -436,6 +436,14 @@ class _ChatAgentBackend(AgentToolBackend):
 
         self._web_was_used = True
 
+    def consume_provider_chain_restart(self) -> bool:
+        """Drop Responses continuation after a no-side-effect schema rebuild."""
+
+        runtime = self._capability_runtime
+        if runtime is None:
+            return False
+        return runtime.consume_provider_chain_restart()
+
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         del runtime
         self._web_was_used = self._web_was_used or web_was_used

@@ -208,6 +208,11 @@ class AgentRunner:
                 definitions = tuple(
                     item for item in definitions if item.name not in {"web_search", "read_webpage"}
                 )
+            restart_chain = getattr(tools, "consume_provider_chain_restart", None)
+            if callable(restart_chain) and restart_chain():
+                continuation = None
+                continuation_tools = ()
+                continuation_native_tools = ()
             if continuation is not None:
                 # Responses continuations are one cumulative request chain.
                 # Tools may be added after request_tools, but removing a tool
