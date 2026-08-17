@@ -183,11 +183,6 @@ class MCPToolProvider:
                         *config.yuki.tags,
                         server_id,
                         *config.yuki.tool_bundles,
-                        *(
-                            tool_name
-                            for bundle in config.yuki.tool_bundles.values()
-                            for tool_name in bundle.include_tools
-                        ),
                     )
                 )
             ),

@@ -130,9 +130,10 @@ class FtsCapabilitySearchIndex:
         alias_id = self._aliases.get(folded)
         if alias_id is not None:
             ranked[alias_id] = max(ranked.get(alias_id, 0.0), EXACT_ALIAS_SCORE)
+        query_terms = set(_query_terms(cleaned))
         for alias, capability_id in self._aliases.items():
-            if alias and alias in folded:
-                ranked[capability_id] = max(ranked.get(capability_id, 0.0), EXACT_ALIAS_SCORE / 2)
+            if alias and alias in query_terms:
+                ranked[capability_id] = max(ranked.get(capability_id, 0.0), EXACT_ALIAS_SCORE)
         if self._connection is not None:
             match = _fts_match_expression(cleaned)
             if match:
@@ -172,7 +173,13 @@ class FtsCapabilitySearchIndex:
                     synthetic=document.synthetic,
                 )
             )
-        hits.sort(key=lambda item: (-item.score, item.capability_id))
+        hits.sort(
+            key=lambda item: (
+                -item.score,
+                self._documents[item.capability_id].canonical_name,
+                item.capability_id,
+            )
+        )
         return tuple(hits[:limit])
 
     def document(self, capability_id: str) -> CapabilitySearchDocument | None:
@@ -228,15 +235,24 @@ def _fts_document_text(*parts: str) -> str:
                 if len(run) < size:
                     continue
                 chunks.extend(run[index : index + size] for index in range(len(run) - size + 1))
-    return " ".join(chunks)[:8_000]
+    return " ".join(chunks)[:2_000]
 
 
 def _fts_match_expression(query: str) -> str:
     terms = _query_terms(query)
     if not terms:
         return ""
+    specific = [
+        term
+        for term in terms
+        if len(term) >= 3 or _ASCII_TERM.fullmatch(term) is not None
+    ]
+    selected = specific or ()
+    if not selected:
+        # Two-character CJK-only queries stay on the exact/alias maps.
+        return ""
     escaped = []
-    for term in terms:
+    for term in selected:
         token = _FTS_SPECIAL.sub(" ", term).strip()
         if len(token) < 2:
             continue

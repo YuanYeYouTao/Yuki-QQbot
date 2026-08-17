@@ -123,7 +123,6 @@ def descriptor_from_mcp_tool(
                 *config.yuki.tags,
                 item.remote_tool_name,
                 item.remote_tool_name.replace("-", " "),
-                *item.remote_tool_name.split("-"),
             )
         )
     )

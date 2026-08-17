@@ -19,6 +19,7 @@ from qq_ai_bot.capabilities import (
 from qq_ai_bot.capabilities.catalog import DescriptorRegistrySnapshot
 from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME
 from qq_ai_bot.capabilities.runtime import CapabilityIndexCache
+from qq_ai_bot.capabilities.search_document import SEARCH_DOCUMENT_BODY_MAX
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     ChatTool,
@@ -280,6 +281,32 @@ def test_fts_prefers_song_capability_and_has_no_arbitrary_fallback() -> None:
     assert hits
     assert hits[0].capability_id == "song_share"
     assert index.search("完全无关的量子天气", limit=2) == ()
+
+
+def test_search_index_clamps_oversized_tool_description() -> None:
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        return {"ok": True, "data": {"called": name}}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="plugin",
+            source=CapabilityTrustSource.PLUGIN,
+            definitions=lambda _runtime: (
+                _tool(
+                    "huge_share",
+                    "x" * 8_000,
+                    namespace="music.share",
+                ),
+            ),
+            execute=execute,
+        )
+    )
+    catalog = registry.catalog(object())
+    index = CapabilityIndexCache().index_for(DescriptorRegistrySnapshot(catalog))
+    document = index.document("huge_share")
+    assert document is not None
+    assert len(document.description) <= SEARCH_DOCUMENT_BODY_MAX
 
 
 @pytest.mark.asyncio

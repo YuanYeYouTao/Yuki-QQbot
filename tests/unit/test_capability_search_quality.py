@@ -326,6 +326,33 @@ def test_zero_result_queries_are_evaluated_separately() -> None:
     assert zero == len(misses)
 
 
+def test_short_unrelated_query_does_not_rank_fat_mcp_menus() -> None:
+    fat = "MCP mcd：" + ("菜单价格与门店查询，等待取餐和积分商城。" * 40)
+    documents = (
+        _document(
+            capability_id="mcp__mcd__create-order",
+            namespace_id="food.mcdonalds.order",
+            description=fat[:400],
+            aliases=("create-order",),
+            use_when=("创建麦当劳订单",),
+            trust_source=CapabilityTrustSource.MCP,
+        ),
+        _document(
+            capability_id="request_tools",
+            namespace_id="kernel.authority.read",
+            description="按能力描述请求未加载工具",
+            aliases=("request_tools",),
+            trust_source=CapabilityTrustSource.CORE,
+        ),
+    )
+    index = FtsCapabilitySearchIndex()
+    index.rebuild(revision="no-menu-leak", documents=documents)
+    hits = index.search("等待", limit=8)
+    assert all(hit.capability_id != "mcp__mcd__create-order" for hit in hits)
+    exact = index.search("create-order", limit=1)
+    assert exact and exact[0].capability_id == "mcp__mcd__create-order"
+
+
 def test_long_chinese_order_query_hits_mcp_bundle_summary() -> None:
     query = "帮我点麦辣鸡腿堡，到店取餐，创建待支付订单，把链接发给我。"
     terms = _query_terms(query)

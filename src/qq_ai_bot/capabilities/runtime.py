@@ -25,10 +25,13 @@ from qq_ai_bot.capabilities.exposure import (
     is_memory_write_entry,
 )
 from qq_ai_bot.capabilities.models import CapabilityDescriptor
-from qq_ai_bot.capabilities.namespace import lookup_namespace
+from qq_ai_bot.capabilities.namespace import is_valid_namespace_id, lookup_namespace
 from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
 from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME, request_tools_definition
-from qq_ai_bot.capabilities.search_document import CapabilitySearchDocument
+from qq_ai_bot.capabilities.search_document import (
+    SEARCH_DOCUMENT_BODY_MAX,
+    CapabilitySearchDocument,
+)
 from qq_ai_bot.capabilities.search_index import CapabilitySearchHit, FtsCapabilitySearchIndex
 from qq_ai_bot.capabilities.validation import (
     TOOL_INPUT_VALIDATION_FAILED,
@@ -442,9 +445,19 @@ class TurnCapabilityRuntime:
         return ""
 
 
+def _bounded_text(value: str, maximum: int) -> str:
+    text = value.strip()
+    if len(text) <= maximum:
+        return text
+    return text[:maximum].rstrip()
+
+
 def _document_from_entry(entry: UnifiedToolCatalogEntry) -> CapabilitySearchDocument:
     descriptor = entry.descriptor
-    namespace = lookup_namespace(descriptor.namespace_id)
+    namespace_id = descriptor.namespace_id
+    if not is_valid_namespace_id(namespace_id):
+        namespace_id = "plugin.unnamed"
+    namespace = lookup_namespace(namespace_id)
     properties = descriptor.input_schema.get("properties")
     parameter_names: tuple[str, ...] = ()
     parameter_descriptions: tuple[str, ...] = ()
@@ -456,23 +469,33 @@ def _document_from_entry(entry: UnifiedToolCatalogEntry) -> CapabilitySearchDocu
                 descriptions.append(str(spec.get("description") or ""))
         parameter_descriptions = tuple(item for item in descriptions if item)
     synthetic = bool((descriptor.provider_metadata or {}).get("synthetic"))
+    model_name = _bounded_text(descriptor.model_name, 64) or "tool"
     return CapabilitySearchDocument(
-        capability_id=descriptor.model_name,
-        model_name=descriptor.model_name,
-        canonical_name=descriptor.canonical_name,
-        namespace_id=descriptor.namespace_id,
-        namespace_description="" if namespace is None else namespace.description,
-        description=descriptor.description or entry.compact_description,
+        capability_id=_bounded_text(descriptor.model_name, 128) or model_name,
+        model_name=model_name,
+        canonical_name=_bounded_text(descriptor.canonical_name, 256) or model_name,
+        namespace_id=namespace_id,
+        namespace_description=_bounded_text(
+            "" if namespace is None else namespace.description,
+            500,
+        ),
+        description=_bounded_text(
+            entry.compact_description or descriptor.compact_description or descriptor.description,
+            SEARCH_DOCUMENT_BODY_MAX,
+        )
+        or model_name,
         aliases=descriptor.aliases,
         tags=descriptor.tags,
         use_when=descriptor.use_when,
         parameter_names=parameter_names,
-        parameter_descriptions=parameter_descriptions,
-        provider_id=entry.provider_id,
+        parameter_descriptions=tuple(
+            _bounded_text(item, 80) for item in parameter_descriptions[:12]
+        ),
+        provider_id=_bounded_text(entry.provider_id, 128),
         trust_source=descriptor.trust_source,
         effect=descriptor.effect,
         risk=descriptor.risk,
-        estimated_schema_tokens=entry.estimated_schema_tokens,
+        estimated_schema_tokens=max(1, entry.estimated_schema_tokens),
         synthetic=synthetic,
     )
 

@@ -12,6 +12,7 @@ from qq_ai_bot.capabilities.models import CapabilityEffect, CapabilityRisk, Capa
 from qq_ai_bot.capabilities.namespace import is_valid_namespace_id
 
 SEARCH_DOCUMENT_TEXT_MAX = 4_000
+SEARCH_DOCUMENT_BODY_MAX = 400
 SEARCH_QUERY_MAX = 200
 TOKENIZER_VERSION = "cjk-ngram-v1"
 
