@@ -472,7 +472,7 @@ class _ChatAgentBackend(AgentToolBackend):
         }
         self._callable_tool_names.update(tool.name for tool in definitions)
         if not self._tool_turn_recorded and definitions:
-            self._service._tool_metrics.record_tool_enabled_turn(planner_scope_explicit=False)
+            self._service._tool_metrics.record_tool_enabled_turn()
             self._tool_turn_recorded = True
         self._log_tool_exposure(definitions, reason="ready")
         return definitions

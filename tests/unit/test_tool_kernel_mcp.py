@@ -22,13 +22,10 @@ from qq_ai_bot.capabilities import (
     CapabilityTrustSource,
     ChatToolCapabilityProvider,
     InProcessToolProvider,
-    ToolBundleBudgetError,
-    ToolCandidateSelector,
     ToolExecutionResult,
     ToolInvocationCoordinator,
     ToolProviderRegistry,
     ToolResultBudgeter,
-    ToolSchemaBudgeter,
     estimate_chat_tool_tokens,
     resolve_mutation_commit,
 )
@@ -86,30 +83,6 @@ def test_schema_token_estimate_includes_function_envelope() -> None:
     described = _tool("x", "long description " * 20)
     assert estimate_chat_tool_tokens(described) > estimate_chat_tool_tokens(short)
     assert estimate_chat_tool_tokens(short) > len(json.dumps(short.parameters)) // 4
-
-
-def test_candidate_selector_does_not_fill_limit_with_zero_relevance_tools() -> None:
-    registry = ToolProviderRegistry()
-    registry.register(
-        InProcessToolProvider(
-            provider_id="core",
-            source=CapabilityTrustSource.CORE,
-            definitions=lambda _context: (
-                _tool("music_search", "find a song"),
-                _tool("weather_search", "find a forecast"),
-            ),
-            execute=lambda *_args: None,  # type: ignore[arg-type]
-        )
-    )
-
-    selected = ToolCandidateSelector().select(
-        registry.catalog(object()),
-        user_request="unrelated quantum request",
-        limit=8,
-        minimum_score=1,
-    )
-
-    assert selected.entries == ()
 
 
 def test_conditional_mutation_result_preserves_explicit_commit_state() -> None:
@@ -200,19 +173,9 @@ async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral(
         )
     )
     catalog = registry.catalog(object())
-    selected = ToolCandidateSelector().select(
-        catalog,
-        user_request="搜索刚才的聊天历史",
-        limit=1,
-        minimum_score=1,
-    )
-    assert selected.entries[0].descriptor.model_name == "search_chat_history"
-    budgeted = ToolSchemaBudgeter(selected_tool_limit=1, schema_token_budget=None).select(
-        catalog,
-        query="history",
-    )
-    assert len(budgeted.entries) == 1
-    binding = budgeted.entries[0].descriptor.binding
+    history = catalog.by_model_name("search_chat_history")
+    assert history is not None
+    binding = history.descriptor.binding
     assert binding is not None
     outcome = await binding.invoke(
         {"query": "昨天"},
@@ -238,58 +201,6 @@ async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral(
     )
     with pytest.raises(ValueError, match="duplicate canonical capability"):
         collision_registry.catalog(object())
-
-
-@pytest.mark.asyncio
-async def test_bundle_members_survive_candidate_and_schema_limits() -> None:
-    async def execute(name: str, arguments: str, _context: object) -> object:
-        del arguments
-        return {"ok": True, "data": name}
-
-    base = InProcessToolProvider(
-        provider_id="bundle-test",
-        source=CapabilityTrustSource.PLUGIN,
-        definitions=lambda _context: tuple(
-            _tool(name, f"{name} description") for name in ("lookup", "detail", "commit")
-        ),
-        execute=execute,
-    ).descriptors(object())
-    bundle_scope = "example.order"
-    bundled = tuple(
-        replace(
-            descriptor,
-            additional_scopes=(bundle_scope,),
-            bundle_scopes=(bundle_scope,),
-            scope_summaries=((bundle_scope, "complete order flow"),),
-        )
-        for descriptor in base
-    )
-    registry = ToolProviderRegistry()
-    registry.register(_StaticProvider("bundle-test", bundled))
-    catalog = registry.catalog(object())
-
-    candidates = ToolCandidateSelector().select(
-        catalog,
-        scopes=(bundle_scope,),
-        user_request="lookup",
-        limit=1,
-    )
-    assert {item.descriptor.model_name for item in candidates.entries} == {
-        "lookup",
-        "detail",
-        "commit",
-    }
-
-    budgeted = ToolSchemaBudgeter(
-        selected_tool_limit=1,
-        schema_token_budget=None,
-    ).select(catalog, scopes=(bundle_scope,))
-    assert len(budgeted.entries) == 3
-    with pytest.raises(ToolBundleBudgetError, match=r"example\.order"):
-        ToolSchemaBudgeter(
-            selected_tool_limit=None,
-            schema_token_budget=1,
-        ).select(catalog, scopes=(bundle_scope,))
 
 
 @dataclass(slots=True)
