@@ -47,6 +47,14 @@ from qq_ai_bot.planner.models import PlannerDecision, PlannerSignal
 from qq_ai_bot.planner.provider import PlannerInterruptedError as ProviderPlannerInterruptedError
 from qq_ai_bot.planner.service import PlannerOutcome, PlannerService
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
+from qq_ai_bot.runtime.observability import (
+    RuntimeTurnCorrelation,
+    TurnObservationRecorder,
+    bind_runtime_turn,
+    build_turn_observation,
+    new_runtime_turn_id,
+    record_observation_safely,
+)
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
@@ -263,8 +271,10 @@ class MessageProcessor:
         emoji_collector: EmojiCollector | None = None,
         emoji_worker: EmojiWorker | None = None,
         voice_preferences: VoicePreferenceService | None = None,
+        turn_observations: TurnObservationRecorder | None = None,
     ) -> None:
         database = conversations._database
+        self._turn_observations = turn_observations
         self._settings = settings
         self._conversations = conversations
         self._groups = groups
@@ -394,6 +404,49 @@ class MessageProcessor:
         self._planner.set_event_publisher(publisher)
 
     async def handle(
+        self,
+        message: InboundMessage,
+        sender: OutboundSender,
+        profile_resolver: UserProfileResolver | None = None,
+    ) -> ProcessResult:
+        """Bind one opaque runtime turn correlation around real message handling.
+
+        The correlation travels as ambient context to every persistence write
+        point (planner runs, model invocations, tool invocations, memory
+        recall receipts).  A content-free observation row is recorded only
+        for turns that actually engaged those write points or failed
+        unexpectedly; pure command / observe-only turns stay silent.
+        """
+
+        started = time.perf_counter()
+        correlation = RuntimeTurnCorrelation(
+            turn_id=new_runtime_turn_id(),
+            origin=TurnOrigin.USER_MESSAGE,
+        )
+        result: ProcessResult | None = None
+        error_category: str | None = None
+        with bind_runtime_turn(correlation):
+            try:
+                result = await self._handle_admitted(message, sender, profile_resolver)
+                return result
+            except BaseException as exc:
+                error_category = type(exc).__name__
+                raise
+            finally:
+                if correlation.touched or error_category is not None:
+                    observation = build_turn_observation(
+                        correlation,
+                        scope_type=message.scope_type.value,
+                        conversation_key=self._turn_coordinator.key_for(message),
+                        admission_outcome=result.reason if result is not None else None,
+                        handled=result.handled if result is not None else False,
+                        sent_messages=result.sent_messages if result is not None else 0,
+                        error_category=error_category,
+                        total_latency_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                    await record_observation_safely(self._turn_observations, observation)
+
+    async def _handle_admitted(
         self,
         message: InboundMessage,
         sender: OutboundSender,

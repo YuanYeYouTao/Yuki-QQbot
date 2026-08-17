@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
@@ -17,6 +18,15 @@ from qq_ai_bot.plugin_host.notification_repository import (
     BackgroundTurnJobRecord,
     PluginNotificationRepository,
 )
+from qq_ai_bot.runtime.observability import (
+    RuntimeTurnCorrelation,
+    TurnObservationRecorder,
+    bind_runtime_turn,
+    build_turn_observation,
+    new_runtime_turn_id,
+    record_observation_safely,
+)
+from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
@@ -40,6 +50,7 @@ class PluginBackgroundTurnWorker:
         planner: PlannerService,
         chat: ChatService,
         turns: ConversationTurnCoordinator,
+        turn_observations: TurnObservationRecorder | None = None,
     ) -> None:
         self._repository = repository
         self._ledger = ledger
@@ -48,6 +59,7 @@ class PluginBackgroundTurnWorker:
         self._planner = planner
         self._chat = chat
         self._turns = turns
+        self._turn_observations = turn_observations
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -83,6 +95,38 @@ class PluginBackgroundTurnWorker:
             await self._execute(job)
 
     async def _execute(self, job: BackgroundTurnJobRecord) -> None:
+        """Bind one fresh runtime turn correlation per background job attempt."""
+
+        started = time.perf_counter()
+        correlation = RuntimeTurnCorrelation(
+            turn_id=new_runtime_turn_id(),
+            origin=TurnOrigin.PLUGIN_BACKGROUND,
+        )
+        error_category: str | None = None
+        conversation_key = (
+            f"group:{job.target_id}" if job.target_type == "group" else f"private:{job.target_id}"
+        )
+        with bind_runtime_turn(correlation):
+            try:
+                await self._execute_admitted(job)
+            except BaseException as exc:
+                error_category = type(exc).__name__
+                raise
+            finally:
+                if correlation.touched or error_category is not None:
+                    observation = build_turn_observation(
+                        correlation,
+                        scope_type=job.target_type,
+                        conversation_key=conversation_key,
+                        admission_outcome="plugin_background",
+                        handled=error_category is None,
+                        sent_messages=0,
+                        error_category=error_category,
+                        total_latency_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                    await record_observation_safely(self._turn_observations, observation)
+
+    async def _execute_admitted(self, job: BackgroundTurnJobRecord) -> None:
         creator = await self._repository.grant_creator(
             plugin_id=job.plugin_id,
             target_type=job.target_type,

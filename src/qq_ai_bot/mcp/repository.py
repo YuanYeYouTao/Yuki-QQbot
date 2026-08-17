@@ -22,6 +22,7 @@ from qq_ai_bot.persistence.models import (
     ToolArtifactModel,
     ToolInvocationModel,
 )
+from qq_ai_bot.runtime.observability import claim_runtime_turn_id
 
 _MAX_STRUCTURED_ARTIFACT_BYTES = 4 * 1024 * 1024
 _MAX_JSON_PATH_PARTS = 32
@@ -184,6 +185,7 @@ class MCPRepository:
         async with self._database.sessions() as session, session.begin():
             session.add(
                 ToolInvocationModel(
+                    runtime_turn_id=claim_runtime_turn_id(),
                     conversation_key_hash=hashlib.sha256(
                         conversation_key.encode("utf-8")
                     ).hexdigest(),

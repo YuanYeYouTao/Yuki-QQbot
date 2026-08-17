@@ -55,9 +55,13 @@ class PlannerRunModel(Base):
             "created_at",
         ),
         Index("ix_planner_runs_finished", "finished_at"),
+        Index("ix_planner_runs_runtime_turn", "runtime_turn_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Opaque whole-turn correlation id (3.6.0-R1); NULL for rows written
+    # outside a bound turn and for all pre-0037 history.
+    runtime_turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     conversation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     trigger_message_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     scope_type: Mapped[str] = mapped_column(String(16), nullable=False)

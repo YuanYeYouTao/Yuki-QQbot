@@ -497,10 +497,15 @@ class MemoryRecallReceiptModel(Base):
             name="ck_memory_recall_receipt_purpose",
         ),
         Index("ix_memory_recall_receipts_expires", "expires_at", "id"),
+        Index("ix_memory_recall_receipts_runtime_turn", "runtime_turn_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # ``turn_id`` predates 3.6.0 and stays the receipt's own unique id
+    # (receipt_turn_id semantics); ``runtime_turn_id`` is the whole-turn
+    # correlation added by 0037 and is NULL outside a bound turn.
     turn_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    runtime_turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     conversation_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     trigger_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     origin: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -1805,9 +1810,12 @@ class ToolInvocationModel(Base):
         CheckConstraint("latency_seconds >= 0", name="ck_tool_invocations_latency"),
         CheckConstraint("result_size >= 0", name="ck_tool_invocations_result_size"),
         Index("ix_tool_invocations_provider_created", "provider_id", "created_at"),
+        Index("ix_tool_invocations_runtime_turn", "runtime_turn_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Opaque whole-turn correlation id (3.6.0-R1); NULL outside a bound turn.
+    runtime_turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     conversation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     provider_id: Mapped[str] = mapped_column(String(128), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -1817,6 +1825,42 @@ class ToolInvocationModel(Base):
     artifact_created: Mapped[bool] = mapped_column(Boolean, nullable=False)
     error_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeTurnObservationModel(Base):
+    """One content-free row per admitted turn (3.6.0-R1, migration 0037).
+
+    Only enums, counts, times, hashes and error categories are stored —
+    never prompts, message bodies, tool arguments, memory content or ref
+    lists.  Rows expire after a bounded retention and are purged in batches
+    by the maintenance loop.
+    """
+
+    __tablename__ = "runtime_turn_observations"
+    __table_args__ = (
+        CheckConstraint("sent_messages >= 0", name="ck_runtime_turn_obs_sent_messages"),
+        CheckConstraint("total_latency_ms >= 0", name="ck_runtime_turn_obs_latency"),
+        Index("ix_runtime_turn_observations_expires", "expires_at", "id"),
+        Index("ix_runtime_turn_observations_created", "created_at"),
+        Index(
+            "ix_runtime_turn_observations_origin_created",
+            "origin",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    runtime_turn_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    origin: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    conversation_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    admission_outcome: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    handled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sent_messages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    total_latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 # Source-compatibility aliases for integrations that only inspect the old profile types.

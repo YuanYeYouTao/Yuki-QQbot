@@ -154,6 +154,7 @@ class ApplicationContainer:
         )
         self.relationships = persistence.relationships
         self.relationship_jobs = persistence.relationship_jobs
+        self.turn_observations = persistence.turn_observations
         model_runtime = ModelRuntimeModule(
             settings.model_runtime,
             self.database,
@@ -363,6 +364,7 @@ class ApplicationContainer:
             planner=self.planner,
             chat=self.chat,
             turns=self.turn_coordinator,
+            turn_observations=self.turn_observations,
         )
         self.plugin_module = PluginModule(
             settings=settings.plugins,
@@ -418,6 +420,7 @@ class ApplicationContainer:
             planner=self.planner,
             turn_coordinator=self.turn_coordinator,
             planner_signals=self.plugin_planner_signals,
+            turn_observations=self.turn_observations,
         )
         self.command_service = CommandService(
             settings=settings,
@@ -488,6 +491,7 @@ class ApplicationContainer:
             emoji_collector=self.emoji_collector,
             emoji_worker=self.emoji_worker,
             voice_preferences=self.voice_preference_service,
+            turn_observations=self.turn_observations,
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -823,6 +827,12 @@ class ApplicationContainer:
                         "speech_cache_cleaned rows=%d files=%d",
                         speech_expired,
                         speech_files,
+                    )
+                turn_observations_deleted = await self.turn_observations.cleanup_expired()
+                if turn_observations_deleted:
+                    logger.info(
+                        "runtime_turn_observations_cleaned count=%d",
+                        turn_observations_deleted,
                     )
             except (SQLAlchemyError, OSError, RuntimeError) as exc:
                 logger.error("processed_event_cleanup_failed", exc_info=exc)

@@ -30,6 +30,7 @@ from qq_ai_bot.persistence.repositories import (
     UserProfileRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
 from qq_ai_bot.planner.context import PlannerContextBuilder
 from qq_ai_bot.planner.fake import FakePlannerProvider
 from qq_ai_bot.planner.models import (
@@ -277,6 +278,7 @@ def build_harness(
         vision_service=vision,
         command_service=command_service,
         direct_plugin_commands=direct_plugin_commands,
+        turn_observations=RuntimeTurnObservationRepository(database),
     )
     return Harness(
         settings,

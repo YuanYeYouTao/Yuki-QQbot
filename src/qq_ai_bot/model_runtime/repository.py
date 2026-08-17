@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.model_runtime.models import ModelInvocationRecord, ModelStats, ModelTask
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.runtime.observability import claim_runtime_turn_id
 
 
 class ModelInvocationRepository:
@@ -35,6 +36,7 @@ class ModelInvocationRepository:
         error_category: str | None,
     ) -> ModelInvocationRecord:
         row = ModelInvocationModel(
+            runtime_turn_id=claim_runtime_turn_id(),
             task=task.value,
             profile_id=profile_id,
             provider=provider,

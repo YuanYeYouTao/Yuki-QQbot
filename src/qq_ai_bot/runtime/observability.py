@@ -17,16 +17,22 @@ re-bind explicitly.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from qq_ai_bot.runtime.origin import TurnOrigin
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_OBSERVATION_RETENTION_DAYS = 30
 
 
 def new_runtime_turn_id() -> str:
@@ -115,3 +121,64 @@ class TurnObservationRecorder(Protocol):
     """Persistence-side sink for observation rows."""
 
     async def record_turn(self, observation: RuntimeTurnObservation) -> None: ...
+
+
+def build_turn_observation(
+    correlation: RuntimeTurnCorrelation,
+    *,
+    scope_type: str,
+    conversation_key: str | None,
+    admission_outcome: str | None,
+    handled: bool,
+    sent_messages: int,
+    error_category: str | None,
+    total_latency_ms: int,
+    retention_days: int = DEFAULT_OBSERVATION_RETENTION_DAYS,
+    now: datetime | None = None,
+) -> RuntimeTurnObservation:
+    """Project one finished turn onto the content-free observation row.
+
+    The raw ``conversation_key`` never reaches the row; only its hash does.
+    """
+
+    created = now or datetime.now(UTC)
+    return RuntimeTurnObservation(
+        runtime_turn_id=correlation.turn_id,
+        origin=correlation.origin,
+        scope_type=scope_type[:16],
+        conversation_key_hash=(
+            hash_conversation_key(conversation_key) if conversation_key else None
+        ),
+        admission_outcome=admission_outcome[:64] if admission_outcome else None,
+        handled=handled,
+        sent_messages=max(0, sent_messages),
+        error_category=error_category[:128] if error_category else None,
+        total_latency_ms=max(0, total_latency_ms),
+        created_at=created,
+        expires_at=created + timedelta(days=max(1, retention_days)),
+    )
+
+
+async def record_observation_safely(
+    recorder: TurnObservationRecorder | None,
+    observation: RuntimeTurnObservation,
+) -> None:
+    """Persist one observation row without ever breaking the turn itself.
+
+    ``asyncio.shield`` lets an in-flight row survive task cancellation (the
+    cancellation still propagates to the caller); any storage failure is
+    reduced to a content-free warning.
+    """
+
+    if recorder is None:
+        return
+    try:
+        await asyncio.shield(recorder.record_turn(observation))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "runtime_turn_observation_failed origin=%s exception_category=%s",
+            observation.origin.value,
+            type(exc).__name__,
+        )

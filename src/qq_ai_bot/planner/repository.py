@@ -13,6 +13,7 @@ from sqlalchemy import func, select, update
 
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.planner.db_models import PlannerRunModel
+from qq_ai_bot.runtime.observability import claim_runtime_turn_id
 
 _IDENTIFIER_LIKE = re.compile(r"(?<!\d)\d{5,20}(?!\d)")
 _SENSITIVE_REASON_KEYS = ("content", "message", "prompt", "history", "ocr", "image")
@@ -103,6 +104,7 @@ class PlannerRepository:
 
         timestamp = _aware_utc(created_at or datetime.now(UTC))
         row = PlannerRunModel(
+            runtime_turn_id=claim_runtime_turn_id(),
             conversation_key_hash=hash_planner_identifier(conversation_key, kind="conversation"),
             trigger_message_id=trigger_message_id[:128],
             scope_type=scope_type[:16],

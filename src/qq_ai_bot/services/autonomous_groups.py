@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -21,6 +22,14 @@ from qq_ai_bot.planner.models import PlannerDecision
 from qq_ai_bot.planner.provider import PlannerInterruptedError as ProviderPlannerInterruptedError
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.plugin_host.planner_adapter import PluginPlannerSignalAdapter
+from qq_ai_bot.runtime.observability import (
+    RuntimeTurnCorrelation,
+    TurnObservationRecorder,
+    bind_runtime_turn,
+    build_turn_observation,
+    new_runtime_turn_id,
+    record_observation_safely,
+)
 from qq_ai_bot.services.chat import ChatService, OutboundSender
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
@@ -55,6 +64,7 @@ class AutonomousGroupService:
         runtime_config: RuntimeConfigService | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
         planner_signals: PluginPlannerSignalAdapter | None = None,
+        turn_observations: TurnObservationRecorder | None = None,
     ) -> None:
         self._chat = chat
         self._runtime_config = runtime_config or chat._runtime_config
@@ -62,6 +72,7 @@ class AutonomousGroupService:
         self._planner = planner
         self._coordinator = turn_coordinator or chat._turn_coordinator
         self._planner_signals = planner_signals
+        self._turn_observations = turn_observations
         self._states: dict[str, _GroupState] = {}
         self._task_failures = 0
         self._closed = False
@@ -184,6 +195,45 @@ class AutonomousGroupService:
         return state is not None and state.revision == revision
 
     async def _plan_latest(
+        self,
+        group_id: str,
+        revision: int,
+        runtime: RuntimeConfigSnapshot,
+    ) -> None:
+        """Bind one fresh runtime turn correlation per autonomous attempt.
+
+        Delivery counts stay joinable through ``planner_runs.messages_sent``
+        on the same ``runtime_turn_id``; the observation row itself only
+        carries latency and outcome category.
+        """
+
+        started = time.perf_counter()
+        correlation = RuntimeTurnCorrelation(
+            turn_id=new_runtime_turn_id(),
+            origin=TurnOrigin.AUTONOMOUS_GROUP,
+        )
+        error_category: str | None = None
+        with bind_runtime_turn(correlation):
+            try:
+                await self._plan_latest_admitted(group_id, revision, runtime)
+            except BaseException as exc:
+                error_category = type(exc).__name__
+                raise
+            finally:
+                if correlation.touched or error_category is not None:
+                    observation = build_turn_observation(
+                        correlation,
+                        scope_type="group",
+                        conversation_key=f"group:{group_id}",
+                        admission_outcome="autonomous_group",
+                        handled=error_category is None,
+                        sent_messages=0,
+                        error_category=error_category,
+                        total_latency_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                    await record_observation_safely(self._turn_observations, observation)
+
+    async def _plan_latest_admitted(
         self,
         group_id: str,
         revision: int,

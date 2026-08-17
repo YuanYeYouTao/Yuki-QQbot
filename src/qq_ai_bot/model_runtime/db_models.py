@@ -18,9 +18,12 @@ class ModelInvocationModel(Base):
         CheckConstraint("latency_seconds >= 0", name="ck_model_invocations_latency"),
         Index("ix_model_invocations_task_created", "task", "created_at"),
         Index("ix_model_invocations_profile_created", "profile_id", "created_at"),
+        Index("ix_model_invocations_runtime_turn", "runtime_turn_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Opaque whole-turn correlation id (3.6.0-R1); NULL outside a bound turn.
+    runtime_turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     task: Mapped[str] = mapped_column(String(64), nullable=False)
     profile_id: Mapped[str] = mapped_column(String(64), nullable=False)
     provider: Mapped[str] = mapped_column(String(64), nullable=False)

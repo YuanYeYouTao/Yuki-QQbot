@@ -36,6 +36,7 @@ from qq_ai_bot.persistence.repositories import (
     UserProfileRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
 from qq_ai_bot.planner.repository import PlannerRepository
 from qq_ai_bot.speech.preference_repository import VoicePreferenceRepository
 from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfileRepository
@@ -70,6 +71,7 @@ class PersistenceBundle:
     speech_generations: SpeechGenerationRepository
     relationships: RelationshipRepository
     relationship_jobs: RelationshipJobRepository
+    turn_observations: RuntimeTurnObservationRepository
 
 
 class PersistenceModule:
@@ -182,4 +184,5 @@ class PersistenceModule:
                 database,
                 max_attempts=settings.relationship_max_attempts,
             ),
+            turn_observations=RuntimeTurnObservationRepository(database),
         )
