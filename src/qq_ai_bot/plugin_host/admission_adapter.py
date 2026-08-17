@@ -12,7 +12,6 @@ from typing import cast
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.messages import InboundMessage
-from qq_ai_bot.planner.models import PlannerSignal
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from yuki_plugin_sdk.models import (
     AdmissionSignal as SdkAdmissionSignal,
@@ -31,7 +30,7 @@ InvocationScope = Callable[
 
 
 class PluginAdmissionSignalAdapter:
-    """Collect plugin admission hints and map them onto host PlannerSignal.
+    """Collect plugin admission hints and project them as SDK AdmissionSignal.
 
     Admission signals only influence autonomous-group participation scoring.
     They must not change tool exposure, memory contracts, or authority.
@@ -63,7 +62,7 @@ class PluginAdmissionSignalAdapter:
         message: InboundMessage,
         origin: TurnOrigin,
         runtime: RuntimeConfigSnapshot,
-    ) -> tuple[PlannerSignal, ...]:
+    ) -> tuple[SdkAdmissionSignal, ...]:
         signal_context = AdmissionSignalContext(
             conversation_key=(
                 f"group:{message.group_id}"
@@ -105,7 +104,7 @@ class PluginAdmissionSignalAdapter:
         origin: TurnOrigin,
         runtime: RuntimeConfigSnapshot,
         signal_context: AdmissionSignalContext,
-    ) -> PlannerSignal | None:
+    ) -> SdkAdmissionSignal | None:
         try:
             async with asyncio.timeout(self._timeout):
                 async with self._scope(plugin_id, message, origin, runtime):
@@ -119,13 +118,12 @@ class PluginAdmissionSignalAdapter:
             normalized = expires.replace(tzinfo=UTC) if expires.tzinfo is None else expires
             if normalized <= datetime.now(UTC):
                 return None
-        return PlannerSignal(
-            source_plugin_id=plugin_id,
-            score_delta=max(-10, min(10, signal.score_delta)),
-            reason_code=signal.reason_code,
-            summary=signal.summary[:300],
-            confidence=signal.confidence,
-            expires_at=signal.expires_at,
+        return signal.model_copy(
+            update={
+                "source_plugin_id": plugin_id,
+                "score_delta": max(-10, min(10, int(signal.score_delta))),
+                "summary": signal.summary[:300],
+            }
         )
 
     @asynccontextmanager

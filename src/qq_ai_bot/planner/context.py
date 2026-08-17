@@ -10,7 +10,10 @@ from typing import Protocol
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot, SpeechRuntimeConfig
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.conversation.participation import AdmissionScoreSnapshot
+from qq_ai_bot.conversation.participation import (
+    AdmissionScoreSnapshot,
+    AdmissionSignalHint,
+)
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
 from qq_ai_bot.emoji.request_detector import EmojiRequestDetector
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
@@ -111,7 +114,7 @@ class PlannerContextBuilder:
         inbound: InboundMessage,
         content: str,
         runtime: RuntimeConfigSnapshot,
-        plugin_signals: tuple[PlannerSignal, ...] = (),
+        plugin_signals: tuple[AdmissionSignalHint, ...] = (),
         now: datetime | None = None,
     ) -> ReplyNecessityFeatures:
         """Build local participation features without a Planner LLM call."""

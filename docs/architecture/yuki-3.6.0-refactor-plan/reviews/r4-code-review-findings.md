@@ -1,6 +1,6 @@
 # R4 开工前代码审阅结论（r4-code-review-findings）
 
-> 基线：当前分支 `codex/refactor-3.6-runtime`（R1/R2/R3 已合入；产品版本仍为 Yuki `3.5.3`，Alembic head `0038`）。
+> 基线：当前分支 `codex/refactor-3.6-runtime`（R1/R2/R3 已合入；产品版本仍为 Yuki `3.5.3`，Alembic head `0039`）。
 > 对照任务书：`04-R4-CONVERSATION-RUNTIME.md`，已按 `main@2695484` 与本分支实码核对。
 > 审阅范围：任务书第 1 节列出的 processor / chat / policies / necessity / turn_coordinator /
 > reply_sequence / reply_target / emoji / speech / automation / context_assembler /
@@ -233,6 +233,7 @@ Processor 构造函数在 R5 删除 `planner/` 前仍接收 `PlannerService`（�
 3. **集成测试**：`test_message_flow` / `test_mcd_order_flow` 不再给普通聊天注入 `FakePlannerProvider`。
 4. **工具文案**：`set_reply_target` / `send_voice` / `CORE_CONTRACT` 已去掉“Planner 已决定”类句子（07-PLAN §3.3）。
 5. **Plugin background**：`generate_external_reply` 改为 `tools_closed=True`（仍 `read_only`）。`read_only` 只挡 write，挡不住 `EXTERNAL_READ` / `REPLY_EFFECT`，否则后台轮次会拿到 web/history/emoji/voice，违反 §12 tool-free。`send_voice` / `send_emoji` 的 allowed_origins 收为 USER_MESSAGE + AUTONOMOUS_GROUP。
+6. **AdmissionSignal**：生产 adapter / Processor 协议不再经 `planner.models.PlannerSignal`，只投影 SDK `AdmissionSignal`。评分侧继续消费 `AdmissionSignalHint`。
 
 仍按 findings §6 接受、不在本轮返工的项：
 
@@ -241,3 +242,14 @@ Processor 构造函数在 R5 删除 `planner/` 前仍接收 `PlannerService`（�
 - `send_emoji` 任务书 schema 无 `request_basis`，因此不发明短语分类器去区分自发/显式；可用性门看 emoji feature，频率门留给有 basis 的 voice。
 - 第 14/17 节回放性能门槛与 600 条语料是发布门，不是这次切换的阻塞项。
 - 第 16 节 11 笔提交切分未做（已一次落地）。
+
+---
+
+## 9. 3.6.0 发布说明草稿（R4 行为变化）
+
+R4 §12 要求写进 release note。R5 发版时照抄并补回放口径：
+
+- **自主群默认禁止 persistent write**：`AUTONOMOUS_GROUP` 为 `read_only`，`memory_change` 只接受 `USER_MESSAGE`。相对 3.5.3 是安全收紧。
+- **Direct 轮次不再计分**：私聊 / @ / 回复 Yuki 不产生 `necessity_score` 样本；回放对比 admission 指标须单独标注。
+- **Plugin background 不再经 Planner SILENT**：去 Planner 后直接 tool-free 生成，3.5.3 可被 Planner 吞掉的后台回复现在会开口。
+- **emoji-only 必须走 Main Agent `send_emoji`**：不再跳过 Agent 发 Planner 预置表情。

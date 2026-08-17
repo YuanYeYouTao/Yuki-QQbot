@@ -11,6 +11,7 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.planner.models import PlannerSignal
 from qq_ai_bot.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
 from qq_ai_bot.plugin_host.extension_registry import ExtensionRegistry
 from yuki_plugin_sdk.models import (
@@ -115,6 +116,8 @@ async def test_contextual_provider_receives_real_message_origin_and_scope() -> N
     assert context.current.text == "hello from the real sender"
     assert context.current.received_at == message.received_at
     assert len(signals) == 1
+    assert isinstance(signals[0], SdkAdmissionSignal)
+    assert not isinstance(signals[0], PlannerSignal)
     assert signals[0].source_plugin_id == "com.example.context"
 
 

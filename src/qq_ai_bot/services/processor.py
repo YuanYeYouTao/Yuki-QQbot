@@ -42,7 +42,6 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
 )
 from qq_ai_bot.planner.context import PlannerContextBuilder
-from qq_ai_bot.planner.models import PlannerSignal
 from qq_ai_bot.planner.provider import PlannerInterruptedError as ProviderPlannerInterruptedError
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
@@ -98,18 +97,19 @@ from qq_ai_bot.services.vision_service import (
 from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.vision.models import VisualObservation
 from yuki_plugin_sdk.events import EventName
+from yuki_plugin_sdk.models import AdmissionSignal as SdkAdmissionSignal
 
 logger = logging.getLogger(__name__)
 
 
-class PlannerSignalProvider(Protocol):
+class AdmissionSignalProvider(Protocol):
     async def collect(
         self,
         *,
         message: InboundMessage,
         origin: TurnOrigin,
         runtime: RuntimeConfigSnapshot,
-    ) -> tuple[PlannerSignal, ...]: ...
+    ) -> tuple[SdkAdmissionSignal, ...]: ...
 
 
 class DirectPluginCommandResolver(Protocol):
@@ -264,7 +264,7 @@ class MessageProcessor:
         command_service: CommandService | None = None,
         direct_plugin_commands: DirectPluginCommandResolver | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
-        planner_signals: PlannerSignalProvider | None = None,
+        planner_signals: AdmissionSignalProvider | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
         emoji_collector: EmojiCollector | None = None,
         emoji_worker: EmojiWorker | None = None,
