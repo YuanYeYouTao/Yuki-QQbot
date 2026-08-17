@@ -7,6 +7,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from typing import cast
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -14,7 +15,10 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import ConversationRuntimeConfig, RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.conversation.features import AdmissionFeatureBuilder
-from qq_ai_bot.conversation.participation import LocalAutonomousParticipationPolicy
+from qq_ai_bot.conversation.participation import (
+    AdmissionSignalHint,
+    LocalAutonomousParticipationPolicy,
+)
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
@@ -267,7 +271,7 @@ class AutonomousGroupService:
             inbound=last,
             content=last.text,
             runtime=runtime,
-            plugin_signals=plugin_signals,
+            plugin_signals=cast(tuple[AdmissionSignalHint, ...], plugin_signals),
         )
         snapshot = LocalAutonomousParticipationPolicy(
             threshold=policy.autonomous_admission_threshold,

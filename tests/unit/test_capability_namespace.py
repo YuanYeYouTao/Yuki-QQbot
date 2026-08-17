@@ -13,9 +13,9 @@ from qq_ai_bot.capabilities.namespace import (
     is_valid_namespace_id,
 )
 from qq_ai_bot.capabilities.provider import _CORE_METADATA
+from qq_ai_bot.capabilities.validation import CapabilityValidationResult
 from qq_ai_bot.mcp.descriptors import mcp_tool_namespace
 from qq_ai_bot.mcp.models import MCPServerConfig
-from qq_ai_bot.capabilities.validation import CapabilityValidationResult
 from qq_ai_bot.runtime.errors import (
     ProviderRegistryFrozenError,
     ProviderRegistryNotFrozenError,

@@ -175,8 +175,7 @@ def _latency_block(values: Sequence[float]) -> dict[str, Any]:
 
 def _table_names(connection: sqlite3.Connection) -> set[str]:
     return {
-        row[0]
-        for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
 
 
@@ -200,8 +199,7 @@ def _require_tables(connection: sqlite3.Connection) -> None:
 
 def _alembic_head(connection: sqlite3.Connection) -> str:
     names = {
-        row[0]
-        for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     if "alembic_version" not in names:
         return "unknown"
@@ -381,8 +379,7 @@ def _aggregate(
     )
     recall_rows = _fetchall(
         connection,
-        "SELECT runtime_turn_id, mode, purpose FROM memory_recall_receipts "
-        f"WHERE {_in_window()}",
+        f"SELECT runtime_turn_id, mode, purpose FROM memory_recall_receipts WHERE {_in_window()}",
         window,
     )
     mutation_count = _count_optional(connection, "memory_mutation_receipts", window)
@@ -410,16 +407,11 @@ def _aggregate(
             "completion_tokens": sum(int(row["completion_tokens"] or 0) for row in group),
             "total_tokens": sum(int(row["total_tokens"] or 0) for row in group),
             "cached_prompt_tokens": sum(int(row["cached_prompt_tokens"] or 0) for row in group),
-            "latency_seconds": _latency_block(
-                [float(row["latency_seconds"]) for row in group]
-            ),
+            "latency_seconds": _latency_block([float(row["latency_seconds"]) for row in group]),
         }
 
     profiles = sorted(
-        {
-            (str(row["profile_id"]), str(row["provider"]), str(row["model"]))
-            for row in model_rows
-        }
+        {(str(row["profile_id"]), str(row["provider"]), str(row["model"])) for row in model_rows}
     )
     planner_used = sum(1 for row in planner_rows if row["planner_used"])
     wait_rows = [row for row in planner_rows if row["planner_decision"] == "wait"]
@@ -462,9 +454,7 @@ def _aggregate(
                 Counter(str(row["admission_outcome"] or "unknown") for row in turns)
             ),
             "handled_ratio": _ratio(sum(1 for row in turns if row["handled"]), len(turns)),
-            "error_ratio": _ratio(
-                sum(1 for row in turns if row["error_category"]), len(turns)
-            ),
+            "error_ratio": _ratio(sum(1 for row in turns if row["error_category"]), len(turns)),
             "sent_messages": {
                 "total": sum(int(row["sent_messages"]) for row in turns),
                 "p50": percentile([int(row["sent_messages"]) for row in turns], 50),
@@ -492,9 +482,7 @@ def _aggregate(
             "decisions": _counts(
                 Counter(str(row["planner_decision"] or "unknown") for row in planner_rows)
             ),
-            "gate_decisions": _counts(
-                Counter(str(row["gate_decision"]) for row in planner_rows)
-            ),
+            "gate_decisions": _counts(Counter(str(row["gate_decision"]) for row in planner_rows)),
             "wait_ratio": _ratio(len(wait_rows), len(planner_rows)),
             "wait_then_second_call_ratio": _wait_second_call_ratio(planner_rows),
             "fallback_used_ratio": _ratio(
@@ -510,18 +498,12 @@ def _aggregate(
         "models": {
             "by_task": models_by_task,
             "planner_invocations": models_by_task.get("planner", {}).get("invocations", 0),
-            "chat_agent_invocations": models_by_task.get("chat_agent", {}).get(
-                "invocations", 0
-            ),
+            "chat_agent_invocations": models_by_task.get("chat_agent", {}).get("invocations", 0),
         },
         "tools": {
             "invocations": len(tool_rows),
-            "success_ratio": _ratio(
-                sum(1 for row in tool_rows if row["success"]), len(tool_rows)
-            ),
-            "latency_seconds": _latency_block(
-                [float(row["latency_seconds"]) for row in tool_rows]
-            ),
+            "success_ratio": _ratio(sum(1 for row in tool_rows if row["success"]), len(tool_rows)),
+            "latency_seconds": _latency_block([float(row["latency_seconds"]) for row in tool_rows]),
             "by_provider": _counts(Counter(str(row["provider_id"]) for row in tool_rows)),
         },
         "memory": {
@@ -529,9 +511,7 @@ def _aggregate(
                 "receipts": len(recall_rows),
                 "by_mode": _counts(Counter(str(row["mode"]) for row in recall_rows)),
                 "by_purpose": _counts(Counter(str(row["purpose"]) for row in recall_rows)),
-                "automatic_like": sum(
-                    1 for row in recall_rows if row["purpose"] == "background"
-                ),
+                "automatic_like": sum(1 for row in recall_rows if row["purpose"] == "background"),
             },
             "tool_receipts": {
                 "count": tool_receipt_count,
@@ -586,12 +566,9 @@ def _baseline_gaps(*, planner_runs_present: bool) -> list[dict[str, str]]:
     return gaps
 
 
-def _count_optional(
-    connection: sqlite3.Connection, table: str, window: SampleWindow
-) -> int | None:
+def _count_optional(connection: sqlite3.Connection, table: str, window: SampleWindow) -> int | None:
     names = {
-        row[0]
-        for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     if table not in names:
         return None
@@ -641,8 +618,6 @@ def load_baseline(path: Path) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise BaselineExportError("baseline document must be a JSON object")
     if document.get("schema") != BASELINE_SCHEMA:
-        raise BaselineExportError(
-            f"unsupported baseline schema: {document.get('schema')!r}"
-        )
+        raise BaselineExportError(f"unsupported baseline schema: {document.get('schema')!r}")
     assert_content_free(document)
     return document

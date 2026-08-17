@@ -265,11 +265,7 @@ class TurnCapabilityRuntime:
             memory_view=self._memory_view,
             kernel_tools=kernel,
         )
-        loaded = [
-            entry
-            for entry in plan.entries
-            if entry.descriptor.model_name not in current
-        ]
+        loaded = [entry for entry in plan.entries if entry.descriptor.model_name not in current]
         if any(is_memory_write_entry(entry) for entry in loaded):
             self._exclusive_write = True
             if self._memory_view is not None:
@@ -396,9 +392,9 @@ class TurnCapabilityRuntime:
             limit=max(limit, 10),
             affinity_namespace_ids=query.affinity_namespace_ids or self._affinity,
         )
-        return tuple(
-            hit for hit in hits if hit.capability_id in self._authorized.requestable_ids
-        )[:limit]
+        return tuple(hit for hit in hits if hit.capability_id in self._authorized.requestable_ids)[
+            :limit
+        ]
 
     async def _hydrate_lazy_mcp(self, query: CapabilityQuery) -> None:
         if self._ensure_metadata is None:

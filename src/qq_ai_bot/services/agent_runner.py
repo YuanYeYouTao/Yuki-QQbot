@@ -796,9 +796,7 @@ class AgentRunner:
                         executed_count=0,
                         reused_count=0,
                     )
-            decline_calls = [
-                call for call in unique_calls if call.function.name == "decline_reply"
-            ]
+            decline_calls = [call for call in unique_calls if call.function.name == "decline_reply"]
             if decline_calls:
                 prior_effects = getattr(tools, "has_prior_reply_effects", None)
                 mixed = len(unique_calls) != 1 or len(calls) != 1

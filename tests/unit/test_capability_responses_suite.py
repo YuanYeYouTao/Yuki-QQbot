@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.catalog import UnifiedToolCatalogEntry
 from qq_ai_bot.capabilities.exposure import (
     SCHEMA_REVISION_CONFLICT,
@@ -14,7 +15,6 @@ from qq_ai_bot.capabilities.models import (
     CapabilityRisk,
     CapabilityTrustSource,
 )
-from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.messages import ChatTool
 
 
@@ -56,7 +56,9 @@ def test_responses_keeps_old_tools_and_appends_without_duplicates() -> None:
     search = _entry("web_search")
     page = _entry("read_webpage")
     ledger.declare((search,), extra_tools=extra, callable_ids=frozenset({"web_search"}))
-    ledger.declare((search, page), extra_tools=extra, callable_ids=frozenset({"web_search", "read_webpage"}))
+    ledger.declare(
+        (search, page), extra_tools=extra, callable_ids=frozenset({"web_search", "read_webpage"})
+    )
     names = [tool.name for tool in ledger.declared_tools()]
     assert names.count("request_tools") == 1
     assert names.count("web_search") == 1
@@ -72,7 +74,10 @@ def test_responses_schema_revision_conflict_aborts() -> None:
     first = _entry("web_search", revision="1")
     second = _entry("web_search", revision="2")
     assert ledger.declare((first,), callable_ids=frozenset({"web_search"})) is None
-    assert ledger.declare((second,), callable_ids=frozenset({"web_search"})) == SCHEMA_REVISION_CONFLICT
+    assert (
+        ledger.declare((second,), callable_ids=frozenset({"web_search"}))
+        == SCHEMA_REVISION_CONFLICT
+    )
     assert ledger.declare((_entry("read_webpage"),), callable_ids=frozenset({"read_webpage"})) == (
         SCHEMA_REVISION_CONFLICT
     )

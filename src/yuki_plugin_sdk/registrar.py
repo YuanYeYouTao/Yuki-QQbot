@@ -100,9 +100,7 @@ class CommandMetadata(StrictModel):
 
 class AutomationActionMetadata(ToolMetadata):
     allowed_origins: frozenset[TurnOrigin] = Field(
-        default_factory=lambda: frozenset(
-            {TurnOrigin.SCHEDULED_AUTOMATION, TurnOrigin.SYSTEM_TASK}
-        )
+        default_factory=lambda: frozenset({TurnOrigin.SCHEDULED_AUTOMATION, TurnOrigin.SYSTEM_TASK})
     )
 
 

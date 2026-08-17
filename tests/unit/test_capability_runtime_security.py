@@ -15,12 +15,6 @@ from qq_ai_bot.capabilities.exposure import (
     SCHEMA_REVISION_CONFLICT,
     DeclaredSchemaLedger,
 )
-from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME, request_tools_definition
-from qq_ai_bot.capabilities.runtime import (
-    CapabilityIndexCache,
-    CapabilityQuery,
-    TurnCapabilityRuntime,
-)
 from qq_ai_bot.capabilities.models import (
     AuthorityContext,
     CapabilityDescriptor,
@@ -30,6 +24,12 @@ from qq_ai_bot.capabilities.models import (
     CapabilityTrustSource,
 )
 from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
+from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME, request_tools_definition
+from qq_ai_bot.capabilities.runtime import (
+    CapabilityIndexCache,
+    CapabilityQuery,
+    TurnCapabilityRuntime,
+)
 from qq_ai_bot.capabilities.validation import (
     TOOL_INPUT_VALIDATION_FAILED,
     JsonSchemaCapabilityValidator,

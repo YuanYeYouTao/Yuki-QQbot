@@ -57,12 +57,7 @@ def test_0039_creates_table_backfills_and_is_idempotent(tmp_path: Path) -> None:
         run_id = connection.execute("SELECT id FROM planner_runs").fetchone()[0]
         assert row[:6] == (1, 1, 0, 1, "agent_initiated", "migrated_planner")
         assert row[6] == source_event_hash(source="migrated_planner", raw=str(run_id))
-        indexes = {
-            item[1]
-            for item in connection.execute(
-                "PRAGMA index_list(reply_effect_events)"
-            )
-        }
+        indexes = {item[1] for item in connection.execute("PRAGMA index_list(reply_effect_events)")}
         unique_indexes = {
             item[1]
             for item in connection.execute("PRAGMA index_list(reply_effect_events)")

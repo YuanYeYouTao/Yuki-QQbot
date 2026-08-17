@@ -87,15 +87,9 @@ class CapabilityPolicyEngine:
             if exclusive is not None and descriptor.effect in _WRITE_EFFECTS:
                 if descriptor.namespace_id != exclusive:
                     continue
-            if (
-                descriptor.model_name == "read_tool_artifact"
-                and not context.artifact_available
-            ):
+            if descriptor.model_name == "read_tool_artifact" and not context.artifact_available:
                 continue
-            if (
-                descriptor.model_name == "set_reply_target"
-                and not context.reply_target_available
-            ):
+            if descriptor.model_name == "set_reply_target" and not context.reply_target_available:
                 continue
             if descriptor.risk is CapabilityRisk.DESTRUCTIVE and context.origin not in {
                 TurnOrigin.USER_MESSAGE

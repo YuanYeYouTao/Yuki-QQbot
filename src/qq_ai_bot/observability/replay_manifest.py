@@ -72,9 +72,7 @@ def assert_corpus_location(corpus_root: Path, repo_root: Path, *, kind: CorpusKi
         corpus_root.resolve().relative_to(repo_root.resolve())
     except ValueError:
         return
-    raise ReplayManifestError(
-        "production replay corpora must live outside the git working tree"
-    )
+    raise ReplayManifestError("production replay corpora must live outside the git working tree")
 
 
 def build_replay_manifest(

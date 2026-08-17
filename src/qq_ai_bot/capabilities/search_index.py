@@ -198,9 +198,7 @@ def _query_terms(query: str) -> tuple[str, ...]:
         for size in (2, 3, 4):
             if len(run) < size:
                 continue
-            ngrams[size].extend(
-                run[index : index + size] for index in range(len(run) - size + 1)
-            )
+            ngrams[size].extend(run[index : index + size] for index in range(len(run) - size + 1))
     compact = _compact(query)
     groups = (
         _ASCII_TERM.findall(folded),
@@ -242,11 +240,7 @@ def _fts_match_expression(query: str) -> str:
     terms = _query_terms(query)
     if not terms:
         return ""
-    specific = [
-        term
-        for term in terms
-        if len(term) >= 3 or _ASCII_TERM.fullmatch(term) is not None
-    ]
+    specific = [term for term in terms if len(term) >= 3 or _ASCII_TERM.fullmatch(term) is not None]
     selected = specific or ()
     if not selected:
         # Two-character CJK-only queries stay on the exact/alias maps.

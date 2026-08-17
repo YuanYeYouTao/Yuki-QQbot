@@ -49,7 +49,7 @@ class CapabilityValidationResult:
 class JsonSchemaCapabilityValidator:
     """Compile-and-cache validators at catalog admission; never fetch $ref."""
 
-    _validators: dict[str, Draft202012Validator] = field(default_factory=dict)
+    _validators: dict[str, Any] = field(default_factory=dict)
     _quarantined: set[str] = field(default_factory=set)
 
     def admit(self, entries: tuple[UnifiedToolCatalogEntry, ...]) -> tuple[str, ...]:

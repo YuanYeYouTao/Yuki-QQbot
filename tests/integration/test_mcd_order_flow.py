@@ -357,9 +357,7 @@ async def test_bundled_mcd_order_flow_commits_once_and_preserves_payment_url(
         tmp_path / "artifacts",
         retention_seconds=60,
     )
-    harness.processor._chat.register_tool_provider(
-        MCPToolProvider(manager, gateway_enabled=True)
-    )
+    harness.processor._chat.register_tool_provider(MCPToolProvider(manager, gateway_enabled=True))
     sender = MemorySender()
     try:
         outcome = await harness.processor.handle(

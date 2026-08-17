@@ -14,7 +14,6 @@ from qq_ai_bot.prompting import (
     PromptCompiler,
     PromptContribution,
     PromptProgram,
-    PromptStability,
     PromptTrust,
 )
 from qq_ai_bot.prompting.contributors import static_text

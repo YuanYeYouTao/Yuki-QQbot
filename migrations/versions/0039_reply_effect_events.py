@@ -26,6 +26,7 @@ def _identifier_hash(value: str, *, kind: str) -> str:
     payload = f"yuki-planner-v1\0{kind}\0{value}".encode("utf-8", errors="replace")
     return hashlib.sha256(payload).hexdigest()
 
+
 revision: str = "0039"
 down_revision: str | None = "0038"
 branch_labels: str | Sequence[str] | None = None

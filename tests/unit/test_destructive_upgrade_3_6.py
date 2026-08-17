@@ -142,9 +142,7 @@ def test_constructed_3_5_3_deployment_upgrades_to_0040_without_losing_memory(
     (root / ".mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
     _seed_0036_shaped_db(db)
     with sqlite3.connect(db) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0036",
-        )
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0036",)
         seeded_tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -180,9 +178,7 @@ def test_constructed_3_5_3_deployment_upgrades_to_0040_without_losing_memory(
 
     _migrate(db, "head")
     with sqlite3.connect(db) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0040",
-        )
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0040",)
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -190,17 +186,11 @@ def test_constructed_3_5_3_deployment_upgrades_to_0040_without_losing_memory(
         assert "planner_runs" not in tables
         assert "runtime_turn_observations" in tables
         assert "reply_effect_events" in tables
-        assert connection.execute("SELECT content FROM memory_facts").fetchone() == (
-            _SECRET_FACT,
-        )
+        assert connection.execute("SELECT content FROM memory_facts").fetchone() == (_SECRET_FACT,)
         assert connection.execute("SELECT COUNT(*) FROM memory_facts").fetchone() == (1,)
-        assert connection.execute("SELECT task FROM model_invocations").fetchone() == (
-            "planner",
-        )
+        assert connection.execute("SELECT task FROM model_invocations").fetchone() == ("planner",)
         overrides = list(
-            connection.execute(
-                "SELECT config_key, value_json FROM runtime_config_overrides"
-            )
+            connection.execute("SELECT config_key, value_json FROM runtime_config_overrides")
         )
         assert overrides == [("conversation.autonomous_batch_limit", "12")]
         plugin = connection.execute(
@@ -214,18 +204,14 @@ def test_constructed_3_5_3_deployment_upgrades_to_0040_without_losing_memory(
         assert plugin[1] == 0
         assert "planner.signal.register" not in plugin[2]
         assert "memory.read" in plugin[2]
-        cadence = connection.execute(
-            "SELECT source FROM reply_effect_events"
-        ).fetchone()
+        cadence = connection.execute("SELECT source FROM reply_effect_events").fetchone()
         assert cadence == ("migrated_planner",)
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
     with pytest.raises((RuntimeError, CommandError), match="cannot restore deleted planner_runs"):
         _downgrade(db, "0039")
     with sqlite3.connect(db) as connection:
-        assert connection.execute("SELECT content FROM memory_facts").fetchone() == (
-            _SECRET_FACT,
-        )
+        assert connection.execute("SELECT content FROM memory_facts").fetchone() == (_SECRET_FACT,)
 
 
 def test_installers_abort_before_migrate_when_snapshot_fails() -> None:

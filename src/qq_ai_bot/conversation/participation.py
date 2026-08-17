@@ -62,7 +62,7 @@ class AdmissionSignalHint(Protocol):
     """Duck-typed plugin admission hint consumed by the local scorer."""
 
     source_plugin_id: str
-    score_delta: float
+    score_delta: int
     confidence: float
     expires_at: datetime | None
 

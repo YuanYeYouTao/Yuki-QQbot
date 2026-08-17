@@ -191,14 +191,14 @@ class AuthorityFirstExposurePlanner:
 
         permission_query = _looks_like_permission_query(query)
         for name in CONDITIONAL_KERNEL_TOOLS:
-            entry = by_id.get(name)
+            candidate = by_id.get(name)
             if name == "get_my_capabilities" and not permission_query:
                 continue
             if name == "read_tool_artifact" and not artifact_available:
                 continue
             if name == "set_reply_target" and not reply_target_available:
                 continue
-            add(entry)
+            add(candidate)
 
         for name in priority_ids:
             add(by_id.get(name))
@@ -236,9 +236,7 @@ class AuthorityFirstExposurePlanner:
             hard_cap=max(0, self._hard_cap - len(kernel_tools)),
             schema_token_budget=self._schema_token_budget,
             preserve_ids={
-                entry.descriptor.model_name
-                for entry in selected
-                if entry.descriptor.bundle_scopes
+                entry.descriptor.model_name for entry in selected if entry.descriptor.bundle_scopes
             },
         )
         callable_ids = frozenset(item.descriptor.model_name for item in selected) | frozenset(
@@ -246,12 +244,12 @@ class AuthorityFirstExposurePlanner:
         )
         if memory_view is not None and memory_view.exclusive_namespace:
             callable_ids = _restrict_exclusive_write(selected, kernel_tools, memory_view)
-            selected = tuple(
+            selected = [
                 item
                 for item in selected
                 if item.descriptor.model_name in callable_ids
                 or item.descriptor.namespace_id in memory_view.eager_namespaces
-            )
+            ]
             selected_ids = {item.descriptor.model_name for item in selected}
         omitted = sum(
             1 for item in catalog.entries if item.descriptor.model_name not in selected_ids
@@ -352,10 +350,7 @@ def _expand_selected_bundles(
 
     scopes = tuple(
         dict.fromkeys(
-            scope
-            for entry in selected
-            for scope in entry.descriptor.bundle_scopes
-            if scope.strip()
+            scope for entry in selected for scope in entry.descriptor.bundle_scopes if scope.strip()
         )
     )
     rejected: list[str] = []
@@ -407,9 +402,7 @@ def _exceeds_caps(
     if schema_token_budget is not None and tokens > schema_token_budget:
         return True
     mcp_entries = [
-        entry
-        for entry in entries
-        if entry.descriptor.trust_source is CapabilityTrustSource.MCP
+        entry for entry in entries if entry.descriptor.trust_source is CapabilityTrustSource.MCP
     ]
     if mcp_tool_limit is not None and len(mcp_entries) > mcp_tool_limit:
         return True
@@ -467,18 +460,19 @@ def _restrict_exclusive_write(
 
 
 def is_memory_write_entry(entry: UnifiedToolCatalogEntry) -> bool:
-    return (
-        entry.descriptor.namespace_id == "memory.state.write"
-        or (
-            entry.descriptor.model_name == "memory_change"
-            and entry.descriptor.effect is CapabilityEffect.WRITE_STATE
-        )
+    return entry.descriptor.namespace_id == "memory.state.write" or (
+        entry.descriptor.model_name == "memory_change"
+        and entry.descriptor.effect is CapabilityEffect.WRITE_STATE
     )
 
 
 def descriptor_is_business_write(descriptor: CapabilityDescriptor) -> bool:
-    return descriptor.effect in {
-        CapabilityEffect.WRITE_STATE,
-        CapabilityEffect.PLATFORM_MUTATE,
-        CapabilityEffect.PLATFORM_SEND,
-    } and descriptor.namespace_id != "memory.state.write"
+    return (
+        descriptor.effect
+        in {
+            CapabilityEffect.WRITE_STATE,
+            CapabilityEffect.PLATFORM_MUTATE,
+            CapabilityEffect.PLATFORM_SEND,
+        }
+        and descriptor.namespace_id != "memory.state.write"
+    )

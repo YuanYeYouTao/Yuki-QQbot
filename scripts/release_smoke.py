@@ -181,9 +181,7 @@ def discover_smoke_plugin_ids(deploy_directory: Path) -> tuple[str, ...]:
         sorted(
             path.name
             for path in root.iterdir()
-            if path.is_dir()
-            and not path.name.startswith(".")
-            and (path / "plugin.toml").is_file()
+            if path.is_dir() and not path.name.startswith(".") and (path / "plugin.toml").is_file()
         )
     )
     if _SMOKE_PLUGIN_ID in ids:

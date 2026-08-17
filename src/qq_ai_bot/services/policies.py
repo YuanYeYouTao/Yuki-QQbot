@@ -90,7 +90,9 @@ def _command_and_content(text: str, ai_prefix: str) -> tuple[CommandName | None,
 def replies_to_bot(message: InboundMessage) -> bool:
     """Return whether this inbound message is a platform reply to Yuki."""
 
-    return bool(message.reply_sender_user_id) and message.reply_sender_user_id == message.bot_user_id
+    return (
+        bool(message.reply_sender_user_id) and message.reply_sender_user_id == message.bot_user_id
+    )
 
 
 def evaluate_message(

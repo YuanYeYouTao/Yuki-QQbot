@@ -16,11 +16,11 @@ from yuki_plugin_sdk.events import EventEnvelope, EventName
 from yuki_plugin_sdk.models import CurrentMessage, PromptFragment, PromptStage
 from yuki_plugin_sdk.plugin import Plugin
 from yuki_plugin_sdk.registrar import (
+    AdmissionSignalRegistration,
     AutomationActionRegistration,
     BackgroundServiceRegistration,
     CommandRegistration,
     EventHookRegistration,
-    AdmissionSignalRegistration,
     ToolRegistration,
 )
 from yuki_plugin_sdk.testing import FakePluginContext, run_plugin_contract_tests
