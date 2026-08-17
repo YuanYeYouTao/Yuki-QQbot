@@ -240,7 +240,11 @@ class MemoryContextMode(StrEnum):
 
 
 class MemoryAccessMode(StrEnum):
-    """Planner-selected first-round access path for long-term memory."""
+    """Historical metrics bucket for one turn's memory participation.
+
+    Business paths must inspect ``MemoryTurnContract`` / session state.
+    This enum remains only so existing ``memory_access_*`` counters stay stable.
+    """
 
     NONE = "none"
     AUTOMATIC = "automatic"
