@@ -18,7 +18,6 @@ from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.enums import (
     MemoryInvalidationReason,
     MemoryKind,
-    MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
 )
@@ -45,6 +44,12 @@ from qq_ai_bot.memory.mutation.models import (
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.retrieval import MemoryRetriever
+from qq_ai_bot.memory.runtime.query_plane import (
+    MemoryQueryPlane,
+    MemoryReadConsumer,
+    MemoryReadRequest,
+    ResolvedReadScope,
+)
 from qq_ai_bot.memory.self_reflection.models import SelfReflectionManualRun
 from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.service import MemoryFactService
@@ -460,12 +465,14 @@ class MemoryAdminService:
             subject_user_id=user_id,
             block_id="admin_person",
         )
-        return await self._memory_context.search(
-            text=query,
-            mode=MemoryRetrievalMode.RELEVANT,
-            targets=(target,),
+        return await MemoryQueryPlane(self._memory_context).read(
+            MemoryReadConsumer.ADMIN,
+            MemoryReadRequest(
+                text=query,
+                resolved_scope=ResolvedReadScope(targets=(target,)),
+                requested_limit=limit,
+            ),
             runtime=runtime,
-            limit=limit,
         )
 
     async def search_group(
@@ -485,12 +492,14 @@ class MemoryAdminService:
             group_id=group_id,
             block_id="admin_group",
         )
-        return await self._memory_context.search(
-            text=query,
-            mode=MemoryRetrievalMode.RELEVANT,
-            targets=(target,),
+        return await MemoryQueryPlane(self._memory_context).read(
+            MemoryReadConsumer.ADMIN,
+            MemoryReadRequest(
+                text=query,
+                resolved_scope=ResolvedReadScope(targets=(target,)),
+                requested_limit=limit,
+            ),
             runtime=runtime,
-            limit=limit,
         )
 
     async def index_status(self, actor: AdminActor) -> MemoryIndexHealth:

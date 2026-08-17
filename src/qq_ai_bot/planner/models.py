@@ -206,7 +206,6 @@ class MemoryContextPlan(_StrictPlannerModel):
             entities=self.entities,
             temporal=self.temporal,
             preferred_kinds=self.preferred_kinds,
-            requested_count=self.requested_count,
         )
 
 

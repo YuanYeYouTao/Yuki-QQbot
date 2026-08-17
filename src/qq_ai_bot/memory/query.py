@@ -131,7 +131,7 @@ class MemoryQueryBuilder:
             else memory.context_limit_per_entity
         )
         try:
-            return MemoryQuery(
+            query = MemoryQuery(
                 text=text[:1200],
                 normalized_text=normalize_query_text(text),
                 mode=mode,
@@ -162,3 +162,9 @@ class MemoryQueryBuilder:
             )
         except ValidationError as exc:
             raise MemoryRetrievalError("memory_query_invalid") from exc
+        if intent is not None and intent.mode in {
+            MemoryContextMode.LEXICAL,
+            MemoryContextMode.OVERVIEW,
+        }:
+            return query.model_copy(update={"semantic_enabled": False})
+        return query

@@ -127,6 +127,7 @@ class ContextAssembler:
         memory_mode: MemoryContextMode = MemoryContextMode.LEXICAL,
         self_recall: bool = False,
         memory_intent: MemoryQueryIntent | None = None,
+        requested_limit: int | None = None,
         turn_origin: str = "user_message",
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
@@ -149,6 +150,7 @@ class ContextAssembler:
             memory_mode=memory_mode,
             self_recall=self_recall,
             memory_intent=memory_intent,
+            requested_limit=requested_limit,
         )
         hits_by_role = {
             block.target.role: block.hits

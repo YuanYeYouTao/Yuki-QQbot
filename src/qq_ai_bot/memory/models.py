@@ -428,7 +428,6 @@ class MemoryQueryIntent(_MemoryModel):
     entities: tuple[str, ...] = Field(default=(), max_length=5)
     temporal: MemoryTemporalIntent = MemoryTemporalIntent()
     preferred_kinds: tuple[MemoryKind, ...] = Field(default=(), max_length=3)
-    requested_count: int | None = Field(default=None, ge=1, le=20)
 
     @field_validator("subjects", "preferred_kinds", mode="after")
     @classmethod

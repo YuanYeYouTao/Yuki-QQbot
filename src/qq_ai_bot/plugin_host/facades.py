@@ -46,7 +46,6 @@ from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryEvidenceRelation,
     MemoryInvalidationReason,
-    MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
 )
@@ -1139,12 +1138,21 @@ class _MemoryFacade:
         else:
             raise ValueError("memory search scope_type must be person or group")
         service = _require_service(self._host._services.memory_context, "memory retrieval")
-        result = await service.search(
-            text=keyword,
-            mode=MemoryRetrievalMode.RELEVANT,
-            targets=(target,),
+        from qq_ai_bot.memory.runtime.query_plane import (
+            MemoryQueryPlane,
+            MemoryReadConsumer,
+            MemoryReadRequest,
+            ResolvedReadScope,
+        )
+
+        result = await MemoryQueryPlane(service).read(
+            MemoryReadConsumer.PLUGIN,
+            MemoryReadRequest(
+                text=keyword,
+                resolved_scope=ResolvedReadScope(targets=(target,)),
+                requested_limit=_bounded_limit(limit, maximum=100),
+            ),
             runtime=await _runtime_snapshot(self._host, invocation),
-            limit=_bounded_limit(limit, maximum=100),
         )
         return tuple(
             {

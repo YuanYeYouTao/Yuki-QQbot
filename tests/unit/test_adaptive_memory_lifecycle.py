@@ -176,9 +176,9 @@ async def test_automatic_recall_global_and_per_target_limits_are_stable(
         MemoryQueryIntent(
             mode=MemoryContextMode.OVERVIEW,
             purpose=MemoryRecallPurpose.RECALL,
-            requested_count=2,
         ),
         runtime,
+        requested_limit=2,
     )
 
     assert len(background.hits) == 3

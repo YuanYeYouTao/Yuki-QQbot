@@ -111,7 +111,7 @@
     "MemoryFactCreate": "533cb26d7856cb10bc11a186ad492c168562f1d7dc52fe4a6e7808d01b299ff5",
     "MemoryQualityCase": "236c58b72d7fa07663f460b370700b635df213cee071315de30208a9056414de",
     "MemoryQualityReport": "d757579c3972dbe182aa8b711bbce98c50ec10a872ae7fdc0ab6c4861959d942",
-    "MemoryQuery": "453dec7c3b568b68e7bc3af18cf218d328e643f4a14970ca1c02e9f20d9bbcfa",
+    "MemoryQuery": "d4c44677df9fd6addb7ed21c100fa0263fd9f1201b6552f79b25e687f7b5a4e8",
     "MemoryRebuildSelection": "a59e4b20baa53ce036a30d7ab821346510c4d5cca9e6461987270125aaa8ccc2",
     "QualityPerformanceReport": "c1be55cf27f74865792e9d26f07116ad0e6142cdca91dd9bd4d05f39ac7ee8cd"
   },
@@ -120,7 +120,7 @@
     "memory_context_schema": 5,
     "memory_evidence_schema": 4,
     "memory_fact_schema": 3,
-    "memory_query_schema": 5,
+    "memory_query_schema": 6,
     "plugin_memory_facade": 1,
     "quality_performance_schema": 1,
     "quality_report_schema": 1,

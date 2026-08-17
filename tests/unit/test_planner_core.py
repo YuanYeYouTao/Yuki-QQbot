@@ -300,7 +300,7 @@ def test_planner_memory_access_contract_and_requested_count_are_strict() -> None
     ).materialize()
 
     assert automatic.requested_count == 2
-    assert automatic.to_query_intent().requested_count == 2
+    assert not hasattr(automatic.to_query_intent(), "requested_count")
     assert tool.mode is MemoryContextMode.NONE
     assert mutation.mode is MemoryContextMode.NONE
     with pytest.raises(ValidationError):

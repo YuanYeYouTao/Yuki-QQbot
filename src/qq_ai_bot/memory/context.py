@@ -187,6 +187,7 @@ class MemoryContextService:
         memory_mode: MemoryContextMode = MemoryContextMode.HYBRID,
         self_recall: bool = False,
         memory_intent: MemoryQueryIntent | None = None,
+        requested_limit: int | None = None,
         neutral_ordering: bool = False,
     ) -> MemoryRetrievalResult:
         if memory_mode is MemoryContextMode.NONE:
@@ -247,7 +248,9 @@ class MemoryContextService:
             return (
                 result
                 if neutral_ordering
-                else self._limit_automatic_result(result, query.intent, runtime)
+                else self._limit_automatic_result(
+                    result, query.intent, runtime, requested_limit=requested_limit
+                )
             )
         current_targets = tuple(
             target
@@ -270,7 +273,9 @@ class MemoryContextService:
         return (
             result
             if neutral_ordering
-            else self._limit_automatic_result(result, query.intent, runtime)
+            else self._limit_automatic_result(
+                result, query.intent, runtime, requested_limit=requested_limit
+            )
         )
 
     @staticmethod
@@ -278,13 +283,14 @@ class MemoryContextService:
         result: MemoryRetrievalResult,
         intent: MemoryQueryIntent | None,
         runtime: RuntimeConfigSnapshot,
+        requested_limit: int | None = None,
     ) -> MemoryRetrievalResult:
         memory = runtime.memory
         purpose = intent.purpose if intent is not None else MemoryRecallPurpose.BACKGROUND
         if result.mode is MemoryRetrievalMode.OVERVIEW:
             total_limit = memory.automatic_recall_overview_limit
-            if intent is not None and intent.requested_count is not None:
-                total_limit = min(total_limit, intent.requested_count + 2)
+            if requested_limit is not None:
+                total_limit = min(total_limit, requested_limit + 2)
         elif purpose is MemoryRecallPurpose.BACKGROUND:
             total_limit = memory.automatic_recall_background_limit
         elif purpose is MemoryRecallPurpose.CONTINUATION:
@@ -425,6 +431,7 @@ class MemoryContextService:
         targets: tuple[MemoryEntityTarget, ...],
         runtime: RuntimeConfigSnapshot,
         limit: int | None = None,
+        intent: MemoryQueryIntent | None = None,
     ) -> MemoryRetrievalResult:
         query = self._queries.for_targets(
             text=text,
@@ -432,6 +439,7 @@ class MemoryContextService:
             targets=targets,
             runtime=runtime,
             limit=limit,
+            intent=intent,
         )
         return await self._retriever.retrieve(query)
 

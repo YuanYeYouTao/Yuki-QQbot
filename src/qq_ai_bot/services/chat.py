@@ -2736,6 +2736,11 @@ class ChatService:
                 if planned_turn is not None
                 else None
             ),
+            requested_limit=(
+                planned_turn.plan.memory_context.requested_count
+                if planned_turn is not None
+                else None
+            ),
             turn_origin=turn_origin.value,
         )
         return (

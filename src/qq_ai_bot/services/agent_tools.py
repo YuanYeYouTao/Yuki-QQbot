@@ -26,14 +26,19 @@ from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureRegistry
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
     MemoryAccessMode,
+    MemoryContextMode,
+    MemoryKind,
+    MemoryRecallPurpose,
     MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
+    MemoryTemporalConstraint,
+    MemoryTemporalIntentMode,
     SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent
+from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent, MemoryTemporalIntent
 from qq_ai_bot.memory.mutation.models import (
     SELF_MEMORY_CATEGORIES,
     MemoryDecisionActorType,
@@ -44,6 +49,12 @@ from qq_ai_bot.memory.mutation.models import (
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.retrieval import MemoryRetriever
+from qq_ai_bot.memory.runtime.query_plane import (
+    MemoryQueryPlane,
+    MemoryReadConsumer,
+    MemoryReadRequest,
+    ResolvedReadScope,
+)
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.targets import MemoryTargetResolver
@@ -74,6 +85,24 @@ _CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
 _HISTORY_TEXT_MAX = 4000
 _HISTORY_SEGMENT_MAX = 100
 _MEMORY_CHANGE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
+_MEMORY_INTENT_PROPERTIES = {
+    "purpose": {
+        "type": "string",
+        "enum": ["background", "continuation", "recall", "verify", "correct"],
+    },
+    "entities": {
+        "type": "array",
+        "maxItems": 5,
+        "items": {"type": "string", "maxLength": 64},
+    },
+    "preferred_kinds": {
+        "type": "array",
+        "maxItems": 3,
+        "items": {"type": "string", "enum": ["fact", "preference", "episode"]},
+    },
+    "start_at": {"type": "string", "description": "ISO-8601 绝对时间范围起点"},
+    "end_at": {"type": "string", "description": "ISO-8601 绝对时间范围终点"},
+}
 _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
     "agent_tool_runtime_snapshot",
     default=None,
@@ -340,8 +369,12 @@ class AgentToolService:
                             "description": "兼容字段；用户手输的 QQ 号，必须是当前群成员",
                         },
                         "query": {"type": "string", "maxLength": 400},
-                        "mode": {"type": "string", "enum": ["relevant", "overview"]},
+                        "mode": {
+                            "type": "string",
+                            "enum": ["relevant", "lexical", "hybrid", "overview"],
+                        },
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        **_MEMORY_INTENT_PROPERTIES,
                     }
                 ),
             ),
@@ -352,8 +385,12 @@ class AgentToolService:
                     {
                         "group_id": {"type": "string"},
                         "query": {"type": "string", "maxLength": 400},
-                        "mode": {"type": "string", "enum": ["relevant", "overview"]},
+                        "mode": {
+                            "type": "string",
+                            "enum": ["relevant", "lexical", "hybrid", "overview"],
+                        },
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        **_MEMORY_INTENT_PROPERTIES,
                     },
                     required=("group_id",),
                 ),
@@ -399,9 +436,10 @@ class AgentToolService:
                             },
                             "mode": {
                                 "type": "string",
-                                "enum": ["relevant", "overview"],
+                                "enum": ["relevant", "lexical", "hybrid", "overview"],
                             },
                             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                            **_MEMORY_INTENT_PROPERTIES,
                         }
                     ),
                 )
@@ -1075,7 +1113,7 @@ class AgentToolService:
         if isinstance(selection, _ToolFailure):
             return self._result(error=selection.code, detail=selection.detail)
         user_id = selection.user_id
-        limit = self._memory_limit(arguments)
+        limit = self._memory_list_limit(arguments)
         query, mode = self._memory_query(arguments)
         person_targets = selection.targets
         projected_rows = (
@@ -1137,12 +1175,11 @@ class AgentToolService:
                         block_id=f"tool_person_projection:{user_id}",
                     ),
                 )
-            result = await self._memory_context.search(
+            result = await self._read_memories(
+                arguments,
                 text=query or "",
-                mode=mode or MemoryRetrievalMode.RELEVANT,
                 targets=search_targets,
-                runtime=self._runtime(),
-                limit=100 if projected_rows else limit,
+                requested_limit=100 if projected_rows else self._memory_requested_limit(arguments),
             )
             visible_hits = [
                 hit
@@ -1460,7 +1497,7 @@ class AgentToolService:
         group_id = arguments.get("group_id")
         if not isinstance(group_id, str) or not group_id:
             return self._result(error="invalid_group_id", detail="group_id 必须是字符串")
-        limit = self._memory_limit(arguments)
+        limit = self._memory_list_limit(arguments)
         query, mode = self._memory_query(arguments)
         targets = await self._memory_context.resolve_targets(runtime.inbound, self._runtime())
         target = next(
@@ -1479,12 +1516,11 @@ class AgentToolService:
                 self._memory_json(row, retrieval_reason="deterministic_list") for row in rows
             ]
         else:
-            result = await self._memory_context.search(
+            result = await self._read_memories(
+                arguments,
                 text=query or "",
-                mode=mode or MemoryRetrievalMode.RELEVANT,
                 targets=(target,),
-                runtime=self._runtime(),
-                limit=limit,
+                requested_limit=self._memory_requested_limit(arguments),
             )
             memories = [
                 self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
@@ -1504,8 +1540,7 @@ class AgentToolService:
     ) -> str:
         if not self._settings.self_memory_enabled:
             return self._result(error="self_memory_unavailable", detail="自我记忆功能未启用")
-        limit = self._memory_limit(arguments)
-        query, mode = self._memory_query(arguments)
+        query, _mode = self._memory_query(arguments)
         targets = await self._memory_context.resolve_targets(
             runtime.inbound,
             self._runtime(),
@@ -1522,15 +1557,12 @@ class AgentToolService:
         )
         if target is None:
             return self._result(error="self_memory_unavailable", detail="当前会话不能读取自我记忆")
-        result = await self._memory_context.search(
+        result = await self._read_memories(
+            arguments,
             text=query or "",
-            mode=mode
-            or (
-                MemoryRetrievalMode.RELEVANT if query is not None else MemoryRetrievalMode.OVERVIEW
-            ),
             targets=(target,),
-            runtime=self._runtime(),
-            limit=limit,
+            requested_limit=self._memory_requested_limit(arguments),
+            default_overview=query is None,
         )
         visible_hits = tuple(
             hit for hit in result.hits if hit.fact.scope_type is MemoryScopeType.SELF
@@ -1550,11 +1582,92 @@ class AgentToolService:
         )
 
     @staticmethod
-    def _memory_limit(arguments: dict[str, Any]) -> int:
-        value = arguments.get("limit", 20)
+    def _memory_requested_limit(arguments: dict[str, Any]) -> int | None:
+        if "limit" not in arguments or arguments.get("limit") is None:
+            return None
+        value = arguments.get("limit")
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 100:
             raise ValueError("limit 必须是 1～100 的整数")
         return int(value)
+
+    @staticmethod
+    def _memory_list_limit(arguments: dict[str, Any]) -> int:
+        return AgentToolService._memory_requested_limit(arguments) or 20
+
+    async def _read_memories(
+        self,
+        arguments: dict[str, Any],
+        *,
+        text: str,
+        targets: tuple[MemoryEntityTarget, ...],
+        requested_limit: int | None,
+        default_overview: bool = False,
+    ) -> Any:
+        intent = self._memory_tool_intent(arguments, default_overview=default_overview)
+        return await MemoryQueryPlane(self._memory_context).read(
+            MemoryReadConsumer.AGENT_TOOL,
+            MemoryReadRequest(
+                text=text,
+                intent=intent,
+                requested_limit=requested_limit,
+                resolved_scope=ResolvedReadScope(targets=targets),
+            ),
+            runtime=self._runtime(),
+        )
+
+    @staticmethod
+    def _memory_tool_intent(
+        arguments: dict[str, Any],
+        *,
+        default_overview: bool = False,
+    ) -> MemoryQueryIntent | None:
+        raw_mode = arguments.get("mode")
+        has_structured = any(
+            arguments.get(name) not in (None, "", ())
+            for name in ("purpose", "entities", "preferred_kinds", "start_at", "end_at")
+        )
+        if raw_mode is None and not has_structured and not default_overview:
+            return None
+        mode = (
+            MemoryContextMode.OVERVIEW
+            if default_overview and raw_mode is None
+            else (
+                MemoryContextMode.OVERVIEW
+                if raw_mode == "overview"
+                else MemoryContextMode.LEXICAL
+                if raw_mode == "lexical"
+                else MemoryContextMode.HYBRID
+            )
+        )
+        purpose_raw = arguments.get("purpose")
+        purpose = (
+            MemoryRecallPurpose(purpose_raw)
+            if isinstance(purpose_raw, str) and purpose_raw in MemoryRecallPurpose
+            else MemoryRecallPurpose.RECALL
+        )
+        entities = arguments.get("entities")
+        kinds = arguments.get("preferred_kinds")
+        start_at = AgentToolService._parse_time(arguments.get("start_at"))
+        end_at = AgentToolService._parse_time(arguments.get("end_at"))
+        temporal = MemoryTemporalIntent()
+        if start_at is not None or end_at is not None:
+            temporal = MemoryTemporalIntent(
+                mode=MemoryTemporalIntentMode.RANGE,
+                constraint=MemoryTemporalConstraint.SOFT,
+                start_at=start_at,
+                end_at=end_at,
+            )
+        return MemoryQueryIntent(
+            mode=mode,
+            purpose=purpose,
+            entities=tuple(entities) if isinstance(entities, list) else (),
+            preferred_kinds=tuple(
+                MemoryKind(item) for item in kinds if item in {kind.value for kind in MemoryKind}
+            )
+            if isinstance(kinds, list)
+            else (),
+            temporal=temporal,
+        )
 
     async def _memory_fact(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         fact_id = arguments.get("fact_id")
@@ -1793,10 +1906,19 @@ class AgentToolService:
         raw_mode = arguments.get("mode")
         if raw_mode is None:
             mode = None
-        elif isinstance(raw_mode, str) and raw_mode in {"relevant", "overview"}:
-            mode = MemoryRetrievalMode(raw_mode)
+        elif isinstance(raw_mode, str) and raw_mode in {
+            "relevant",
+            "lexical",
+            "hybrid",
+            "overview",
+        }:
+            mode = (
+                MemoryRetrievalMode.OVERVIEW
+                if raw_mode == "overview"
+                else MemoryRetrievalMode.RELEVANT
+            )
         else:
-            raise ValueError("mode 必须是 relevant 或 overview")
+            raise ValueError("mode 必须是 relevant、lexical、hybrid 或 overview")
         return raw_query, mode
 
     @staticmethod
