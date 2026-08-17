@@ -34,7 +34,11 @@ from qq_ai_bot.model_runtime.models import (
     ModelTask,
 )
 from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog, load_model_profile_catalog
+from qq_ai_bot.model_runtime.profiles import (
+    ModelProfileCatalog,
+    ModelRuntimeConfigurationError,
+    load_model_profile_catalog,
+)
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
@@ -79,14 +83,19 @@ def _load(path: Path) -> ModelProfileCatalog:
     )
 
 
-def test_profile_schema_v1_defaults_chat_and_v2_accepts_responses(tmp_path: Path) -> None:
-    v1 = tmp_path / "v1.toml"
-    v1.write_text(_profile_document(schema_version=1, protocol=None), encoding="utf-8")
-    assert _load(v1).profiles["pro"].protocol is ModelProtocol.CHAT_COMPLETIONS
+def test_profile_schema_v3_accepts_responses_and_rejects_legacy(tmp_path: Path) -> None:
+    v3 = tmp_path / "v3.toml"
+    v3.write_text(_profile_document(schema_version=3, protocol="responses"), encoding="utf-8")
+    assert _load(v3).profiles["pro"].protocol is ModelProtocol.RESPONSES
+
+    omitted = tmp_path / "v3-default.toml"
+    omitted.write_text(_profile_document(schema_version=3, protocol=None), encoding="utf-8")
+    assert _load(omitted).profiles["pro"].protocol is ModelProtocol.CHAT_COMPLETIONS
 
     v2 = tmp_path / "v2.toml"
     v2.write_text(_profile_document(schema_version=2, protocol="responses"), encoding="utf-8")
-    assert _load(v2).profiles["pro"].protocol is ModelProtocol.RESPONSES
+    with pytest.raises(ModelRuntimeConfigurationError, match="migrate-3-6"):
+        _load(v2)
 
 
 @pytest.mark.asyncio

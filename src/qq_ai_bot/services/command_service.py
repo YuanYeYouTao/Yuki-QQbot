@@ -456,8 +456,8 @@ class CommandService:
                     "按任务：",
                 ]
                 lines.extend(
-                    f"- {task.value}: {item.invocations} 次 / {item.total_tokens} Token"
-                    for task, item in sorted(by_task.items(), key=lambda pair: pair[0].value)
+                    f"- {task}: {item.invocations} 次 / {item.total_tokens} Token"
+                    for task, item in sorted(by_task.items(), key=lambda pair: pair[0])
                 )
                 lines.append("按档案：")
                 lines.extend(
@@ -466,7 +466,7 @@ class CommandService:
                 )
                 lines.append("最近错误：")
                 lines.extend(
-                    f"- {item.created_at.isoformat()} {item.task.value}/{item.profile_id}: "
+                    f"- {item.created_at.isoformat()} {item.task}/{item.profile_id}: "
                     f"{item.error_category}"
                     for item in recent_errors
                 )

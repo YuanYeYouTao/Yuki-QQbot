@@ -476,7 +476,8 @@ def test_model_profiles_route_all_tasks_and_keep_agents_on_main() -> None:
     with_flash = tomllib.loads(build_model_profiles(main_protocol="responses", flash_enabled=True))
     assert with_flash["profiles"]["main"]["provider"] == "deepseek"
     assert "native_web_search" in with_flash["profiles"]["main"]["capabilities"]
-    assert with_flash["routes"]["planner"] == "flash"
+    assert "planner" not in with_flash["routes"]
+    assert with_flash["schema_version"] == 3
     assert with_flash["routes"]["memory_attribution"] == "flash"
     assert with_flash["routes"]["relationship_evaluation"] == "flash"
     assert with_flash["routes"]["emoji_replacement"] == "flash"

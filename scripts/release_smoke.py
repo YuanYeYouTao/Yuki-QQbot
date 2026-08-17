@@ -17,7 +17,6 @@ class SmokeError(RuntimeError):
 
 _MODEL_TASKS = (
     "chat_agent",
-    "planner",
     "memory_extraction",
     "memory_self_reflection",
     "memory_consolidation",
@@ -118,7 +117,7 @@ def prepare_deployment(deploy_directory: Path) -> dict[Path, str]:
         model_profiles.parent.mkdir(parents=True, exist_ok=True)
         routes = "\n".join(f'{task} = "main"' for task in _MODEL_TASKS)
         model_profiles.write_text(
-            """schema_version = 2
+            """schema_version = 3
 
 [profiles.main]
 provider = "openai_compatible"

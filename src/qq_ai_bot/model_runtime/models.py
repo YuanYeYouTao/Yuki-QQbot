@@ -14,7 +14,6 @@ class ModelTask(StrEnum):
     """Stable business purpose attached to every main-model invocation."""
 
     CHAT_AGENT = "chat_agent"
-    PLANNER = "planner"
     MEMORY_EXTRACTION = "memory_extraction"
     MEMORY_SELF_REFLECTION = "memory_self_reflection"
     MEMORY_CONSOLIDATION = "memory_consolidation"
@@ -112,7 +111,7 @@ class ModelInvocationRecord(_FrozenModel):
     """Content-free usage and latency record returned by the repository."""
 
     id: int
-    task: ModelTask
+    task: str
     profile_id: str
     provider: str
     model: str

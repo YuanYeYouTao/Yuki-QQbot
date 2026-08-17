@@ -65,7 +65,7 @@ def _profile_document(routes: dict[str, str] | None = None) -> str:
     route_values = routes or {task.value: "pro" for task in ModelTask}
     route_text = "\n".join(f'{name} = "{profile}"' for name, profile in route_values.items())
     return (
-        "schema_version = 1\n"
+        "schema_version = 3\n"
         "[profiles.pro]\n"
         'provider = "openai_compatible"\n'
         'base_url_env = "PRO_URL"\n'
@@ -150,7 +150,12 @@ def test_legacy_profiles_route_attribution_to_utility_structured(tmp_path: Path)
 
 
 def test_prompt_benchmark_meets_declared_reduction_targets() -> None:
-    settings = Settings(_env_file=None, llm_provider="fake", llm_model="fake")
+    settings = Settings(
+        _env_file=None,
+        llm_provider="fake",
+        llm_model="fake",
+        model_profiles_file=Path("__no_model_profiles__.toml"),
+    )
     comparison = _prompt_comparison(settings)
     scenarios = comparison["scenarios"]
     assert isinstance(scenarios, dict)
@@ -202,7 +207,7 @@ async def test_model_invocation_stats_group_usage_without_content(database: Data
         error_category=None,
     )
     await repository.record(
-        task=ModelTask.PLANNER,
+        task=ModelTask.UTILITY_STRUCTURED,
         profile_id="flash",
         provider="fake",
         model="flash-model",
@@ -236,16 +241,16 @@ class _StructuredExecutor:
         self.requests: list[ChatRequest] = []
 
     async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
-        assert task is ModelTask.PLANNER
+        assert task is ModelTask.UTILITY_STRUCTURED
         self.requests.append(request)
         return self.response
 
     def model_name(self, task: ModelTask) -> str:
-        assert task is ModelTask.PLANNER
+        assert task is ModelTask.UTILITY_STRUCTURED
         return "flash"
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
-        assert task is ModelTask.PLANNER
+        assert task is ModelTask.UTILITY_STRUCTURED
         return self.mode
 
 
@@ -259,7 +264,7 @@ class _SequencedStructuredExecutor(_StructuredExecutor):
         self.responses = list(responses)
 
     async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
-        assert task is ModelTask.PLANNER
+        assert task is ModelTask.UTILITY_STRUCTURED
         self.requests.append(request)
         return self.responses.pop(0)
 
@@ -280,7 +285,7 @@ async def test_structured_runner_uses_schema_channel_and_rejects_extra_text() ->
         StructuredOutputMode.FUNCTION_TOOL,
     )
     result = await StructuredTaskRunner(executor).run(
-        task=ModelTask.PLANNER,
+        task=ModelTask.UTILITY_STRUCTURED,
         instruction="Return one result.",
         structured_input={"input": 1},
         output_model=_Output,
@@ -297,7 +302,7 @@ async def test_structured_runner_uses_schema_channel_and_rejects_extra_text() ->
     )
     with pytest.raises(StructuredTaskError):
         await StructuredTaskRunner(invalid).run(
-            task=ModelTask.PLANNER,
+            task=ModelTask.UTILITY_STRUCTURED,
             instruction="Return one result.",
             structured_input={},
             output_model=_Output,
@@ -336,7 +341,7 @@ async def test_structured_runner_repairs_one_invalid_function_result() -> None:
     )
 
     result = await StructuredTaskRunner(executor).run(
-        task=ModelTask.PLANNER,
+        task=ModelTask.UTILITY_STRUCTURED,
         instruction="Return one result.",
         structured_input={"input": 1},
         output_model=_Output,
@@ -370,7 +375,7 @@ async def test_structured_runner_reports_exhausted_validation_reason() -> None:
 
     with pytest.raises(StructuredTaskError) as captured:
         await StructuredTaskRunner(executor).run(
-            task=ModelTask.PLANNER,
+            task=ModelTask.UTILITY_STRUCTURED,
             instruction="Return one result.",
             structured_input={},
             output_model=_Output,
@@ -457,7 +462,7 @@ async def test_structured_function_channel_does_not_require_agent_tool_capabilit
                 profile_id="flash",
                 required_capabilities=(
                     frozenset({ModelCapability.STRUCTURED_OUTPUT})
-                    if task is ModelTask.PLANNER
+                    if task is ModelTask.UTILITY_STRUCTURED
                     else frozenset()
                 ),
             )
@@ -472,7 +477,7 @@ async def test_structured_function_channel_does_not_require_agent_tool_capabilit
     schema_tool = ChatTool(name="emit_result", description="result", parameters={})
 
     await executor.execute(
-        ModelTask.PLANNER,
+        ModelTask.UTILITY_STRUCTURED,
         ChatRequest(
             messages=(ChatMessage(role="user", content="{}"),),
             tools=(schema_tool,),
@@ -483,7 +488,7 @@ async def test_structured_function_channel_does_not_require_agent_tool_capabilit
     assert provider.requests[0].structured_output
     with pytest.raises(ValueError, match="does not support: tools"):
         await executor.execute(
-            ModelTask.PLANNER,
+            ModelTask.UTILITY_STRUCTURED,
             ChatRequest(
                 messages=(ChatMessage(role="user", content="call a business tool"),),
                 tools=(schema_tool,),

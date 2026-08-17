@@ -122,6 +122,31 @@ async def _finish_planner(
         await session.commit()
 
 
+async def _record_retired_planner_invocation(
+    database,
+    *,
+    turn_id: str,
+    created_at: datetime,
+) -> None:
+    async with database.sessions() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO model_invocations (
+                    runtime_turn_id, task, profile_id, provider, model, success,
+                    prompt_tokens, completion_tokens, total_tokens,
+                    cached_prompt_tokens, latency_seconds, error_category, created_at
+                ) VALUES (
+                    :turn_id, 'planner', 'planner', 'fake', 'fake-planner', 1,
+                    20, 8, 28, NULL, 0.12, NULL, :created_at
+                )
+                """
+            ),
+            {"turn_id": turn_id, "created_at": created_at.isoformat()},
+        )
+        await session.commit()
+
+
 async def _seed(database) -> str:
     turn_id = new_runtime_turn_id()
     await _finish_planner(
@@ -140,19 +165,7 @@ async def _seed(database) -> str:
     )
     correlation = RuntimeTurnCorrelation(turn_id=turn_id, origin=TurnOrigin.USER_MESSAGE)
     with bind_runtime_turn(correlation):
-        await ModelInvocationRepository(database).record(
-            task=ModelTask.PLANNER,
-            profile_id="planner",
-            provider="fake",
-            model="fake-planner",
-            success=True,
-            prompt_tokens=20,
-            completion_tokens=8,
-            total_tokens=28,
-            cached_prompt_tokens=None,
-            latency_seconds=0.12,
-            error_category=None,
-        )
+        await _record_retired_planner_invocation(database, turn_id=turn_id, created_at=T1)
         await ModelInvocationRepository(database).record(
             task=ModelTask.CHAT_AGENT,
             profile_id="main",

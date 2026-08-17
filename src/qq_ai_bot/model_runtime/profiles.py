@@ -22,6 +22,10 @@ from qq_ai_bot.model_runtime.models import (
 
 logger = logging.getLogger(__name__)
 
+PROFILE_SCHEMA_VERSION = 3
+RETIRED_MODEL_ROUTES = frozenset({"planner", "tool_selection"})
+MIGRATE_3_6_COMMAND = "qq-ai-bot-cli setup migrate-3-6 --deployment-root <deployment-root>"
+
 
 class ModelRuntimeConfigurationError(ValueError):
     """The profile file or compatibility configuration is unusable."""
@@ -30,7 +34,7 @@ class ModelRuntimeConfigurationError(ValueError):
 class _ProfileDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[3]
     profiles: dict[str, dict[str, Any]]
     routes: dict[str, str]
 
@@ -67,7 +71,6 @@ class ModelProfileCatalog(BaseModel):
 
 _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
     ModelTask.CHAT_AGENT: frozenset({ModelCapability.TOOLS}),
-    ModelTask.PLANNER: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.MEMORY_EXTRACTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.MEMORY_SELF_REFLECTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.MEMORY_CONSOLIDATION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
@@ -135,6 +138,11 @@ def load_model_profile_catalog(
 
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        version = raw.get("schema_version", 1)
+        if version != PROFILE_SCHEMA_VERSION:
+            raise ModelRuntimeConfigurationError(
+                f"model profile schema v{version} is no longer accepted; run: {MIGRATE_3_6_COMMAND}"
+            )
         document = _ProfileDocument.model_validate(raw)
         profiles = {
             profile_id: ModelProfile.model_validate(
@@ -146,8 +154,12 @@ def load_model_profile_catalog(
             for profile_id, payload in document.profiles.items()
         }
         raw_routes = dict(document.routes)
-        if raw_routes.pop("tool_selection", None) is not None:
-            logger.warning("model_route_ignored task=tool_selection")
+        retired = RETIRED_MODEL_ROUTES.intersection(raw_routes)
+        if retired:
+            names = ", ".join(sorted(retired))
+            raise ModelRuntimeConfigurationError(
+                f"retired model routes remain ({names}); run: {MIGRATE_3_6_COMMAND}"
+            )
         if (
             ModelTask.MEMORY_SELF_REFLECTION.value not in raw_routes
             and ModelTask.MEMORY_EXTRACTION.value in raw_routes
@@ -180,14 +192,7 @@ def load_model_profile_catalog(
             ]
         if ModelTask.MEMORY_ATTRIBUTION.value not in raw_routes:
             source_task = next(
-                (
-                    task
-                    for task in (
-                        ModelTask.UTILITY_STRUCTURED,
-                        ModelTask.PLANNER,
-                    )
-                    if task.value in raw_routes
-                ),
+                (task for task in (ModelTask.UTILITY_STRUCTURED,) if task.value in raw_routes),
                 None,
             )
             if source_task is not None:
@@ -205,6 +210,8 @@ def load_model_profile_catalog(
             for task_name, profile_id in raw_routes.items()
         }
         return ModelProfileCatalog(profiles=profiles, routes=routes)
+    except ModelRuntimeConfigurationError:
+        raise
     except (OSError, tomllib.TOMLDecodeError, ValidationError, KeyError, ValueError) as exc:
         raise ModelRuntimeConfigurationError(f"invalid model profile configuration: {exc}") from exc
 

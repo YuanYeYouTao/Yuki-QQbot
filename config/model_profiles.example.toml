@@ -1,4 +1,4 @@
-schema_version = 2
+schema_version = 3
 
 # Copy to config/model_profiles.toml to opt in to explicit task routing.
 # Secrets stay in environment variables; this file only names them.
@@ -34,10 +34,10 @@ capabilities = ["structured_output"]
 
 [routes]
 chat_agent = "pro"
-planner = "flash"
 memory_extraction = "flash"
 memory_self_reflection = "flash"
 memory_consolidation = "flash"
+memory_dream = "flash"
 memory_attribution = "flash"
 relationship_evaluation = "flash"
 emoji_replacement = "flash"

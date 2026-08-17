@@ -14,6 +14,16 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.observability import claim_runtime_turn_id
 
 
+def project_model_task(value: str) -> str:
+    """Project a persisted task string without requiring a live ``ModelTask``.
+
+    Historical ``planner`` / ``tool_selection`` rows stay readable after those
+    enum members are deleted.  Writes still accept only live ``ModelTask``.
+    """
+
+    return str(value)
+
+
 class ModelInvocationRepository:
     """Store and aggregate only task/profile/usage/latency metadata."""
 
@@ -63,13 +73,13 @@ class ModelInvocationRepository:
             row = (await session.execute(statement)).one()
         return self._stats(row)
 
-    async def stats_by_task(self) -> dict[ModelTask, ModelStats]:
+    async def stats_by_task(self) -> dict[str, ModelStats]:
         statement = self._stats_statement(ModelInvocationModel.task).group_by(
             ModelInvocationModel.task
         )
         async with self._database.sessions() as session:
             rows = (await session.execute(statement)).all()
-        return {ModelTask(str(row[0])): self._stats(row[1:]) for row in rows}
+        return {project_model_task(str(row[0])): self._stats(row[1:]) for row in rows}
 
     async def stats_by_profile(self) -> dict[str, ModelStats]:
         statement = self._stats_statement(ModelInvocationModel.profile_id).group_by(
@@ -139,7 +149,7 @@ class ModelInvocationRepository:
     def _record(row: ModelInvocationModel) -> ModelInvocationRecord:
         return ModelInvocationRecord(
             id=row.id,
-            task=ModelTask(row.task),
+            task=project_model_task(row.task),
             profile_id=row.profile_id,
             provider=row.provider,
             model=row.model,

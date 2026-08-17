@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qq_ai_bot import __version__
 from qq_ai_bot.config import Settings
+from qq_ai_bot.deployment_setup.migrate_3_6 import migrate_deployment_model_profiles
 from qq_ai_bot.deployment_setup.service import (
     EnvironmentDocument,
     SetupConfiguration,
@@ -88,7 +89,7 @@ def add_setup_parser(
     setup.add_argument(
         "setup_action",
         nargs="?",
-        choices=("configure", "validate", "apply-pending", "verify"),
+        choices=("configure", "validate", "apply-pending", "verify", "migrate-3-6"),
         default="configure",
     )
     setup.add_argument("--deployment-root", type=Path, default=Path.cwd())
@@ -110,6 +111,21 @@ def run_setup_command(args: argparse.Namespace) -> int:
                 configuration, _document = _load_current_configuration(paths)
                 validate_configuration(paths, configuration)
             ui.success("配置通过本地严格验证；未发起任何计费 API 请求")
+            return 0
+        if action == "migrate-3-6":
+            result = migrate_deployment_model_profiles(paths)
+            if result.backup is not None:
+                ui.info(f"配置已备份到 {result.backup.relative_to(paths.root)}")
+            if result.materialized_attribution_from is not None:
+                ui.info(
+                    f"已将 memory_attribution 显式写为 {result.materialized_attribution_from} 档案"
+                )
+            if result.removed_routes:
+                ui.info("已删除路由：" + ", ".join(result.removed_routes))
+            if result.changed:
+                ui.success("model_profiles.toml 已迁移到 schema v3")
+            else:
+                ui.disabled("model_profiles.toml 已是 schema v3，无需改写")
             return 0
         if action == "apply-pending":
             with _working_directory(paths.root):
@@ -313,7 +329,7 @@ def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     if draft.protocol == "responses":
         ui.info("DeepSeek Responses 可使用原生搜索；请求不会发送 tool_choice 字段。")
     else:
-        ui.warning("主模型必须支持 Function Calling 才能运行 Planner 和 Agent 工具。")
+        ui.warning("主模型必须支持 Function Calling 才能运行 Agent 工具。")
     environment["LLM_BASE_URL"] = ui.ask(
         "主模型 Base URL",
         default=_real_value(environment.get("LLM_BASE_URL", "")),
@@ -335,7 +351,7 @@ def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
 def _page_flash(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     del paths
     environment = draft.environment
-    ui.info("Flash 用于 Planner 和后台结构化任务，会增加一个模型连接。")
+    ui.info("Flash 用于后台结构化任务，会增加一个模型连接。")
     draft.flash_enabled = ui.confirm("启用 Flash 模型？", default=draft.flash_enabled)
     if not draft.flash_enabled:
         return
