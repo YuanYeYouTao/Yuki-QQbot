@@ -757,14 +757,6 @@ def test_core_search_tags_recall_tools_from_natural_chinese_phrases() -> None:
         assert expected in {hit.capability_id for hit in hits}
 
 
-def test_planner_tool_scopes_are_retired() -> None:
-    service = object.__new__(ChatService)
-    service._plugin_tools = None
-    service._external_tool_providers = []
-
-    assert service.planner_tool_scopes(("memory", "web", "automation")) == ()
-
-
 def test_tool_exposure_log_records_final_tool_names(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

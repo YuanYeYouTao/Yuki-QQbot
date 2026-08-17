@@ -13,12 +13,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import ConversationRuntimeConfig, RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.conversation.features import AdmissionFeatureBuilder
 from qq_ai_bot.conversation.participation import LocalAutonomousParticipationPolicy
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.llm.base import LLMError
-from qq_ai_bot.planner.context import PlannerContextBuilder
 from qq_ai_bot.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
@@ -31,7 +31,7 @@ from qq_ai_bot.runtime.observability import (
 from qq_ai_bot.services.chat import ChatService, OutboundSender
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
-    PlannerInterruptedError,
+    TurnInterruptedError,
     TurnSupersededError,
     TurnToken,
 )
@@ -57,17 +57,15 @@ class AutonomousGroupService:
         self,
         *,
         chat: ChatService,
-        planner_context: PlannerContextBuilder,
-        planner: object | None = None,
+        admission_features: AdmissionFeatureBuilder,
         runtime_config: RuntimeConfigService | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
         admission_signals: PluginAdmissionSignalAdapter | None = None,
         turn_observations: TurnObservationRecorder | None = None,
     ) -> None:
-        del planner
         self._chat = chat
         self._runtime_config = runtime_config or chat._runtime_config
-        self._planner_context = planner_context
+        self._admission_features = admission_features
         self._coordinator = turn_coordinator or chat._turn_coordinator
         self._admission_signals = admission_signals
         self._turn_observations = turn_observations
@@ -164,11 +162,11 @@ class AutonomousGroupService:
                     pass
                 if not self._is_latest(group_id, revision):
                     continue
-                await self._plan_latest(group_id, revision, runtime)
+                await self._run_latest(group_id, revision, runtime)
             except asyncio.CancelledError:
                 raise
             except (
-                PlannerInterruptedError,
+                TurnInterruptedError,
                 TurnSupersededError,
             ):
                 pass
@@ -192,7 +190,7 @@ class AutonomousGroupService:
         state = self._states.get(group_id)
         return state is not None and state.revision == revision
 
-    async def _plan_latest(
+    async def _run_latest(
         self,
         group_id: str,
         revision: int,
@@ -200,7 +198,7 @@ class AutonomousGroupService:
     ) -> None:
         """Bind one fresh runtime turn correlation per autonomous attempt.
 
-        Delivery counts stay joinable through ``planner_runs.messages_sent``
+        Delivery counts stay joinable through confirmed-delivery observations
         on the same ``runtime_turn_id``; the observation row itself only
         carries latency and outcome category.
         """
@@ -213,7 +211,7 @@ class AutonomousGroupService:
         error_category: str | None = None
         with bind_runtime_turn(correlation):
             try:
-                await self._plan_latest_admitted(group_id, revision, runtime)
+                await self._admit_latest(group_id, revision, runtime)
             except BaseException as exc:
                 error_category = type(exc).__name__
                 raise
@@ -231,7 +229,7 @@ class AutonomousGroupService:
                     )
                     await record_observation_safely(self._turn_observations, observation)
 
-    async def _plan_latest_admitted(
+    async def _admit_latest(
         self,
         group_id: str,
         revision: int,
@@ -263,7 +261,7 @@ class AutonomousGroupService:
             else ()
         )
         policy = _conversation_policy(runtime)
-        features = await self._planner_context.admission_features(
+        features = await self._admission_features.admission_features(
             inbound=last,
             content=last.text,
             runtime=runtime,

@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from qq_ai_bot.admin.models import SpeechRuntimeConfig
-from qq_ai_bot.planner.models import PlannerSpeechContext
 from qq_ai_bot.services.plugin_events import LifecycleEventPublisher, publish_notification
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator, TurnSupersededError
 from qq_ai_bot.speech.cache import GENIE_TTS_VERSION, SpeechCache, speech_cache_key
@@ -375,28 +374,6 @@ class SpeechService:
             last_error_category=self._last_error_category,
         )
 
-    async def planner_context(self, *, runtime: SpeechRuntimeConfig) -> PlannerSpeechContext:
-        if not runtime.enabled or not runtime.planner_enabled:
-            return PlannerSpeechContext(enabled=runtime.enabled)
-        health = await self._provider.health()
-        profile = await self._profile_for_context(runtime.default_profile)
-        available_languages = profile.supported_languages if profile is not None else ()
-        if health.japanese_frontend_available is False:
-            available_languages = tuple(
-                language for language in available_languages if language != "jp"
-            )
-        return PlannerSpeechContext(
-            enabled=True,
-            available=health.available and profile is not None and bool(available_languages),
-            default_profile=profile.display_name if profile is not None else "",
-            available_styles=(
-                tuple(dict.fromkeys(item.style for item in profile.references if item.enabled))
-                if profile is not None
-                else ()
-            ),
-            available_languages=available_languages,
-        )
-
     async def cleanup(self, *, runtime: SpeechRuntimeConfig) -> tuple[int, int]:
         return await self._cache.cleanup(runtime.cache_retention_hours)
 
@@ -413,14 +390,6 @@ class SpeechService:
 
     async def close(self) -> None:
         await self._provider.close()
-
-    async def _profile_for_context(self, profile_id: str) -> VoiceProfile | None:
-        profile = (
-            await self._profiles.get_profile(profile_id)
-            if profile_id
-            else await self._profiles.get_default()
-        )
-        return profile if profile is not None and profile.enabled else None
 
 
 def _hash(value: str) -> str:

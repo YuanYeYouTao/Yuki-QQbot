@@ -145,7 +145,6 @@ class ApplicationContainer:
         self.media_analyses = persistence.media_analyses
         self.emoji_descriptions = persistence.emoji_descriptions
         self.emoji_repository = persistence.emoji_repository
-        self.planner_runs = persistence.planner_runs
         self.voice_preferences = persistence.voice_preferences
         self.voice_profiles = persistence.voice_profiles
         self.speech_generations = persistence.speech_generations
@@ -258,10 +257,7 @@ class ApplicationContainer:
         conversation = self.conversation_module.build()
         self.conversation = conversation
         self.prompt_registry = conversation.prompt_registry
-        self.planner_observability = conversation.planner_observability
-        self.planner_provider = conversation.planner_provider
-        self.planner = conversation.planner
-        self.planner_context = conversation.planner_context
+        self.admission_features = conversation.admission_features
         self.reply_sequence = conversation.reply_sequence
         self.relationship_evaluator = conversation.relationship_evaluator
         self.deduplication = conversation.deduplication
@@ -365,8 +361,6 @@ class ApplicationContainer:
             repository=self.plugin_notification_repository,
             ledger=self.ledger,
             runtime_config=self.runtime_config,
-            planner_context=self.planner_context,
-            planner=self.planner,
             chat=self.chat,
             turns=self.turn_coordinator,
             turn_observations=self.turn_observations,
@@ -421,8 +415,7 @@ class ApplicationContainer:
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,
-            planner_context=self.planner_context,
-            planner=self.planner,
+            admission_features=self.admission_features,
             turn_coordinator=self.turn_coordinator,
             admission_signals=self.plugin_admission_signals,
             turn_observations=self.turn_observations,
@@ -447,8 +440,6 @@ class ApplicationContainer:
             automation_repository=self.automation_repository,
             automation_worker=self.automation_worker,
             turn_coordinator=self.turn_coordinator,
-            planner_observability=self.planner_observability,
-            planner_repository=self.planner_runs,
             plugin_commands=self.plugin_commands,
             emoji_admin=self.emoji_admin,
             speech_admin=self.speech_admin,
@@ -488,10 +479,8 @@ class ApplicationContainer:
             automation_worker=self.automation_worker,
             command_service=self.command_service,
             direct_plugin_commands=self.plugin_direct_commands,
-            planner_context=self.planner_context,
-            planner_service=self.planner,
+            admission_signals=self.plugin_admission_signals,
             turn_coordinator=self.turn_coordinator,
-            planner_signals=self.plugin_admission_signals,
             event_publisher=self.plugin_events,
             emoji_collector=self.emoji_collector,
             emoji_worker=self.emoji_worker,

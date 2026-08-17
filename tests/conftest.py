@@ -31,17 +31,6 @@ from qq_ai_bot.persistence.repositories import (
     WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
-from qq_ai_bot.planner.context import PlannerContextBuilder
-from qq_ai_bot.planner.fake import FakePlannerProvider
-from qq_ai_bot.planner.models import (
-    DeliveryMode,
-    PlannerDecision,
-    PlannerInput,
-    PlannerReasonCode,
-    TurnPlan,
-)
-from qq_ai_bot.planner.observability import PlannerObservability
-from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.command_service import CommandService
@@ -82,20 +71,6 @@ class MemorySender:
             platform_message_id=str(next(self._message_ids)),
             transport="test",
         )
-
-
-def _successful_test_plan(planner_input: PlannerInput) -> TurnPlan:
-    """Represent one valid Planner response; provider failures are tested explicitly."""
-
-    return TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="回应当前真实发送者的消息",
-        target_user_ids=(planner_input.current_sender_user_id,),
-        delivery_mode=DeliveryMode.NATURAL_MULTI,
-        desired_messages=3,
-        confidence=1,
-        reason_code=PlannerReasonCode.DIRECT_REQUEST,
-    )
 
 
 @dataclass(slots=True)
@@ -232,14 +207,6 @@ def build_harness(
         runtime_config=runtime_config,
         time_service=time_service,
     )
-    planner_context = PlannerContextBuilder(
-        ledger=ledger,
-        relationships=relationships,
-    )
-    planner = PlannerService(
-        provider=FakePlannerProvider(_successful_test_plan),
-        observability=PlannerObservability(),
-    )
     processor = MessageProcessor(
         settings=settings,
         conversations=conversations,
@@ -257,8 +224,6 @@ def build_harness(
         ),
         concurrency=concurrency,
         onebot_connected=lambda: True,
-        planner_context=planner_context,
-        planner_service=planner,
         ledger=ledger,
         people=profiles,
         memories=memories,

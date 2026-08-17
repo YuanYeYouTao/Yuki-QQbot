@@ -7,8 +7,8 @@ import pytest
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
-    PlannerInterruptedError,
     ReplySequenceCancelled,
+    TurnInterruptedError,
 )
 
 
@@ -18,8 +18,8 @@ async def test_new_group_message_interrupts_autonomous_planner() -> None:
     entered = asyncio.Event()
 
     async def old_turn() -> None:
-        with pytest.raises(PlannerInterruptedError):
-            async with coordinator.track(token, "planner"):
+        with pytest.raises(TurnInterruptedError):
+            async with coordinator.track(token, "admission"):
                 entered.set()
                 await asyncio.Event().wait()
 
@@ -76,8 +76,8 @@ async def test_promoted_autonomous_planner_is_cancelled_by_next_real_message() -
     entered = asyncio.Event()
 
     async def run_planner() -> None:
-        with pytest.raises(PlannerInterruptedError):
-            async with coordinator.track(autonomous, "planner"):
+        with pytest.raises(TurnInterruptedError):
+            async with coordinator.track(autonomous, "admission"):
                 entered.set()
                 await asyncio.Event().wait()
 

@@ -47,7 +47,6 @@ class ToolCandidateSelector:
         *,
         scopes: tuple[str, ...] = (),
         user_request: str = "",
-        planner_intent: str = "",
         limit: int | None = None,
         minimum_score: int | None = None,
     ) -> ToolCandidateResult:
@@ -59,7 +58,7 @@ class ToolCandidateSelector:
         unknown = sorted(set(scopes) - known)
         if unknown:
             raise UnknownToolScopeError(f"unknown tool scopes: {', '.join(unknown)}")
-        terms = _query_terms(f"{user_request} {planner_intent}")
+        terms = _query_terms(user_request)
         ranked: list[tuple[int, UnifiedToolCatalogEntry]] = []
         for entry in catalog.entries:
             if (
@@ -179,7 +178,7 @@ def _required_entries(
         item
         for item in entries
         if item.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
-            or bool(selected_scopes.intersection(item.bundle_scope_ids))
+        or bool(selected_scopes.intersection(item.bundle_scope_ids))
     )
 
 

@@ -1,9 +1,8 @@
 """Admission contracts for the conversation runtime (R1 protocols).
 
-R1 freezes the decision shapes; the production policies keep living in
-``services`` until R4 migrates them.  ``/ai`` commands, rate limiting and
-deduplication keep their existing entry points — these contracts only
-describe how an admitted-or-not decision is represented.
+R1 freezes the decision shapes. Production inbound policy lives in
+``services.policies.evaluate_message``; autonomous scoring lives in
+``conversation.participation``.
 """
 
 from __future__ import annotations

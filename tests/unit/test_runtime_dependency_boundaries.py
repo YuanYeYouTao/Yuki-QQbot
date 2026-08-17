@@ -256,6 +256,12 @@ def test_legacy_allowlist_only_shrinks() -> None:
             )
 
 
+def test_planner_package_is_gone() -> None:
+    """R5 deletes the leftover planner package; no re-export path remains."""
+
+    assert not (SRC_ROOT / "planner").exists()
+
+
 def test_runtime_package_init_exports_nothing() -> None:
     """The runtime __init__ intentionally re-exports nothing (R1 commit 1)."""
 

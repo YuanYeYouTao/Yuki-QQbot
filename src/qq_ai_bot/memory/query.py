@@ -55,14 +55,10 @@ class MemoryQueryBuilder:
         inbound: InboundMessage,
         content: str,
         runtime: RuntimeConfigSnapshot,
-        planner_intent: str = "",
         memory_mode: MemoryContextMode = MemoryContextMode.HYBRID,
         self_recall: bool = False,
         memory_intent: MemoryQueryIntent | None = None,
     ) -> MemoryQuery:
-        # Kept only as a source-compatible input. Generic TurnPlan.intent must not
-        # affect memory retrieval.
-        del planner_intent
         intent = memory_intent or MemoryQueryIntent(
             mode=memory_mode,
             purpose=MemoryRecallPurpose.BACKGROUND,

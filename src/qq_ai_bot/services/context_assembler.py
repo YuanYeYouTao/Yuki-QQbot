@@ -123,7 +123,6 @@ class ContextAssembler:
         profile: UserProfileSnapshot,
         content: str,
         runtime: RuntimeConfigSnapshot,
-        planner_intent: str = "",
         memory_mode: MemoryContextMode = MemoryContextMode.LEXICAL,
         self_recall: bool = False,
         memory_intent: MemoryQueryIntent | None = None,
@@ -150,7 +149,6 @@ class ContextAssembler:
             retrieval = await self._memory_context.retrieve_for_turn(
                 inbound=inbound,
                 content=content,
-                planner_intent=planner_intent,
                 runtime=runtime,
                 memory_mode=memory_mode,
                 self_recall=self_recall,
@@ -397,7 +395,6 @@ class ContextAssembler:
         retrieval = await self._memory_context.retrieve_for_turn(
             inbound=inbound,
             content=event.content,
-            planner_intent=agent_intent,
             runtime=runtime,
             memory_mode=MemoryContextMode.LEXICAL,
             self_recall=True,

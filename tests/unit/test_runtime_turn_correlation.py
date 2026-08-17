@@ -1,8 +1,8 @@
 """Turn correlation propagation and content-free observation rows (R1 commit 3).
 
-Verifies the §10.1 contract: one opaque ``runtime_turn_id`` joins planner
-runs, model invocations, tool invocations and memory recall receipts; the
-receipt's pre-existing ``turn_id`` keeps its own receipt semantics; nothing
+Verifies the §10.1 contract: one opaque ``runtime_turn_id`` joins model
+invocations, tool invocations and memory recall receipts; the receipt's
+pre-existing ``turn_id`` keeps its own receipt semantics; nothing
 content-bearing reaches any of the new columns or the observation table.
 """
 
@@ -27,8 +27,6 @@ from qq_ai_bot.persistence.models import (
     ToolInvocationModel,
 )
 from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
-from qq_ai_bot.planner.db_models import PlannerRunModel
-from qq_ai_bot.planner.repository import PlannerRepository
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
     bind_runtime_turn,
@@ -49,19 +47,7 @@ def _correlation(origin: TurnOrigin = TurnOrigin.USER_MESSAGE) -> RuntimeTurnCor
     return RuntimeTurnCorrelation(turn_id=new_runtime_turn_id(), origin=origin)
 
 
-async def _write_all_four(database) -> None:
-    await PlannerRepository(database).begin(
-        conversation_key=RAW_CONVERSATION_KEY,
-        trigger_message_id=RAW_TRIGGER_MESSAGE_ID,
-        scope_type="group",
-        origin="user_message",
-        sender_user_id="10001",
-        group_id="882000111",
-        necessity_score=50.0,
-        necessity_reasons={},
-        gate_decision="invoke",
-        planner_used=True,
-    )
+async def _write_correlated(database) -> None:
     await ModelInvocationRepository(database).record(
         task=ModelTask.CHAT_AGENT,
         profile_id="main",
@@ -106,11 +92,10 @@ async def _write_all_four(database) -> None:
 
 async def _fetch_correlated_rows(database):
     async with database.sessions() as session:
-        planner_row = (await session.scalars(select(PlannerRunModel))).one()
         model_row = (await session.scalars(select(ModelInvocationModel))).one()
         tool_row = (await session.scalars(select(ToolInvocationModel))).one()
         receipt_row = (await session.scalars(select(MemoryRecallReceiptModel))).one()
-    return planner_row, model_row, tool_row, receipt_row
+    return model_row, tool_row, receipt_row
 
 
 class TestAmbientCorrelation:
@@ -150,13 +135,12 @@ class TestAmbientCorrelation:
 
 class TestWritePointPropagation:
     @pytest.mark.asyncio
-    async def test_one_bound_turn_joins_all_four_write_points(self, database) -> None:
+    async def test_one_bound_turn_joins_write_points(self, database) -> None:
         correlation = _correlation()
         with bind_runtime_turn(correlation):
-            await _write_all_four(database)
+            await _write_correlated(database)
 
-        planner_row, model_row, tool_row, receipt_row = await _fetch_correlated_rows(database)
-        assert planner_row.runtime_turn_id == correlation.turn_id
+        model_row, tool_row, receipt_row = await _fetch_correlated_rows(database)
         assert model_row.runtime_turn_id == correlation.turn_id
         assert tool_row.runtime_turn_id == correlation.turn_id
         assert receipt_row.runtime_turn_id == correlation.turn_id
@@ -166,9 +150,9 @@ class TestWritePointPropagation:
     async def test_receipt_turn_id_keeps_receipt_semantics(self, database) -> None:
         correlation = _correlation()
         with bind_runtime_turn(correlation):
-            await _write_all_four(database)
+            await _write_correlated(database)
 
-        _, _, _, receipt_row = await _fetch_correlated_rows(database)
+        _, _, receipt_row = await _fetch_correlated_rows(database)
         # The pre-existing unique receipt id must not be repurposed as the
         # whole-turn id: both exist side by side with different values.
         assert receipt_row.turn_id
@@ -176,7 +160,7 @@ class TestWritePointPropagation:
 
     @pytest.mark.asyncio
     async def test_unbound_writes_persist_null_like_pre_r1(self, database) -> None:
-        await _write_all_four(database)
+        await _write_correlated(database)
 
         for row in await _fetch_correlated_rows(database):
             assert row.runtime_turn_id is None
@@ -185,12 +169,11 @@ class TestWritePointPropagation:
     async def test_no_raw_identifiers_leak_into_correlated_columns(self, database) -> None:
         correlation = _correlation()
         with bind_runtime_turn(correlation):
-            await _write_all_four(database)
+            await _write_correlated(database)
 
-        planner_row, _, tool_row, receipt_row = await _fetch_correlated_rows(database)
+        _, tool_row, receipt_row = await _fetch_correlated_rows(database)
         for value in (
             correlation.turn_id,
-            planner_row.conversation_key_hash,
             tool_row.conversation_key_hash,
             receipt_row.conversation_hash,
             receipt_row.trigger_hash,

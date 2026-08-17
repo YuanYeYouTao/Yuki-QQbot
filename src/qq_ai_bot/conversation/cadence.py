@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import ceil
@@ -11,15 +10,7 @@ from sqlalchemy import delete, select
 
 from qq_ai_bot.conversation.db_models import ReplyEffectEventModel
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.runtime.observability import claim_runtime_turn_id
-
-
-def _stable_identifier_hash(value: str, *, kind: str) -> str:
-    """Same algorithm as ``hash_planner_identifier``; do not change the payload."""
-
-    payload = f"yuki-planner-v1\0{kind}\0{value}".encode("utf-8", errors="replace")
-    return hashlib.sha256(payload).hexdigest()
-
+from qq_ai_bot.runtime.observability import claim_runtime_turn_id, stable_identifier_hash
 
 _CADENCE_WINDOW = 20
 _MAX_ROWS_PER_CONVERSATION = 100
@@ -27,15 +18,15 @@ _RETENTION_DAYS = 90
 
 
 def conversation_key_hash(conversation_key: str) -> str:
-    """Hash a conversation key with the same algorithm as ``planner_runs``."""
+    """Hash a conversation key with the same algorithm as historical planner_runs."""
 
-    return _stable_identifier_hash(conversation_key, kind="conversation")
+    return stable_identifier_hash(conversation_key, kind="conversation")
 
 
 def source_event_hash(*, source: str, raw: str) -> str:
     """Stable unique hash for ``(source, source_event_hash)``."""
 
-    return _stable_identifier_hash(f"{source}:{raw}", kind="reply-effect")
+    return stable_identifier_hash(f"{source}:{raw}", kind="reply-effect")
 
 
 @dataclass(frozen=True, slots=True)

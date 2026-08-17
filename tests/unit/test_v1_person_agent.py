@@ -137,9 +137,7 @@ class ToolLoopProvider(LLMProvider):
                         id="request-onebot",
                         function=ToolFunction(
                             name="request_tools",
-                            arguments=json.dumps(
-                                {"query": "call_onebot_api", "max_results": 1}
-                            ),
+                            arguments=json.dumps({"query": "call_onebot_api", "max_results": 1}),
                         ),
                     ),
                 ),
@@ -379,7 +377,6 @@ async def test_agent_can_queue_a_path_free_voice_reply(database: Database) -> No
         False,
         runtime_config=await config.snapshot(user_id="1001"),
         reply_effects=effects,
-        voice_tool_authorized=True,
     )
 
     assert "send_voice" in {tool.name for tool in tools.definitions(runtime)}

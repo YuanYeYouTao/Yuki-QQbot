@@ -24,7 +24,7 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
-    PlannerInterruptedError,
+    TurnInterruptedError,
     TurnSupersededError,
 )
 
@@ -43,10 +43,7 @@ class PluginBackgroundTurnWorker:
         chat: ChatService,
         turns: ConversationTurnCoordinator,
         turn_observations: TurnObservationRecorder | None = None,
-        planner_context: object | None = None,
-        planner: object | None = None,
     ) -> None:
-        del planner_context, planner
         self._repository = repository
         self._ledger = ledger
         self._runtime_config = runtime_config
@@ -190,7 +187,7 @@ class PluginBackgroundTurnWorker:
                 result.model_requests,
             )
         except (
-            PlannerInterruptedError,
+            TurnInterruptedError,
             TurnSupersededError,
         ):
             if job.attempts >= 2:

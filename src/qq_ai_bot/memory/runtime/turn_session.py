@@ -239,7 +239,6 @@ class TurnMemorySession:
         result = await self._memory_context.retrieve_for_turn(
             inbound=self._inbound,
             content=self._user_question,
-            planner_intent="",
             runtime=self._runtime,
             memory_mode=MemoryContextMode.HYBRID,
             memory_intent=intent,

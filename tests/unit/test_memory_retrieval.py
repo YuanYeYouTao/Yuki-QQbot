@@ -229,14 +229,12 @@ async def test_query_builder_adds_self_target_only_for_enabled_explicit_recall(
     disabled_for_turn = await builder.build(
         inbound=inbound,
         content=inbound.text,
-        planner_intent="询问 Yuki 的偏好",
         runtime=runtime,
         self_recall=False,
     )
     enabled_for_turn = await builder.build(
         inbound=inbound,
         content=inbound.text,
-        planner_intent="询问 Yuki 的偏好",
         runtime=runtime,
         self_recall=True,
     )
@@ -317,7 +315,6 @@ async def test_relevant_chat_adds_one_current_scope_self_episode_without_explici
     automatic = await context.retrieve_for_turn(
         inbound=inbound,
         content=inbound.text,
-        planner_intent="继续普通聊天",
         runtime=runtime,
         self_recall=False,
     )
@@ -329,7 +326,6 @@ async def test_relevant_chat_adds_one_current_scope_self_episode_without_explici
     explicit = await context.retrieve_for_turn(
         inbound=inbound,
         content=inbound.text,
-        planner_intent="明确回忆自己的经历",
         runtime=runtime,
         self_recall=True,
     )
@@ -545,7 +541,6 @@ async def test_personal_overview_drops_referenced_people(database: Database) -> 
     query = await MemoryQueryBuilder(MemoryTargetResolver(people)).build(
         inbound=inbound,
         content=inbound.text,
-        planner_intent="回顾当前用户",
         runtime=runtime,
         memory_intent=MemoryQueryIntent(mode=MemoryContextMode.OVERVIEW),
     )
@@ -582,21 +577,18 @@ async def test_planner_memory_modes_control_semantic_retrieval(database: Databas
     lexical = await builder.build(
         inbound=inbound,
         content=inbound.text,
-        planner_intent="普通字面检索",
         runtime=runtime,
         memory_mode=MemoryContextMode.LEXICAL,
     )
     hybrid = await builder.build(
         inbound=inbound,
         content=inbound.text,
-        planner_intent="回忆长期事实",
         runtime=runtime,
         memory_mode=MemoryContextMode.HYBRID,
     )
     overview = await builder.build(
         inbound=inbound,
         content=inbound.text,
-        planner_intent="读取记忆概览",
         runtime=runtime,
         memory_mode=MemoryContextMode.OVERVIEW,
     )
@@ -637,14 +629,13 @@ async def test_none_memory_mode_returns_without_resolving_targets(database: Data
     result = await context.retrieve_for_turn(
         inbound=inbound,
         content=inbound.text,
-        planner_intent="即时短回应",
         runtime=runtime,
         memory_mode=MemoryContextMode.NONE,
     )
 
     assert result.hits == ()
     assert result.blocks == ()
-    assert result.semantic_status == "planner_skipped"
+    assert result.semantic_status == "skipped"
 
 
 @pytest.mark.asyncio
@@ -684,7 +675,6 @@ async def test_disabled_retrieval_uses_bounded_current_entities_only(database: D
     result = await context.retrieve_for_turn(
         inbound=inbound,
         content=inbound.text,
-        planner_intent="",
         runtime=runtime,
     )
 

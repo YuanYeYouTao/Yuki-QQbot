@@ -19,7 +19,7 @@ from qq_ai_bot.capabilities.models import (
     CapabilityTrustSource,
 )
 from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
-from qq_ai_bot.cli import _prompt_comparison
+from qq_ai_bot.cli import _prompt_comparison, _prompt_diagnostic
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.messages import (
@@ -155,7 +155,13 @@ def test_prompt_benchmark_meets_declared_reduction_targets() -> None:
     scenarios = comparison["scenarios"]
     assert isinstance(scenarios, dict)
     assert scenarios["direct-text"]["character_reduction_percent"] >= 30
-    assert scenarios["autonomous-group"]["character_reduction_percent"] >= 30
+    autonomous = _prompt_diagnostic(settings, "autonomous-group")
+    mention = _prompt_diagnostic(settings, "group-mention")
+    assert autonomous["route_task"] == ModelTask.CHAT_AGENT.value
+    assert "core.contract" in autonomous["contribution_ids"]
+    assert "core.persona" in autonomous["contribution_ids"]
+    assert autonomous["history_characters"] == mention["history_characters"]
+    assert autonomous["current_message_characters"] == mention["current_message_characters"]
 
 
 @pytest.mark.asyncio

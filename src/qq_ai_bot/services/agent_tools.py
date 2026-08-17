@@ -148,7 +148,6 @@ class ToolRuntime:
     reply_effects: list[ReplyEffect] | None = None
     reply_target_control: ReplyTargetControl | None = None
     reply_control: ReplyControlState | None = None
-    voice_tool_authorized: bool = False
     voice_spontaneous_allowed: bool = True
     selection_query: str = ""
     scheduled_automation_intent: bool = False
@@ -160,7 +159,6 @@ class ToolRuntime:
     memory_exposure_registry: MemoryExposureRegistry | None = None
     memory_intent: MemoryQueryIntent | None = None
     memory_session: object | None = None
-    planner_fallback: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -41,9 +41,6 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipJobRepository,
     RelationshipRepository,
 )
-from qq_ai_bot.planner.context import PlannerContextBuilder
-from qq_ai_bot.planner.provider import PlannerInterruptedError as ProviderPlannerInterruptedError
-from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
@@ -81,7 +78,7 @@ from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.renderer import sanitize_input
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
-    PlannerInterruptedError,
+    TurnInterruptedError,
     TurnSupersededError,
 )
 from qq_ai_bot.services.user_profiles import (
@@ -240,8 +237,6 @@ class MessageProcessor:
         rate_limiter: SlidingWindowRateLimiter,
         concurrency: ConcurrencyManager,
         onebot_connected: Callable[[], bool],
-        planner_context: PlannerContextBuilder,
-        planner_service: PlannerService,
         ledger: EventLedgerRepository | None = None,
         people: PeopleRepository | None = None,
         memories: MemoryFactService | None = None,
@@ -264,7 +259,7 @@ class MessageProcessor:
         command_service: CommandService | None = None,
         direct_plugin_commands: DirectPluginCommandResolver | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
-        planner_signals: AdmissionSignalProvider | None = None,
+        admission_signals: AdmissionSignalProvider | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
         emoji_collector: EmojiCollector | None = None,
         emoji_worker: EmojiWorker | None = None,
@@ -321,9 +316,7 @@ class MessageProcessor:
             database=database,
         )
         self._turn_coordinator = turn_coordinator or chat._turn_coordinator
-        self._planner_context = planner_context
-        self._planner = planner_service
-        self._planner_signals = planner_signals
+        self._admission_signals = admission_signals
         self._voice_preferences = voice_preferences
         audit = AdminAuditService(database)
         self._relationship_admin = relationship_admin or RelationshipAdminService(
@@ -384,8 +377,6 @@ class MessageProcessor:
             automation_repository=automation_repository,
             automation_worker=automation_worker,
             turn_coordinator=self._turn_coordinator,
-            planner_observability=self._planner.observability,
-            planner_repository=self._planner.repository,
         )
         self._direct_plugin_commands = direct_plugin_commands
         self._event_publisher: LifecycleEventPublisher | None = None
@@ -399,7 +390,6 @@ class MessageProcessor:
 
         self._event_publisher = publisher
         self._chat.set_event_publisher(publisher)
-        self._planner.set_event_publisher(publisher)
 
     async def handle(
         self,
@@ -410,10 +400,10 @@ class MessageProcessor:
         """Bind one opaque runtime turn correlation around real message handling.
 
         The correlation travels as ambient context to every persistence write
-        point (planner runs, model invocations, tool invocations, memory
-        recall receipts).  A content-free observation row is recorded only
-        for turns that actually engaged those write points or failed
-        unexpectedly; pure command / observe-only turns stay silent.
+        point (model invocations, tool invocations, memory recall receipts).
+        A content-free observation row is recorded only for turns that actually
+        engaged those write points or failed unexpectedly; pure command /
+        observe-only turns stay silent.
         """
 
         started = time.perf_counter()
@@ -528,7 +518,7 @@ class MessageProcessor:
                 runtime_snapshot.conversation_policy().interrupt_autonomous_on_new_message
             ),
         )
-        configure_signal_timeout = getattr(self._planner_signals, "configure_timeout", None)
+        configure_signal_timeout = getattr(self._admission_signals, "configure_timeout", None)
         if callable(configure_signal_timeout):
             configure_signal_timeout(runtime_snapshot.plugins.hook_timeout_seconds)
         configure_hook_timeout = getattr(
@@ -755,8 +745,8 @@ class MessageProcessor:
                 visual_failure=visual.failed,
                 turn_token=turn_token,
             )
-        except (PlannerInterruptedError, ProviderPlannerInterruptedError, TurnSupersededError):
-            return ProcessResult(True, reason="planner_interrupted")
+        except (TurnInterruptedError, TurnSupersededError):
+            return ProcessResult(True, reason="turn_interrupted")
         except RequestCancelledError:
             return ProcessResult(True, reason="cancelled")
         except LLMConfigurationError:

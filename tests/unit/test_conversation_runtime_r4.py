@@ -9,9 +9,23 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.unit.test_commands_and_chat import inbound
-from tests.unit.test_planner_core import _runtime
 
-from qq_ai_bot.admin.models import ConversationRuntimeConfig
+from qq_ai_bot.admin.models import (
+    AgentRuntimeConfig,
+    ContextRuntimeConfig,
+    ConversationRuntimeConfig,
+    EmojiRuntimeConfig,
+    LLMRuntimeConfig,
+    MemoryRetrievalRuntimeConfig,
+    PlannerRuntimeConfig,
+    PluginRuntimeConfig,
+    RelationshipRuntimeConfig,
+    ReplyRuntimeConfig,
+    RuntimeConfigSnapshot,
+    SpeechRuntimeConfig,
+    VisionRuntimeConfig,
+    WebRuntimeConfig,
+)
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.cadence import ReplyEffectRepository, conversation_key_hash
@@ -41,7 +55,7 @@ from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.planner.repository import hash_planner_identifier
+from qq_ai_bot.runtime.observability import stable_identifier_hash
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.agent_tools import _RUNTIME_SNAPSHOT, AgentToolService, ToolRuntime
 from qq_ai_bot.services.chat import ChatService
@@ -50,6 +64,139 @@ from qq_ai_bot.services.policies import evaluate_message, replies_to_bot
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.time.models import TimeContext
+
+
+def _runtime() -> RuntimeConfigSnapshot:
+    """Build a dual-read snapshot; Planner keys remain until the config purge."""
+
+    return RuntimeConfigSnapshot(
+        planner=PlannerRuntimeConfig(
+            direct_enabled=True,
+            group_enabled=True,
+            temperature=0.1,
+            max_output_tokens=512,
+            timeout_seconds=20,
+            confidence_threshold=0.65,
+            reply_necessity_threshold=80,
+            max_pending_messages=20,
+            recent_presence_window_seconds=300,
+            max_wait_seconds=60,
+            interrupt_autonomous_on_new_message=True,
+            record_runs=True,
+        ),
+        plugins=PluginRuntimeConfig(
+            hook_timeout_seconds=3,
+            max_prompt_fragment_characters=2000,
+            max_prompt_characters_per_plugin=4000,
+            max_total_prompt_characters=8000,
+        ),
+        context=ContextRuntimeConfig(local_event_limit=30),
+        memory=MemoryRetrievalRuntimeConfig(
+            retrieval_enabled=True,
+            max_referenced_targets=5,
+            lexical_candidate_limit=50,
+            context_limit_per_entity=8,
+            overview_limit_per_entity=20,
+            always_on_explicit_preference_limit=3,
+            query_term_limit=12,
+            short_query_fallback_enabled=True,
+        ),
+        reply=ReplyRuntimeConfig(
+            delay_min_seconds=3,
+            delay_max_seconds=5,
+            max_qq_message_chars=1500,
+            cancel_on_new_message=True,
+            plan_hard_max_messages=10,
+        ),
+        llm=LLMRuntimeConfig(
+            model="main-model",
+            timeout_seconds=30,
+            max_retries=1,
+            temperature=0.7,
+            max_output_tokens=2048,
+            thinking_enabled=True,
+        ),
+        agent=AgentRuntimeConfig(
+            max_tool_calls=5,
+            max_model_requests=6,
+            tool_result_max_characters=32_000,
+        ),
+        web=WebRuntimeConfig(
+            search_max_results=5,
+            extract_max_results=3,
+            max_calls_per_turn=3,
+            tool_result_max_characters=20_000,
+            source_retention_days=7,
+            source_max_runs_per_conversation=10,
+        ),
+        relationship=RelationshipRuntimeConfig(
+            confidence_threshold=0.7,
+            max_auto_delta=5,
+            daily_positive_cap=10,
+            daily_negative_cap=-10,
+            conflict_preference_min_gap=10,
+            initial_affection=50,
+            initial_trust=50,
+        ),
+        vision=VisionRuntimeConfig(
+            max_images_per_turn=10,
+            max_frames_per_turn=10,
+            gif_max_frames=8,
+            thinking_enabled=False,
+            thinking_budget=0,
+            low_confidence_retry_threshold=0.5,
+            per_user_requests_per_minute=10,
+            per_group_requests_per_minute=30,
+            analysis_retention_days=7,
+        ),
+        emoji=EmojiRuntimeConfig(
+            enabled=True,
+            collection_enabled=True,
+            collection_mode="likely",
+            collect_private=True,
+            collect_group=True,
+            auto_adopt_enabled=True,
+            auto_adopt_min_confidence=0.78,
+            pool_capacity=None,
+            replacement_mode="score",
+            selector_enabled=True,
+            selector_candidate_count=3,
+            selector_score_gap=0.75,
+            selector_timeout_seconds=2,
+            max_effects_per_reply=1,
+            spontaneous_frequency=0.15,
+            near_duplicate_enabled=True,
+            near_duplicate_distance=6,
+            same_emoji_cooldown_seconds=300,
+            scope_repeat_cooldown_seconds=60,
+            cache_retention_days=30,
+            worker_batch_size=10,
+            worker_poll_seconds=2,
+            worker_lease_seconds=120,
+            worker_max_attempts=3,
+            worker_retry_delay_seconds=30,
+            analysis_version="emoji-v1",
+        ),
+        speech=SpeechRuntimeConfig(
+            enabled=False,
+            provider="genie",
+            socket_path="/run/yuki-speech/genie.sock",
+            root="/data/speech",
+            genie_data_dir="/data/speech/genie_data",
+            default_profile="",
+            planner_enabled=True,
+            default_mode="optional",
+            split_sentence=True,
+            max_synthesis_characters=None,
+            queue_max_pending=None,
+            cache_retention_hours=None,
+            private_enabled=True,
+            group_enabled=True,
+            automation_enabled=True,
+            plugin_enabled=True,
+            text_fallback_enabled=True,
+        ),
+    )
 
 
 def _inbound(
@@ -134,9 +281,9 @@ def test_fast_conversation_presence_penalty_is_applied() -> None:
     assert "recent_bot_presence" in snapshot.reasons
 
 
-def test_cadence_conversation_hash_matches_planner_identifier() -> None:
+def test_cadence_conversation_hash_matches_stable_identifier() -> None:
     key = "group:2001"
-    assert conversation_key_hash(key) == hash_planner_identifier(key, kind="conversation")
+    assert conversation_key_hash(key) == stable_identifier_hash(key, kind="conversation")
 
 
 def test_conversation_policy_falls_back_to_planner_keys() -> None:
@@ -389,7 +536,7 @@ async def test_ordinary_text_uses_exactly_one_agent_request_and_zero_planner(
     assert result.reason == "chat"
     assert len(provider.requests) == 1
     assert sender.messages[0].text == "你好呀"
-    assert harness.processor._planner._provider.inputs == []
+    assert not hasattr(harness.processor, "_planner")
     assert provider.requests[0].tool_choice != "required"
 
 

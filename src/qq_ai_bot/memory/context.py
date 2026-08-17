@@ -182,7 +182,6 @@ class MemoryContextService:
         *,
         inbound: InboundMessage,
         content: str,
-        planner_intent: str,
         runtime: RuntimeConfigSnapshot,
         memory_mode: MemoryContextMode = MemoryContextMode.HYBRID,
         self_recall: bool = False,
@@ -199,7 +198,7 @@ class MemoryContextService:
                 selected_count=0,
                 query_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
                 mode=MemoryRetrievalMode.RELEVANT,
-                semantic_status="planner_skipped",
+                semantic_status="skipped",
             )
         if neutral_ordering:
             targets = await self.resolve_targets(inbound, runtime, self_recall=self_recall)
@@ -213,7 +212,6 @@ class MemoryContextService:
             query = await self._queries.build(
                 inbound=inbound,
                 content=content,
-                planner_intent=planner_intent,
                 runtime=runtime,
                 memory_mode=memory_mode,
                 self_recall=self_recall,

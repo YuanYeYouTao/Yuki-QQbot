@@ -111,12 +111,6 @@ class AdmissionScoreSnapshot:
     average_human_interval_seconds: float = 0.0
     idle_seconds: float = 0.0
 
-    @property
-    def should_enter_planner(self) -> bool:
-        """Historical alias kept for leftover Planner-era unit tests."""
-
-        return self.should_participate
-
     def as_admission_score(self) -> AutonomousAdmissionScore:
         return AutonomousAdmissionScore(
             score=float(self.score),
@@ -352,18 +346,9 @@ class LocalAutonomousParticipationPolicy:
         return max(-15, min(15, round(sum(by_plugin.values()))))
 
 
-# R5 deletes planner/necessity.py.  Keep the historical names as aliases so
-# leftover unit tests can import either path during the cutover.
-ReplyNecessityFeatures = AdmissionFeatures
-ReplyNecessityScorer = LocalAutonomousParticipationPolicy
-ReplyNecessitySnapshot = AdmissionScoreSnapshot
-
 __all__ = [
     "AdmissionFeatures",
     "AdmissionScoreSnapshot",
     "AdmissionSignalHint",
     "LocalAutonomousParticipationPolicy",
-    "ReplyNecessityFeatures",
-    "ReplyNecessityScorer",
-    "ReplyNecessitySnapshot",
 ]

@@ -12,7 +12,6 @@ from qq_ai_bot.emoji import db_models as _emoji_db_models  # noqa: F401
 from qq_ai_bot.memory.dream import db_models as _memory_dream_db_models  # noqa: F401
 from qq_ai_bot.model_runtime import db_models as _model_runtime_db_models  # noqa: F401
 from qq_ai_bot.persistence.models import Base
-from qq_ai_bot.planner import db_models as _planner_db_models  # noqa: F401
 from qq_ai_bot.plugin_host import db_models as _plugin_db_models  # noqa: F401
 from qq_ai_bot.speech import db_models as _speech_db_models  # noqa: F401
 

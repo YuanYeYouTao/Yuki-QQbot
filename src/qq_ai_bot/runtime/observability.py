@@ -1,8 +1,8 @@
 """Ambient turn correlation and the content-free observation contract.
 
 R1 introduces an opaque ``runtime_turn_id`` propagated to the persistence
-write points of planner runs, model invocations, tool invocations and memory
-recall receipts.  Instead of changing every executor/repository signature,
+write points of model invocations, tool invocations and memory recall
+receipts.  Instead of changing every executor/repository signature,
 the id travels as ambient context (a ``ContextVar``), following the same
 convention as OpenTelemetry context propagation.
 
@@ -45,6 +45,27 @@ def hash_conversation_key(key: str) -> str:
     """Stable content-free projection of a conversation partition key."""
 
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def identifier_hash(value: str | None) -> str | None:
+    """Return a stable short hash without exposing a QQ, group, or conversation key."""
+
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+_STABLE_IDENTIFIER_SALT = "yuki-planner-v1"
+
+
+def stable_identifier_hash(value: str, *, kind: str) -> str:
+    """Domain-separated SHA-256 used by cadence and 0039 backfill.
+
+    The salt string is historical and load-bearing; do not change the payload.
+    """
+
+    payload = f"{_STABLE_IDENTIFIER_SALT}\0{kind}\0{value}".encode("utf-8", errors="replace")
+    return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass(slots=True)

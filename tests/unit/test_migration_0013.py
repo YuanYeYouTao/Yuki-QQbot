@@ -8,11 +8,8 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select
 
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.planner.db_models import PlannerRunModel
-from qq_ai_bot.planner.repository import PlannerRepository
 from qq_ai_bot.plugin_host.repository import (
     PluginConfigRepository,
     PluginInstallationRepository,
@@ -199,52 +196,6 @@ async def test_manifest_change_revokes_plugin_approval(database: Database) -> No
     assert changed.enabled is False
     assert changed.approved_permissions == ()
     assert changed.approved_at is None
-
-
-async def test_planner_repository_hashes_raw_identifiers(database: Database) -> None:
-    repository = PlannerRepository(database)
-    run = await repository.begin(
-        conversation_key="group:987654321:user:123456789",
-        trigger_message_id="message-1",
-        scope_type="group",
-        origin="direct",
-        sender_user_id="123456789",
-        group_id="987654321",
-        necessity_score=86.5,
-        necessity_reasons={
-            "direct_mention": 40,
-            "message": "不应落库 123456789",
-        },
-        gate_decision="enter",
-        planner_used=True,
-        planner_model="fake-planner",
-    )
-    await repository.finish(
-        run.id,
-        planner_decision="reply",
-        reason_code="direct_mention",
-        delivery_mode="natural_multi",
-        desired_messages=2,
-        tool_mode="inherit",
-        confidence=0.9,
-        latency_seconds=0.01,
-        messages_planned=2,
-        messages_sent=1,
-    )
-
-    async with database.sessions() as session:
-        row = await session.scalar(select(PlannerRunModel).where(PlannerRunModel.id == run.id))
-    assert row is not None
-    persisted = "|".join(
-        filter(
-            None,
-            (row.conversation_key_hash, row.sender_user_id_hash, row.group_id_hash),
-        )
-    )
-    assert "123456789" not in persisted
-    assert "987654321" not in persisted
-    assert "123456789" not in row.necessity_reasons_json
-    assert row.necessity_reasons_json == ('{"direct_mention":40,"message":"[REDACTED]"}')
 
 
 async def test_plugin_agent_sessions_are_isolated_from_other_plugins(

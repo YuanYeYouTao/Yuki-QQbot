@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from qq_ai_bot.mcp.repository import MCPRepository
 from qq_ai_bot.memory.enums import MemoryRecallPurpose, MemoryRetrievalMode
@@ -24,12 +25,12 @@ from qq_ai_bot.observability.runtime_baseline import (
     percentile,
 )
 from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
-from qq_ai_bot.planner.repository import PlannerRepository
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
     bind_runtime_turn,
     build_turn_observation,
     new_runtime_turn_id,
+    stable_identifier_hash,
 )
 from qq_ai_bot.runtime.origin import TurnOrigin
 
@@ -45,6 +46,37 @@ def _identity() -> BaselineIdentity:
     return BaselineIdentity(commit="deadbeef", version="3.5.3", alembic_head="0037")
 
 
+_PLANNER_RUNS_DDL = """
+CREATE TABLE IF NOT EXISTS planner_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    runtime_turn_id VARCHAR(64),
+    conversation_key_hash VARCHAR(64) NOT NULL,
+    trigger_message_id VARCHAR(128) NOT NULL DEFAULT '',
+    scope_type VARCHAR(16) NOT NULL,
+    origin VARCHAR(32) NOT NULL,
+    sender_user_id_hash VARCHAR(64) NOT NULL,
+    group_id_hash VARCHAR(64),
+    necessity_score FLOAT NOT NULL,
+    necessity_reasons_json TEXT NOT NULL DEFAULT '{}',
+    gate_decision VARCHAR(32) NOT NULL,
+    planner_used BOOLEAN NOT NULL DEFAULT 0,
+    planner_model VARCHAR(128) NOT NULL DEFAULT '',
+    planner_decision VARCHAR(32),
+    reason_code VARCHAR(64),
+    delivery_mode VARCHAR(32),
+    desired_messages INTEGER,
+    tool_mode VARCHAR(32),
+    latency_seconds FLOAT NOT NULL DEFAULT 0,
+    interrupted BOOLEAN NOT NULL DEFAULT 0,
+    fallback_used BOOLEAN NOT NULL DEFAULT 0,
+    messages_planned INTEGER NOT NULL DEFAULT 0,
+    messages_sent INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    finished_at DATETIME
+)
+"""
+
+
 async def _finish_planner(
     database,
     *,
@@ -53,32 +85,41 @@ async def _finish_planner(
     created_at: datetime,
     turn_id: str,
 ) -> None:
-    correlation = RuntimeTurnCorrelation(turn_id=turn_id, origin=TurnOrigin.USER_MESSAGE)
-    with bind_runtime_turn(correlation):
-        record = await PlannerRepository(database).begin(
-            conversation_key=conversation_key,
-            trigger_message_id=SECRET_TRIGGER,
-            scope_type="group",
-            origin="user_message",
-            sender_user_id=SECRET_USER,
-            group_id="SECRET-LEAK-882000111",
-            necessity_score=40.0,
-            necessity_reasons={},
-            gate_decision="invoke",
-            planner_used=True,
-            created_at=created_at,
+    async with database.sessions() as session:
+        await session.execute(text(_PLANNER_RUNS_DDL))
+        await session.execute(
+            text(
+                """
+                INSERT INTO planner_runs (
+                    runtime_turn_id, conversation_key_hash, trigger_message_id,
+                    scope_type, origin, sender_user_id_hash, group_id_hash,
+                    necessity_score, necessity_reasons_json, gate_decision,
+                    planner_used, planner_decision, reason_code, delivery_mode,
+                    desired_messages, tool_mode, latency_seconds, created_at, finished_at
+                ) VALUES (
+                    :turn_id, :conversation_hash, :trigger,
+                    'group', 'user_message', :sender_hash, :group_hash,
+                    40.0, '{}', 'invoke',
+                    1, :decision, :decision, :delivery,
+                    :desired, :tool_mode, 0.25, :created_at, :finished_at
+                )
+                """
+            ),
+            {
+                "turn_id": turn_id,
+                "conversation_hash": stable_identifier_hash(conversation_key, kind="conversation"),
+                "trigger": SECRET_TRIGGER,
+                "sender_hash": stable_identifier_hash(SECRET_USER, kind="sender"),
+                "group_hash": stable_identifier_hash("SECRET-LEAK-882000111", kind="group"),
+                "decision": decision,
+                "delivery": "natural_multi" if decision == "reply" else None,
+                "desired": 1 if decision == "reply" else None,
+                "tool_mode": "auto" if decision == "reply" else None,
+                "created_at": created_at.isoformat(),
+                "finished_at": (created_at + timedelta(milliseconds=250)).isoformat(),
+            },
         )
-        await PlannerRepository(database).finish(
-            record.id,
-            planner_decision=decision,
-            reason_code=decision,
-            delivery_mode="natural_multi" if decision == "reply" else None,
-            desired_messages=1 if decision == "reply" else None,
-            tool_mode="auto" if decision == "reply" else None,
-            confidence=0.8,
-            latency_seconds=0.25,
-            finished_at=created_at + timedelta(milliseconds=250),
-        )
+        await session.commit()
 
 
 async def _seed(database) -> str:

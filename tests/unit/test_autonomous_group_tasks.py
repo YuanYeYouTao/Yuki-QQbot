@@ -32,8 +32,7 @@ def _service() -> AutonomousGroupService:
     chat = SimpleNamespace(_runtime_config=_FailingRuntime(), _turn_coordinator=object())
     return AutonomousGroupService(
         chat=cast(Any, chat),
-        planner_context=cast(Any, object()),
-        planner=cast(Any, object()),
+        admission_features=cast(Any, object()),
         runtime_config=cast(Any, _FailingRuntime()),
         turn_coordinator=cast(Any, object()),
     )
@@ -44,8 +43,7 @@ def _working_service() -> AutonomousGroupService:
     chat = SimpleNamespace(_runtime_config=runtime, _turn_coordinator=object())
     return AutonomousGroupService(
         chat=cast(Any, chat),
-        planner_context=cast(Any, object()),
-        planner=cast(Any, object()),
+        admission_features=cast(Any, object()),
         runtime_config=cast(Any, runtime),
         turn_coordinator=cast(Any, object()),
     )
@@ -119,7 +117,7 @@ async def test_group_updates_share_one_worker_and_plan_only_latest_quiet_revisio
     )
     sender = cast(Any, object())
 
-    with patch.object(service, "_plan_latest", new_callable=AsyncMock) as plan_latest:
+    with patch.object(service, "_run_latest", new_callable=AsyncMock) as run_latest:
         service.observe(_group_message("1", "第一条"), profile, sender)
         first_task = service._states["2001"].task
         await asyncio.sleep(0.005)
@@ -128,9 +126,9 @@ async def test_group_updates_share_one_worker_and_plan_only_latest_quiet_revisio
         assert service._states["2001"].task is first_task
         await service.wait_until_idle("2001")
 
-    assert plan_latest.await_count == 1
-    assert plan_latest.await_args is not None
-    assert plan_latest.await_args.args[:2] == ("2001", 2)
+    assert run_latest.await_count == 1
+    assert run_latest.await_args is not None
+    assert run_latest.await_args.args[:2] == ("2001", 2)
     await service.close()
 
 
@@ -160,7 +158,7 @@ async def test_stale_admission_result_cannot_start_agent_or_tools() -> None:
     )
     service = AutonomousGroupService(
         chat=cast(Any, chat),
-        planner_context=cast(Any, BlockingContext()),
+        admission_features=cast(Any, BlockingContext()),
         runtime_config=cast(Any, runtime_service),
         turn_coordinator=coordinator,
     )
@@ -184,7 +182,7 @@ async def test_stale_admission_result_cannot_start_agent_or_tools() -> None:
     service._states["2001"] = state
     runtime = await runtime_service.snapshot(group_id="2001")
 
-    task = asyncio.create_task(service._plan_latest("2001", 1, cast(Any, runtime)))
+    task = asyncio.create_task(service._run_latest("2001", 1, cast(Any, runtime)))
     await started.wait()
     state.revision = 2
     state.changed.set()

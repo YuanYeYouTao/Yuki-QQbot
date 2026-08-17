@@ -48,7 +48,6 @@ from qq_ai_bot.model_runtime import (
     load_model_profile_catalog,
 )
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.planner.prompt import PLANNER_SYSTEM_PROMPT
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from qq_ai_bot.plugin_host.manifest import load_manifest
 from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
@@ -259,7 +258,7 @@ def _model_catalog(settings: Settings) -> ModelProfileCatalog:
 
 def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
     catalog = _model_catalog(settings)
-    task = ModelTask.PLANNER if scenario == "autonomous-group" else ModelTask.CHAT_AGENT
+    task = ModelTask.CHAT_AGENT
     route, profile = catalog.routes[task], catalog.profiles[catalog.routes[task].profile_id]
     dynamic_payloads: dict[str, object] = {
         "time": {"timezone": "Asia/Shanghai", "local": "2000-01-01T12:00:00+08:00"},
@@ -273,42 +272,28 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
         dynamic_payloads["speech"] = {"available": True, "requested": True}
     if scenario == "plugin":
         dynamic_payloads["plugins"] = [{"id": "example", "data": "synthetic"}]
-    if scenario != "autonomous-group":
-        dynamic_payloads["plan"] = {"decision": "reply"}
+    dynamic_payloads["plan"] = {"decision": "reply"}
 
-    if scenario == "autonomous-group":
-        contributions = [
-            PromptContribution(
-                id="planner.contract",
-                channel=PromptChannel.INVARIANT,
-                trust=PromptTrust.CORE,
-                priority=100,
-                stability=PromptStability.STATIC,
-                content=PLANNER_SYSTEM_PROMPT,
-                required=True,
-            )
-        ]
-    else:
-        contributions = [
-            PromptContribution(
-                id="core.persona",
-                channel=PromptChannel.PERSONA,
-                trust=PromptTrust.CORE,
-                priority=100,
-                stability=PromptStability.STATIC,
-                content=settings.system_prompt,
-                required=True,
-            ),
-            PromptContribution(
-                id="core.contract",
-                channel=PromptChannel.INVARIANT,
-                trust=PromptTrust.CORE,
-                priority=90,
-                stability=PromptStability.STATIC,
-                content=CORE_CONTRACT,
-                required=True,
-            ),
-        ]
+    contributions = [
+        PromptContribution(
+            id="core.persona",
+            channel=PromptChannel.PERSONA,
+            trust=PromptTrust.CORE,
+            priority=100,
+            stability=PromptStability.STATIC,
+            content=settings.system_prompt,
+            required=True,
+        ),
+        PromptContribution(
+            id="core.contract",
+            channel=PromptChannel.INVARIANT,
+            trust=PromptTrust.CORE,
+            priority=90,
+            stability=PromptStability.STATIC,
+            content=CORE_CONTRACT,
+            required=True,
+        ),
+    ]
     contributions.extend(
         PromptContribution(
             id=f"runtime.{key}",
@@ -320,23 +305,13 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
         )
         for key, value in dynamic_payloads.items()
     )
-    history = (
-        ()
-        if scenario == "autonomous-group"
-        else (
-            ChatMessage(role="user", content="这是脱敏的历史消息。"),
-            ChatMessage(role="assistant", content="这是脱敏的历史回复。"),
-        )
-    )
-    current_message = (
-        None
-        if scenario == "autonomous-group"
-        else ChatMessage(role="user", content="请回应当前合成场景。")
-    )
     compiled = PromptCompiler().compile(
         PromptProgram(contributions=tuple(contributions)),
-        history=history,
-        current_message=current_message,
+        history=(
+            ChatMessage(role="user", content="这是脱敏的历史消息。"),
+            ChatMessage(role="assistant", content="这是脱敏的历史回复。"),
+        ),
+        current_message=ChatMessage(role="user", content="请回应当前合成场景。"),
     )
     tools, groups = _scenario_tools(scenario)
     tool_metrics = measure_tool_schemas(tools, groups=groups)

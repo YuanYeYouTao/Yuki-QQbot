@@ -98,10 +98,10 @@ from qq_ai_bot.persistence.repositories import (
     WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.planner.observability import identifier_hash
 from qq_ai_bot.runtime.authority import TurnAuthority
 from qq_ai_bot.runtime.contracts import DeliverySummary
 from qq_ai_bot.runtime.delivery import DeliveryStatus
+from qq_ai_bot.runtime.observability import identifier_hash
 from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
@@ -540,9 +540,7 @@ class _ChatAgentBackend(AgentToolBackend):
             actor_user_id=self._runtime.actor_user_id or "unknown",
             bot_user_id=self._runtime.inbound.bot_user_id or "bot",
             origin=RuntimeTurnOrigin(self._runtime.origin.value),
-            permission_ceiling=frozenset(
-                {"superuser"} if self._runtime.actor_is_superuser else ()
-            ),
+            permission_ceiling=frozenset({"superuser"} if self._runtime.actor_is_superuser else ()),
             delegated_authority=None,
             authority_revision=1,
         )
@@ -1449,16 +1447,6 @@ class ChatService:
             raise ValueError(f"duplicate tool provider: {provider.provider_id}")
         self._external_tool_providers.append(provider)
 
-    def planner_tool_scopes(
-        self,
-        base_scopes: tuple[str, ...],
-        runtime: RuntimeConfigSnapshot | None = None,
-    ) -> tuple[object, ...]:
-        """Planner no longer owns tool exposure; keep a stable empty catalog."""
-
-        del base_scopes, runtime
-        return ()
-
     def _responses_append_only(self) -> bool:
         protocol = getattr(self._agent_runner._models, "protocol", None)
         if not callable(protocol):
@@ -1783,9 +1771,7 @@ class ChatService:
                 )
                 and is_scheduled_automation_request(content)
             )
-            scheduled_automation_allowed = bool(
-                scheduled_automation_intent and not exclusive_write
-            )
+            scheduled_automation_allowed = bool(scheduled_automation_intent and not exclusive_write)
             if scheduled_automation_allowed:
                 messages = (
                     *messages,
@@ -2549,7 +2535,6 @@ class ChatService:
             profile=profile,
             content=content,
             runtime=runtime,
-            planner_intent="",
             memory_mode=memory_mode,
             self_recall=False,
             memory_intent=memory_intent,
