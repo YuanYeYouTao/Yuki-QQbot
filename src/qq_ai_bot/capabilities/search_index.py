@@ -51,7 +51,7 @@ class FtsCapabilitySearchIndex:
     _connection: sqlite3.Connection | None = None
     _documents: dict[str, CapabilitySearchDocument] = field(default_factory=dict)
     _exact_names: dict[str, str] = field(default_factory=dict)
-    _aliases: dict[str, str] = field(default_factory=dict)
+    _aliases: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def revision(self) -> str | None:
@@ -76,14 +76,19 @@ class FtsCapabilitySearchIndex:
             """
         )
         exact_names: dict[str, str] = {}
-        aliases: dict[str, str] = {}
+        aliases: dict[str, tuple[str, ...]] = {}
         stored: dict[str, CapabilitySearchDocument] = {}
         for document in documents:
             stored[document.capability_id] = document
             exact_names[document.model_name.casefold()] = document.capability_id
             exact_names[document.canonical_name.casefold()] = document.capability_id
             for alias in document.aliases:
-                aliases[alias.casefold()] = document.capability_id
+                key = alias.casefold()
+                if not key:
+                    continue
+                existing = aliases.get(key, ())
+                if document.capability_id not in existing:
+                    aliases[key] = (*existing, document.capability_id)
             connection.execute(
                 """
                 INSERT INTO capability_fts(
@@ -127,13 +132,13 @@ class FtsCapabilitySearchIndex:
         exact_id = self._exact_names.get(folded)
         if exact_id is not None:
             ranked[exact_id] = EXACT_NAME_SCORE
-        alias_id = self._aliases.get(folded)
-        if alias_id is not None:
+        for alias_id in self._aliases.get(folded, ()):
             ranked[alias_id] = max(ranked.get(alias_id, 0.0), EXACT_ALIAS_SCORE)
         query_terms = set(_query_terms(cleaned))
-        for alias, capability_id in self._aliases.items():
+        for alias, capability_ids in self._aliases.items():
             if alias and alias in query_terms:
-                ranked[capability_id] = max(ranked.get(capability_id, 0.0), EXACT_ALIAS_SCORE)
+                for capability_id in capability_ids:
+                    ranked[capability_id] = max(ranked.get(capability_id, 0.0), EXACT_ALIAS_SCORE)
         if self._connection is not None:
             match = _fts_match_expression(cleaned)
             if match:

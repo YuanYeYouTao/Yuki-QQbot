@@ -133,6 +133,7 @@ class TestMcpToolNamespace:
                         "coupons": {
                             "scope": "food.mcdonalds.coupons",
                             "summary": "查询可用优惠券",
+                            "aliases": ["优惠券"],
                             "includeTools": ["available-coupons"],
                         }
                     },
@@ -145,6 +146,7 @@ class TestMcpToolNamespace:
         assert mcp_tool_namespace("mcd", config, "create-order") == "food.mcdonalds.order"
         assert mcp_tool_namespace("mcd", config, "available-coupons") == "food.mcdonalds.coupons"
         assert mcp_tool_namespace("mcd", config, "now-time-info") == "food.mcdonalds"
+        assert config.yuki.tool_bundles["coupons"].aliases == ("优惠券",)
 
 
 class TestValidationResult:

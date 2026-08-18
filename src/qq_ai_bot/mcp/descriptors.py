@@ -120,7 +120,7 @@ def descriptor_from_mcp_tool(
         dict.fromkeys(
             (
                 *(override.aliases if override is not None else ()),
-                *config.yuki.tags,
+                *(alias for bundle in bundles for alias in bundle.aliases),
                 item.remote_tool_name,
                 item.remote_tool_name.replace("-", " "),
             )
@@ -131,7 +131,6 @@ def descriptor_from_mcp_tool(
             value
             for value in (
                 *(override.use_when if override is not None else ()),
-                config.yuki.summary,
                 *(bundle.summary for bundle in bundles),
             )
             if value.strip()
@@ -165,7 +164,6 @@ def descriptor_from_mcp_tool(
             dict.fromkeys(
                 (
                     *(override.tags if override is not None else ()),
-                    *config.yuki.tags,
                     *(
                         name
                         for name, bundle in config.yuki.tool_bundles.items()

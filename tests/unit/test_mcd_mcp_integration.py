@@ -62,7 +62,10 @@ def test_checked_in_mcp_presets_are_standalone_and_secret_free() -> None:
         "calculate-price",
     }
     assert "create-order" not in planning_bundle.include_tools
+    assert server.yuki.tags == ("麦当劳",)
+    assert set(planning_bundle.aliases) == {"点餐", "菜单", "点麦当劳"}
     order_bundle = server.yuki.tool_bundles["order"]
+    assert set(order_bundle.aliases) == {"下单", "点餐", "点单", "点麦当劳"}
     assert order_bundle.scope == "mcp.mcd.order"
     assert set(order_bundle.include_tools) == {
         "delivery-query-addresses",
@@ -201,6 +204,79 @@ async def test_mcd_preset_overrides_query_semantics_without_hardcoding_provider(
     }
     assert create.idempotency is CapabilityIdempotency.CONDITIONAL
     assert not create.parallel_safe
+    assert "麦当劳" not in query.aliases
+    assert "点餐" not in query.aliases
+    assert "麦当劳" not in query.tags
+    assert "点餐" not in query.tags
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_mcd_order_bundle_aliases_stay_off_coupon_tools(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "mcp.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "mcd": {
+                        "url": "https://mcp.mcd.cn",
+                        "headers": {"Authorization": "Bearer offline-token"},
+                        "yuki": {
+                            "scope": "mcp.mcd",
+                            "summary": "麦当劳官方菜单、门店、活动、优惠券、订单和积分服务",
+                            "tags": ["麦当劳"],
+                            "toolBundles": {
+                                "order": {
+                                    "scope": "mcp.mcd.order",
+                                    "summary": "查询菜单并创建待支付订单",
+                                    "aliases": ["下单", "点餐", "点麦当劳"],
+                                    "includeTools": ["query-meals", "create-order"],
+                                }
+                            },
+                        },
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    connection = FakeMCPConnection(
+        tools=(
+            _remote_tool("query-meals", "查询当前门店菜单"),
+            _remote_tool("create-order", "创建麦当劳订单"),
+            _remote_tool("available-coupons", "查询可领取优惠券"),
+        )
+    )
+    manager = MCPManager(
+        enabled=True,
+        config_path=config_path,
+        cache_enabled=False,
+        metadata_cache_ttl_seconds=60,
+        connect_timeout_seconds=2,
+        request_timeout_seconds=2,
+        max_parallel_calls=4,
+        repository=MCPRepository(database),
+        connection_factory=lambda *_args, **_kwargs: connection,
+    )
+    await manager.start()
+    await manager.ensure_metadata("mcd")
+    provider = MCPToolProvider(manager, gateway_enabled=False)
+    descriptors = {
+        item.model_name: item for item in provider.descriptors(SimpleNamespace(runtime_config=None))
+    }
+    meals = descriptors["mcp__mcd__query-meals"]
+    create = descriptors["mcp__mcd__create-order"]
+    coupons = descriptors["mcp__mcd__available-coupons"]
+    assert {"下单", "点餐", "点麦当劳"}.issubset(create.aliases)
+    assert {"下单", "点餐", "点麦当劳"}.issubset(meals.aliases)
+    assert {"下单", "点餐", "点麦当劳"}.isdisjoint(coupons.aliases)
+    assert "麦当劳" not in coupons.aliases
+    assert "麦当劳" not in coupons.tags
+    assert "优惠券" not in "".join(create.use_when)
     await manager.close()
 
 

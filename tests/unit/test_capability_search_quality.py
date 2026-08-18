@@ -37,6 +37,7 @@ def _document(
     use_when: tuple[str, ...] = (),
     trust_source: CapabilityTrustSource,
     synthetic: bool = False,
+    estimated_schema_tokens: int = 1,
 ) -> CapabilitySearchDocument:
     return CapabilitySearchDocument(
         capability_id=capability_id,
@@ -50,6 +51,7 @@ def _document(
         trust_source=trust_source,
         effect=CapabilityEffect.READ_STATE,
         risk=CapabilityRisk.READ,
+        estimated_schema_tokens=estimated_schema_tokens,
     )
 
 
@@ -461,3 +463,46 @@ def test_long_chinese_order_query_hits_mcp_bundle_summary() -> None:
     index.rebuild(revision="mcd-bundle", documents=(_core_documents()[0], document))
     hits = index.search(query, limit=K)
     assert any(hit.capability_id == "mcp__mcd__discover" for hit in hits)
+
+
+def test_shared_order_alias_outranks_cheap_coupon_tools() -> None:
+    documents = (
+        _document(
+            capability_id="mcp__mcd__available-coupons",
+            namespace_id="mcp.mcd",
+            description="查询用户当前可领取的麦当劳优惠券列表",
+            aliases=("available-coupons",),
+            tags=("麦当劳",),
+            use_when=("有什么优惠",),
+            trust_source=CapabilityTrustSource.MCP,
+            estimated_schema_tokens=12,
+        ),
+        _document(
+            capability_id="mcp__mcd__query-meals",
+            namespace_id="mcp.mcd.order",
+            description="餐品列表",
+            aliases=("query-meals", "下单", "点餐", "点麦当劳"),
+            use_when=("查询麦当劳菜单",),
+            trust_source=CapabilityTrustSource.MCP,
+            estimated_schema_tokens=160,
+        ),
+        _document(
+            capability_id="mcp__mcd__create-order",
+            namespace_id="mcp.mcd.order",
+            description="创建麦当劳订单",
+            aliases=("create-order", "下单", "点餐", "点麦当劳"),
+            use_when=("创建待支付订单",),
+            trust_source=CapabilityTrustSource.MCP,
+            estimated_schema_tokens=700,
+        ),
+    )
+    index = FtsCapabilitySearchIndex()
+    index.rebuild(revision="mcd-order-alias", documents=documents)
+    for query in ("下单麦当劳", "点麦当劳", "能点麦当劳吗"):
+        hits = index.search(query, limit=8)
+        ids = [hit.capability_id for hit in hits]
+        assert "mcp__mcd__create-order" in ids, query
+        assert "mcp__mcd__query-meals" in ids, query
+        assert ids.index("mcp__mcd__create-order") < ids.index("mcp__mcd__available-coupons") or (
+            "mcp__mcd__available-coupons" not in ids
+        )

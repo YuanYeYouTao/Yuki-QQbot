@@ -13,11 +13,12 @@
       "yuki": {
         "scope": "mcp.mcd",
         "summary": "麦当劳官方菜单、门店、活动、优惠券、订单和积分服务",
-        "tags": ["麦当劳", "点餐", "菜单", "优惠券", "门店", "积分"],
+        "tags": ["麦当劳"],
         "toolBundles": {
           "order_planning": {
             "scope": "mcp.mcd.order_planning",
             "summary": "只读规划麦当劳到店或外送订单：查询地址与门店、菜单详情和价格，但不创建订单；缺少位置时先向用户询问",
+            "aliases": ["点餐", "菜单", "点麦当劳"],
             "includeTools": [
               "delivery-query-addresses",
               "delivery-query-stores",
@@ -31,6 +32,7 @@
           "order": {
             "scope": "mcp.mcd.order",
             "summary": "查询地址与门店、菜单详情和价格，创建待支付订单并查询订单",
+            "aliases": ["下单", "点餐", "点单", "点麦当劳"],
             "includeTools": [
               "delivery-query-addresses",
               "delivery-query-stores",
