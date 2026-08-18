@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from qq_ai_bot.conversation.history.policy import ChildSummaryView, HistoryCompactionPolicy
+from qq_ai_bot.conversation.history.policy import (
+    ChildSummaryView,
+    HistoryCompactionConfig,
+    HistoryCompactionPolicy,
+)
 from qq_ai_bot.conversation.history.source import (
     ConversationSourceSnapshot,
     build_source_snapshot,
@@ -237,3 +241,45 @@ def test_select_parent_candidate_requires_contiguous_same_level_children() -> No
     gapped_selected = policy.select_parent_candidate(gapped)
     assert gapped_selected is not None
     assert gapped_selected.child_ids == (99, 100)
+
+
+def test_select_parent_candidate_rolls_lowest_level_first() -> None:
+    policy = HistoryCompactionPolicy()
+    children = (
+        ChildSummaryView(
+            summary_id=1,
+            level=1,
+            start_event_id=1,
+            end_event_id=20,
+            rendered_text="parent-range",
+        ),
+        *(
+            ChildSummaryView(
+                summary_id=10 + index,
+                level=0,
+                start_event_id=21 + index * 10,
+                end_event_id=30 + index * 10,
+                rendered_text="child",
+            )
+            for index in range(8)
+        ),
+    )
+    selected = policy.select_parent_candidate(children)
+    assert selected is not None
+    assert selected.level == 1
+    assert selected.child_ids == tuple(range(10, 18))
+
+
+def test_select_parent_candidate_respects_max_level() -> None:
+    policy = HistoryCompactionPolicy(HistoryCompactionConfig(max_level=1))
+    children = tuple(
+        ChildSummaryView(
+            summary_id=index,
+            level=1,
+            start_event_id=index * 10 + 1,
+            end_event_id=(index + 1) * 10,
+            rendered_text="child",
+        )
+        for index in range(8)
+    )
+    assert policy.select_parent_candidate(children) is None

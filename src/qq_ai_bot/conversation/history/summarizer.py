@@ -52,6 +52,17 @@ _INSTRUCTION = """\
 - uncertainties 不得改写成肯定句。
 """
 
+_PARENT_INSTRUCTION = (
+    _INSTRUCTION
+    + """
+
+这是对已有会话摘要的再压缩，输入不是原始事件。
+必须保留所有未完成事项、相互矛盾的内容，以及状态变化顺序。
+禁止把 child narrative 简单拼接成父摘要。
+禁止把 child 中的 uncertain / tentative / reported 提升为 confirmed 或 accepted。
+"""
+)
+
 
 class _CompactionModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -217,7 +228,9 @@ class ConversationHistorySummarizer:
         )
         output = await self._structured.run(
             task=ModelTask.CONVERSATION_COMPACTION,
-            instruction=_INSTRUCTION,
+            instruction=(
+                _PARENT_INSTRUCTION if payload.source_kind == "summaries" else _INSTRUCTION
+            ),
             structured_input=payload,
             output_model=ConversationSummaryOutput,
             temperature=0.1,

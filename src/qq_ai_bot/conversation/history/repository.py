@@ -808,6 +808,9 @@ class ConversationHistoryRepository:
             source_fingerprint=row.source_fingerprint,
             replaced_by_summary_id=row.replaced_by_summary_id,
             rendered_text=row.rendered_text,
+            start_occurred_at=row.start_occurred_at,
+            end_occurred_at=row.end_occurred_at,
+            source_character_count=row.source_character_count,
             members=members,
         )
 

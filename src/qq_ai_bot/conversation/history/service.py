@@ -28,11 +28,14 @@ from qq_ai_bot.conversation.history.models import (
     HistoryJobKind,
     HistoryJobOutcome,
     HistorySummaryMode,
+    HistorySummaryStatus,
 )
 from qq_ai_bot.conversation.history.policy import (
+    ChildSummaryView,
     HistoryCompactionConfig,
     HistoryCompactionPolicy,
     RawRangeCandidate,
+    SummaryRollupCandidate,
 )
 from qq_ai_bot.conversation.history.renderer import render_conversation_summary
 from qq_ai_bot.conversation.history.repository import ConversationHistoryRepository
@@ -40,9 +43,13 @@ from qq_ai_bot.conversation.history.source import (
     ConversationSourceSnapshot,
     build_source_snapshot,
     extractive_compact,
+    parent_source_fingerprint,
     source_fingerprint,
 )
-from qq_ai_bot.conversation.history.summarizer import ConversationHistorySummarizer
+from qq_ai_bot.conversation.history.summarizer import (
+    CompactionChildView,
+    ConversationHistorySummarizer,
+)
 from qq_ai_bot.conversation.history.worker import ConversationHistoryJobResult
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage
@@ -171,6 +178,39 @@ class ConversationHistoryService:
         return self._policy.allow_raw_window_shift(has_active_coverage=has_active_coverage)
 
     async def process(self, job: ConversationHistoryJob) -> ConversationHistoryJobResult:
+        if job.job_kind is HistoryJobKind.RAW_RANGE:
+            result = await self._process_raw_range(job)
+            if result.outcome is HistoryJobOutcome.SUMMARY:
+                await self.consider_parent_rollup(job.state_id)
+            return result
+        if job.job_kind is HistoryJobKind.SUMMARY_ROLLUP:
+            result = await self._process_parent(job)
+            if result.outcome is HistoryJobOutcome.SUMMARY:
+                await self.consider_parent_rollup(job.state_id)
+            return result
+        return ConversationHistoryJobResult(outcome=HistoryJobOutcome.NO_CHANGE)
+
+    async def consider_parent_rollup(self, state_id: int) -> None:
+        """Enqueue the earliest ready parent job. Safe to call after any frontier write."""
+
+        if not self._settings.conversation_history_rollup_enabled:
+            return
+        candidate, fingerprint = await self._parent_candidate(state_id)
+        if candidate is None or fingerprint is None:
+            return
+        await self._repository.enqueue_job(
+            state_id=state_id,
+            job_kind=HistoryJobKind.SUMMARY_ROLLUP,
+            source_level=candidate.level - 1,
+            source_start_id=candidate.start_event_id,
+            source_end_id=candidate.end_event_id,
+            source_fingerprint=fingerprint,
+            summarizer_version=self._prompt_version,
+        )
+        if self._notify is not None:
+            self._notify()
+
+    async def _process_raw_range(self, job: ConversationHistoryJob) -> ConversationHistoryJobResult:
         if job.job_kind is not HistoryJobKind.RAW_RANGE:
             return ConversationHistoryJobResult(outcome=HistoryJobOutcome.NO_CHANGE)
         if self._summarizer is None:
@@ -209,6 +249,86 @@ class ConversationHistoryService:
             outcome=HistoryJobOutcome.SUMMARY,
             result_summary_id=summary.id,
         )
+
+    async def _process_parent(self, job: ConversationHistoryJob) -> ConversationHistoryJobResult:
+        if self._summarizer is None:
+            raise RuntimeError("conversation compaction model executor is not configured")
+        candidate, fingerprint = await self._parent_candidate(job.state_id)
+        if candidate is None or fingerprint is None:
+            return ConversationHistoryJobResult(outcome=HistoryJobOutcome.NO_CHANGE)
+        if fingerprint != job.source_fingerprint:
+            return ConversationHistoryJobResult(outcome=HistoryJobOutcome.NO_CHANGE)
+        children = await self._repository.load_source_summaries(candidate.child_ids)
+        if len(children) != len(candidate.child_ids):
+            raise FrontierInvariantError("parent children are missing")
+        if any(item.status is not HistorySummaryStatus.ACTIVE for item in children):
+            raise FrontierInvariantError("parent children must still be active")
+        if any(item.mode is not HistorySummaryMode.MODEL_SUMMARY for item in children):
+            raise FrontierInvariantError("parent children must be model summaries")
+        views = tuple(
+            CompactionChildView(
+                summary_id=item.id,
+                level=item.level,
+                start_event_id=item.start_event_id,
+                end_event_id=item.end_event_id,
+                rendered_text=item.rendered_text,
+            )
+            for item in children
+        )
+        output = await self._summarizer.summarize_children(
+            views,
+            level=candidate.level,
+            fingerprint=fingerprint,
+        )
+        rendered = render_conversation_summary(output)
+        started = children[0].start_occurred_at or children[0].end_occurred_at
+        ended = children[-1].end_occurred_at or children[-1].start_occurred_at
+        if started is None or ended is None:
+            raise FrontierInvariantError("parent children are missing occurrence times")
+        summary = await self._repository.commit_parent_summary_and_retire_children(
+            state_id=job.state_id,
+            child_ids=candidate.child_ids,
+            fingerprint=fingerprint,
+            summarizer_version=self._prompt_version,
+            rendered_text=rendered,
+            structured_payload_json=output.model_dump_json(),
+            start_occurred_at=started,
+            end_occurred_at=ended,
+            source_character_count=sum(item.source_character_count for item in children),
+        )
+        return ConversationHistoryJobResult(
+            outcome=HistoryJobOutcome.SUMMARY,
+            result_summary_id=summary.id,
+        )
+
+    async def _parent_candidate(
+        self, state_id: int
+    ) -> tuple[SummaryRollupCandidate | None, str | None]:
+        snapshot = await self._repository.load_context_snapshot(state_id)
+        views = tuple(
+            ChildSummaryView(
+                summary_id=item.id,
+                level=item.level,
+                start_event_id=item.start_event_id,
+                end_event_id=item.end_event_id,
+                rendered_text=item.rendered_text,
+            )
+            for item in snapshot.frontier
+            if item.mode is HistorySummaryMode.MODEL_SUMMARY
+        )
+        candidate = self._policy.select_parent_candidate(views)
+        if candidate is None:
+            return None, None
+        by_id = {item.id: item for item in snapshot.frontier}
+        fingerprints = tuple(by_id[child_id].source_fingerprint for child_id in candidate.child_ids)
+        identity = await self._identity_for_state(state_id)
+        reset_epoch = "none" if identity.reset_at is None else identity.reset_at.isoformat()
+        fingerprint = parent_source_fingerprint(
+            state_id=state_id,
+            reset_epoch=reset_epoch,
+            child_fingerprints=fingerprints,
+        )
+        return candidate, fingerprint
 
     async def _extractive_candidate(
         self,
@@ -376,6 +496,7 @@ def _config_from_settings(settings: Settings) -> HistoryCompactionConfig:
         extractive_max_characters=settings.conversation_history_extractive_max_characters,
         fan_in=settings.conversation_history_rollup_fan_in,
         fan_in_characters=settings.conversation_history_rollup_fan_in_characters,
+        max_level=settings.conversation_history_rollup_max_level,
         history_window_low_watermark_ratio=settings.history_window_low_watermark_ratio,
     )
 

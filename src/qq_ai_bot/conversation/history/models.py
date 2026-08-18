@@ -95,6 +95,9 @@ class ConversationHistorySummary(_HistoryModel):
     source_fingerprint: str
     replaced_by_summary_id: int | None = None
     rendered_text: str = ""
+    start_occurred_at: datetime | None = None
+    end_occurred_at: datetime | None = None
+    source_character_count: int = Field(default=0, ge=0)
     members: tuple[ConversationHistoryMember, ...] = ()
 
 

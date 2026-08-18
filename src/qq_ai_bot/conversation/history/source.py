@@ -125,6 +125,16 @@ def source_fingerprint(snapshot: ConversationSourceSnapshot) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def parent_source_fingerprint(
+    *,
+    state_id: int,
+    reset_epoch: str,
+    child_fingerprints: tuple[str, ...],
+) -> str:
+    payload = "\0".join((str(state_id), reset_epoch, ",".join(child_fingerprints)))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def extractive_compact(
     snapshot: ConversationSourceSnapshot,
     *,

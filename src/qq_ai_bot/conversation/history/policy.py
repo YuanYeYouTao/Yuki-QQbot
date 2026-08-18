@@ -28,6 +28,7 @@ class HistoryCompactionConfig(BaseModel):
     extractive_max_characters: int = Field(default=1200, ge=1)
     fan_in: int = Field(default=8, ge=2)
     fan_in_characters: int = Field(default=4800, ge=1)
+    max_level: int = Field(default=16, ge=1)
     history_window_low_watermark_ratio: float = Field(default=0.67, gt=0, lt=1)
 
 
@@ -177,12 +178,20 @@ class HistoryCompactionPolicy:
     ) -> SummaryRollupCandidate | None:
         if not children:
             return None
-        ordered = tuple(sorted(children, key=lambda item: item.start_event_id))
-        level = ordered[0].level
+        by_level: dict[int, list[ChildSummaryView]] = {}
+        for child in sorted(children, key=lambda item: (item.level, item.start_event_id)):
+            by_level.setdefault(child.level, []).append(child)
+        for level in sorted(by_level):
+            candidate = self._select_contiguous_parent_run(tuple(by_level[level]))
+            if candidate is not None and candidate.level <= self.config.max_level:
+                return candidate
+        return None
+
+    def _select_contiguous_parent_run(
+        self, children: tuple[ChildSummaryView, ...]
+    ) -> SummaryRollupCandidate | None:
         run: list[ChildSummaryView] = []
-        for child in ordered:
-            if child.level != level:
-                break
+        for child in children:
             if run and child.start_event_id != run[-1].end_event_id + 1:
                 if self._parent_ready(run):
                     return self._parent_candidate(run)

@@ -132,6 +132,7 @@ class ConversationSettings(DomainSettings):
     conversation_history_extractive_max_characters: int = Field(ge=1)
     conversation_history_rollup_fan_in: int = Field(ge=2)
     conversation_history_rollup_fan_in_characters: int = Field(ge=1)
+    conversation_history_rollup_max_level: int = Field(ge=1)
     conversation_history_llm_origins: str
     conversation_history_rollup_prompt_version: str
 

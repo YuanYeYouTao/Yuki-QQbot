@@ -338,6 +338,7 @@ class Settings(BaseSettings):
     conversation_history_extractive_max_characters: int = Field(default=1200, ge=1)
     conversation_history_rollup_fan_in: int = Field(default=8, ge=2)
     conversation_history_rollup_fan_in_characters: int = Field(default=4800, ge=1)
+    conversation_history_rollup_max_level: int = Field(default=16, ge=1)
     conversation_history_llm_origins: str = "user_message"
     conversation_history_rollup_prompt_version: str = "conversation-rollup-v1"
     reply_sequence_cancel_on_new_message: bool = True
