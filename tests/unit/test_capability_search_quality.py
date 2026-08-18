@@ -268,6 +268,14 @@ def _hit(index: FtsCapabilitySearchIndex, case: SearchCase) -> bool:
     return case.required.issubset(found)
 
 
+def test_web_search_aliases_match_short_spoken_queries() -> None:
+    index = FtsCapabilitySearchIndex()
+    index.rebuild(revision="web-spoken", documents=_core_documents())
+    for query in ("搜下", "上网搜搜", "搜索工具"):
+        hits = {hit.capability_id for hit in index.search(query, limit=K)}
+        assert "web_search" in hits, query
+
+
 def test_capability_search_quality_and_warm_latency() -> None:
     documents, cases = _corpus()
     index = FtsCapabilitySearchIndex()

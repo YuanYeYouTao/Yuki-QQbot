@@ -613,17 +613,7 @@ class AgentToolService:
                     ),
                 )
             )
-        if (
-            (
-                self._settings.web.mode is WebMode.TAVILY
-                or (
-                    self._settings.web.mode is WebMode.NATIVE_WITH_TAVILY_FALLBACK
-                    and runtime.native_web_fallback
-                )
-            )
-            and self._web_provider is not None
-            and self._web_sources is not None
-        ):
+        if self._web_catalog_enabled():
             tools.extend(
                 (
                     ChatTool(
@@ -2402,6 +2392,22 @@ class AgentToolService:
         )
         await self._persist_web_response(response, runtime, sources)
         return self._web_result(data=self._web_response_json(response))
+
+    def _web_catalog_enabled(self) -> bool:
+        """Put web tools in the requestable catalog without choosing a provider.
+
+        Native-first used to omit these until Tavily fallback, so
+        ``request_tools`` returned ``capability_not_found`` and the native
+        binder never saw ``web_search``. Catalog membership is not first-round
+        exposure; ``WebProviderRouter`` still selects native vs Tavily.
+        """
+
+        mode = self._settings.web.mode
+        if mode is WebMode.DISABLED:
+            return False
+        if self._web_provider is not None and self._web_sources is not None:
+            return True
+        return mode in {WebMode.NATIVE, WebMode.NATIVE_WITH_TAVILY_FALLBACK}
 
     def _web_dependencies(
         self,

@@ -25,6 +25,7 @@ from qq_ai_bot.domain.messages import (
     ToolFunction,
 )
 from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.web_repository import WebSearchSourceRepository
 from qq_ai_bot.web.base import WebSearchError
@@ -130,10 +131,13 @@ class WebThenOneBotLLM(LLMProvider):
 
     def __init__(self) -> None:
         self.requests: list[ChatRequest] = []
+        self._called_onebot = False
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
-        if len(self.requests) == 1:
+        names = {tool.name for tool in request.tools}
+        last = request.messages[-1]
+        if last.role != "tool":
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -147,8 +151,24 @@ class WebThenOneBotLLM(LLMProvider):
                     ),
                 ),
             )
-        if len(self.requests) == 2:
-            assert "call_onebot_api" in {tool.name for tool in request.tools}
+        if "call_onebot_api" not in names:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="request-onebot",
+                        function=ToolFunction(
+                            name="request_tools",
+                            arguments=json.dumps(
+                                {"query": "call_onebot_api", "max_results": 1}
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        if not self._called_onebot:
+            self._called_onebot = True
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -165,7 +185,6 @@ class WebThenOneBotLLM(LLMProvider):
                     ),
                 ),
             )
-        assert '"ok": true' in (request.messages[-1].content or "").casefold()
         return ChatResponse(content="已按授权完成操作。", latency_seconds=0)
 
 
@@ -322,6 +341,7 @@ def web_settings(database: Database):
     return make_settings(
         database.url,
         web_enabled=True,
+        web_mode=WebMode.TAVILY,
         tavily_api_key="test-placeholder",
     )
 
@@ -662,3 +682,77 @@ async def test_each_turn_executes_at_most_three_web_tools(database: Database) ->
     assert result.reason == "chat"
     assert len(web.search_requests) == 3
     assert sender.messages[0].text == "已根据前三次搜索完成回答。"
+
+
+def _native_first_settings(database: Database):
+    return make_settings(
+        database.url,
+        web_enabled=True,
+        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        tavily_api_key="test-placeholder",
+    )
+
+
+@pytest.mark.asyncio
+async def test_spoken_search_phrase_exposes_web_search_in_native_first_mode(
+    database: Database,
+) -> None:
+    llm = FakeLLMProvider()
+    harness = build_harness(
+        database,
+        _native_first_settings(database),
+        llm,
+        web_provider=FakeWebSearchProvider(response=web_response()),
+    )
+    result = await harness.processor.handle(
+        event("这个说法你搜下", message_id="spoken-search"),
+        MemorySender(),
+    )
+    assert result.reason == "chat"
+    assert llm.requests
+    first = llm.requests[0]
+    assert "web_search" in {tool.name for tool in first.tools} or bool(first.native_tools)
+
+
+@pytest.mark.asyncio
+async def test_native_first_idle_turn_does_not_pin_web_search(database: Database) -> None:
+    llm = FakeLLMProvider()
+    harness = build_harness(
+        database,
+        _native_first_settings(database),
+        llm,
+        web_provider=FakeWebSearchProvider(response=web_response()),
+    )
+    result = await harness.processor.handle(
+        event("在吗", message_id="idle-no-web"),
+        MemorySender(),
+    )
+    assert result.reason == "chat"
+    assert llm.requests
+    first_names = {tool.name for tool in llm.requests[0].tools}
+    assert "web_search" not in first_names
+    assert "read_webpage" not in first_names
+    assert not llm.requests[0].native_tools
+
+
+@pytest.mark.asyncio
+async def test_native_first_public_url_pins_web_tools_from_router(
+    database: Database,
+) -> None:
+    llm = FakeLLMProvider()
+    harness = build_harness(
+        database,
+        _native_first_settings(database),
+        llm,
+        web_provider=FakeWebSearchProvider(response=web_response()),
+    )
+    result = await harness.processor.handle(
+        event("读取 https://docs.example.org/required-page 并总结。", message_id="url-pin"),
+        MemorySender(),
+    )
+    assert result.reason == "chat"
+    assert llm.requests
+    first = llm.requests[0]
+    names = {tool.name for tool in first.tools}
+    assert "web_search" in names or bool(first.native_tools)
+    assert "read_webpage" in names or bool(first.native_tools)
