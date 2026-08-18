@@ -728,7 +728,7 @@ async def test_bonded_non_superuser_keeps_normal_tools_without_admin_tool(
     relationship_prompt = next(
         message.content or ""
         for message in provider.request.messages
-        if message.role == "system" and '"id":"context.relationship"' in (message.content or "")
+        if '"id":"context.relationship"' in (message.content or "")
     )
     assert "bonded" in relationship_prompt
     assert "成人亲密角色聊天" in relationship_prompt
@@ -765,7 +765,7 @@ async def test_relationship_context_contains_only_current_speaker_relationship(
     context = next(
         item.content or ""
         for item in provider.request.messages
-        if item.role == "system" and '"id":"context.people_and_scene"' in (item.content or "")
+        if '"id":"context.people_and_scene"' in (item.content or "")
     )
     assert '"stage":"friendly"' in context
     assert '"stage":"distant"' not in context

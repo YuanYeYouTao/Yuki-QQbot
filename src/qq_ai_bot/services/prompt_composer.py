@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
@@ -17,10 +19,17 @@ from qq_ai_bot.prompting import (
     PromptTrust,
 )
 from qq_ai_bot.prompting.contributors import static_text
-from qq_ai_bot.prompting.models import PromptMetrics
+from qq_ai_bot.prompting.input_cache import (
+    PromptInputCache,
+    PromptInputSnapshot,
+    splice_appended_input,
+)
+from qq_ai_bot.prompting.models import CompiledPrompt, PromptMetrics
 from qq_ai_bot.services.context_assembler import AssembledContext
 from qq_ai_bot.services.prompt_registry import PromptRegistry, PromptTarget
 from qq_ai_bot.vision.models import VisualObservation
+
+logger = logging.getLogger(__name__)
 
 
 class PromptComposer:
@@ -38,6 +47,7 @@ class PromptComposer:
             max_total_plugin_characters=settings.plugin_max_total_prompt_characters,
         )
         self._compiler = PromptCompiler()
+        self._input_cache = PromptInputCache()
         self._last_metrics: PromptMetrics | None = None
 
     @property
@@ -210,8 +220,7 @@ class PromptComposer:
                 self._settings.max_context_characters + runtime.plugins.max_total_prompt_characters
             ),
         )
-        self._last_metrics = compiled.metrics
-        return compiled.messages
+        return self._finalize(context, compiled)
 
     def compose_external(
         self,
@@ -303,8 +312,60 @@ class PromptComposer:
                 self._settings.max_context_characters + runtime.plugins.max_total_prompt_characters
             ),
         )
+        return self._finalize(context, compiled)
+
+    def _finalize(
+        self,
+        context: AssembledContext,
+        compiled: CompiledPrompt,
+    ) -> tuple[ChatMessage, ...]:
         self._last_metrics = compiled.metrics
-        return compiled.messages
+        messages = compiled.messages
+        static, body = _split_static_prefix(messages)
+        if not body:
+            return messages
+        current_sent = body[-1]
+        cache_key = context.prompt_cache_key
+        rolled = context.metrics.history_window_rolled
+        if rolled:
+            self._input_cache.forget(cache_key)
+            previous = None
+        else:
+            previous = self._input_cache.get(cache_key)
+        spliced = splice_appended_input(
+            previous,
+            new_history=context.history_messages,
+            new_current_sent=current_sent,
+            rolled=rolled,
+            new_anchor=context.history_anchor_event_id,
+        )
+        if spliced is not None:
+            logger.debug(
+                "prompt_input_appended cache_key=%s sent_messages=%d",
+                cache_key or "none",
+                len(spliced),
+            )
+            body = spliced
+        else:
+            logger.debug(
+                "prompt_input_rebuilt cache_key=%s rolled=%s",
+                cache_key or "none",
+                rolled,
+            )
+        if cache_key:
+            self._input_cache.remember(
+                cache_key,
+                PromptInputSnapshot(
+                    anchor_event_id=context.history_anchor_event_id,
+                    assembler_history=context.history_messages,
+                    current_plain=context.current_message,
+                    sent_prefix=tuple(body[:-1]),
+                    current_sent=body[-1],
+                ),
+            )
+        if static is None:
+            return body
+        return (static, *body)
 
     @staticmethod
     def relationship_policy(
@@ -320,3 +381,11 @@ class PromptComposer:
             f"；无证据说法仅在关系权重差至少 {runtime.relationship.conflict_preference_min_gap} 时"
             "作为倾向参考，客观证据始终优先。"
         )
+
+
+def _split_static_prefix(
+    messages: tuple[ChatMessage, ...],
+) -> tuple[ChatMessage | None, tuple[ChatMessage, ...]]:
+    if messages and messages[0].role == "system":
+        return messages[0], messages[1:]
+    return None, messages

@@ -115,7 +115,7 @@ async def test_private_pure_image_flows_vision_text_into_deepseek(database) -> N
         visual = next(
             message.content or ""
             for message in request.messages
-            if message.role == "system" and '"id":"modality.visual"' in (message.content or "")
+            if '"id":"modality.visual"' in (message.content or "")
         )
         assert "测试视觉观察" in visual
         assert "data:image" not in visual
@@ -138,7 +138,7 @@ async def test_private_pure_image_flows_vision_text_into_deepseek(database) -> N
     assert len(vision.requests) == 1
     assert vision.requests[0][1].startswith("请描述图片主要内容")
     current = llm.requests[-1].messages[-1].content or ""
-    assert current.startswith("[测试用户|QQ:1001]\n#")
+    assert "[测试用户|QQ:1001]\n#" in current
     assert current.endswith(
         ">[当前消息仅包含图片；后端视觉识别已成功，请根据本轮视觉观察直接回应图片内容]"
     )

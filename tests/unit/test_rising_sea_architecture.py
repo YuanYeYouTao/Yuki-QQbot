@@ -534,7 +534,7 @@ def test_prompt_compiler_keeps_stable_prefix_and_required_turn_context() -> None
     assert [item.id for item in first.selected] == ["core", "current"]
 
 
-def test_prompt_compiler_places_dynamic_context_after_history_and_before_current() -> None:
+def test_prompt_compiler_attaches_dynamic_context_to_current_message() -> None:
     compiler = PromptCompiler()
     compiled = compiler.compile(
         PromptProgram(
@@ -569,17 +569,14 @@ def test_prompt_compiler_places_dynamic_context_after_history_and_before_current
         "system",
         "user",
         "assistant",
-        "system",
         "user",
     ]
-    assert [message.content for message in compiled.messages] == [
-        "stable",
-        "past user",
-        "past assistant",
-        compiled.messages[3].content,
-        "current user",
-    ]
-    assert '"id":"runtime.time"' in (compiled.messages[3].content or "")
+    assert compiled.messages[0].content == "stable"
+    assert compiled.messages[1].content == "past user"
+    assert compiled.messages[2].content == "past assistant"
+    current = compiled.messages[3].content or ""
+    assert current.endswith("current user")
+    assert '"id":"runtime.time"' in current
     assert compiled.metrics.history_characters == len("past userpast assistant")
     assert compiled.metrics.current_message_characters == len("current user")
 

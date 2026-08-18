@@ -475,10 +475,7 @@ async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract
     tool_names = {tool.name for tool in request.tools}
     assert "memory_change" in tool_names
     assert tool_names <= {"memory_change", "request_tools"}
-    assert any(
-        message.role == "system" and "真实工具回执" in (message.content or "")
-        for message in request.messages
-    )
+    assert any("真实工具回执" in (message.content or "") for message in request.messages)
     assert sender.messages[0].text == "记忆变更未执行，本轮没有取得任何有效的记忆写入回执。"
 
 

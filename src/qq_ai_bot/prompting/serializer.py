@@ -6,6 +6,8 @@ import json
 
 from qq_ai_bot.prompting.models import PromptContribution
 
+DYNAMIC_ENVELOPE_HEADER = "本轮运行资料（按 trust 字段区分可信度）："
+
 
 def serialize_dynamic(contributions: tuple[PromptContribution, ...]) -> str:
     """Serialize non-static contributions without empty sections."""
@@ -23,12 +25,21 @@ def serialize_dynamic(contributions: tuple[PromptContribution, ...]) -> str:
         items.append(item)
     if not items:
         return ""
-    return "本轮运行资料（按 trust 字段区分可信度）：" + json.dumps(
+    return DYNAMIC_ENVELOPE_HEADER + json.dumps(
         items,
         ensure_ascii=False,
         separators=(",", ":"),
         default=str,
     )
+
+
+def strip_dynamic_prefix(content: str) -> str:
+    """Return the event body after a compiler-attached dynamic envelope."""
+
+    if not content.startswith(DYNAMIC_ENVELOPE_HEADER):
+        return content
+    _header, separator, body = content.partition("\n\n")
+    return body if separator else content
 
 
 def serialized_characters(contribution: PromptContribution) -> int:

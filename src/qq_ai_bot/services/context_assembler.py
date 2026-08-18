@@ -71,6 +71,8 @@ class AssembledContext:
     injected_memory_ids: tuple[int, ...] = ()
     memory_exposures: tuple[MemoryExposure, ...] = ()
     memory_intent: MemoryQueryIntent | None = None
+    prompt_cache_key: str = ""
+    history_anchor_event_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,6 +360,8 @@ class ContextAssembler:
             injected_memory_ids=selected_fact_ids,
             memory_exposures=memory_exposures,
             memory_intent=memory_intent,
+            prompt_cache_key=history_window_key,
+            history_anchor_event_id=bounded_messages.history_anchor_event_id,
         )
 
     async def assemble_external(
@@ -488,6 +492,8 @@ class ContextAssembler:
                 history_window_rolled=bounded_messages.history_window_rolled,
             ),
             external_events=external_events,
+            prompt_cache_key=history_window_key,
+            history_anchor_event_id=bounded_messages.history_anchor_event_id,
         )
 
     @staticmethod
