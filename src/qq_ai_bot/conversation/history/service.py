@@ -20,7 +20,11 @@ import json
 from collections.abc import Callable
 
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.history.errors import FrontierInvariantError, HistoryJobConflictError
+from qq_ai_bot.conversation.history.errors import (
+    FrontierInvariantError,
+    HistoryIdentityError,
+    HistoryJobConflictError,
+)
 from qq_ai_bot.conversation.history.models import (
     ConversationHistoryIdentity,
     ConversationHistoryJob,
@@ -150,7 +154,7 @@ class ConversationHistoryService:
             return None
         last_seen = max(
             state.last_seen_event_id,
-            max((event_id for event_id, _, _ in rendered), default=0),
+            max((event_id for _, event_ids, _ in rendered for event_id in event_ids), default=0),
         )
         snapshot = await self._snapshot(
             identity,
@@ -463,6 +467,8 @@ class ConversationHistoryService:
     async def _identity_for_state(self, state_id: int) -> ConversationHistoryIdentity:
         snapshot = await self._repository.load_context_snapshot(state_id)
         state = snapshot.state
+        if state is None:
+            raise HistoryIdentityError("conversation history state disappeared")
         return ConversationHistoryIdentity(
             bot_user_id=state.bot_user_id,
             scope_type=ScopeType(state.scope_type),

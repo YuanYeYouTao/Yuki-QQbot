@@ -532,7 +532,9 @@ class ApplicationContainer:
 
         agent_capabilities: set[str] = set()
         if PluginPermission.MESSAGE_HISTORY_READ in permissions:
-            agent_capabilities.update({"get_recent_chat_history", "search_chat_history"})
+            agent_capabilities.update(
+                {"get_recent_chat_history", "search_chat_history", "get_chat_history_around"}
+            )
         if PluginPermission.MEMORY_PERSON_READ in permissions:
             agent_capabilities.add("get_person_memories")
         if PluginPermission.MEMORY_GROUP_READ in permissions:

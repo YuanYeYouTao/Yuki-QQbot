@@ -53,6 +53,11 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         CapabilityEffect.READ_STATE,
         CapabilityRisk.READ,
     ),
+    "get_chat_history_around": (
+        "memory.history.around",
+        CapabilityEffect.READ_STATE,
+        CapabilityRisk.READ,
+    ),
     "get_person_memories": (
         "memory.person.read",
         CapabilityEffect.READ_STATE,
@@ -123,6 +128,7 @@ _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
     "get_my_capabilities": ("我能改什么", "权限范围", "有哪些设置"),
     "get_recent_chat_history": ("刚才说了什么", "最近消息", "当前对话历史"),
     "search_chat_history": ("以前聊过", "查记录", "历史消息"),
+    "get_chat_history_around": ("这条前后", "附近消息", "对齐原话"),
     "get_person_memories": ("记得他", "人物记忆", "关于她"),
     "get_self_memories": ("你记得", "你的经历", "自我记忆"),
     "get_group_memories": ("群记忆", "这个群", "群里的情况"),
@@ -188,6 +194,13 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
         "提过",
         "查记录",
         "以前聊过",
+    ),
+    "get_chat_history_around": (
+        "这条前后",
+        "附近消息",
+        "对齐原话",
+        "原文",
+        "前后几条",
     ),
     "get_person_memories": (
         "人物记忆",

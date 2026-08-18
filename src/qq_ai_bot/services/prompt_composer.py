@@ -24,7 +24,7 @@ from qq_ai_bot.prompting.input_cache import (
     PromptInputSnapshot,
     splice_appended_input,
 )
-from qq_ai_bot.prompting.models import CompiledPrompt, PromptMetrics
+from qq_ai_bot.prompting.models import CompiledPrompt, PromptMetrics, PromptStability
 from qq_ai_bot.services.context_assembler import AssembledContext
 from qq_ai_bot.services.prompt_registry import PromptRegistry, PromptTarget
 from qq_ai_bot.vision.models import VisualObservation
@@ -98,6 +98,9 @@ class PromptComposer:
                 required=True,
             ),
         ]
+        session = self._session_contribution(context)
+        if session is not None:
+            contributions.append(session)
         if inbound.sender.user_id in self._settings.superusers:
             contributions.append(
                 PromptContribution(
@@ -281,6 +284,9 @@ class PromptComposer:
                 required=True,
             ),
         ]
+        session = self._session_contribution(context)
+        if session is not None:
+            contributions.append(session)
         if context.metadata_payload:
             contributions.append(
                 PromptContribution(
@@ -314,6 +320,20 @@ class PromptComposer:
         )
         return self._finalize(context, compiled)
 
+    @staticmethod
+    def _session_contribution(context: AssembledContext) -> PromptContribution | None:
+        if not context.session_text.strip():
+            return None
+        return PromptContribution(
+            id="context.conversation_rollup",
+            channel=PromptChannel.CONTEXT,
+            trust=PromptTrust.UNTRUSTED,
+            stability=PromptStability.SESSION,
+            priority=70,
+            content=context.session_text,
+            required=True,
+        )
+
     def _finalize(
         self,
         context: AssembledContext,
@@ -321,13 +341,14 @@ class PromptComposer:
     ) -> tuple[ChatMessage, ...]:
         self._last_metrics = compiled.metrics
         messages = compiled.messages
-        static, body = _split_static_prefix(messages)
+        static, session, body = _split_stable_prefix(messages)
+        prefix = tuple(item for item in (static, session) if item is not None)
         if not body:
             return messages
         current_sent = body[-1]
         cache_key = context.prompt_cache_key
-        rolled = context.metrics.history_window_rolled
-        if rolled:
+        shifted = context.metrics.raw_history_window_shifted
+        if shifted:
             self._input_cache.forget(cache_key)
             previous = None
         else:
@@ -336,7 +357,7 @@ class PromptComposer:
             previous,
             new_history=context.history_messages,
             new_current_sent=current_sent,
-            rolled=rolled,
+            rolled=shifted,
             new_anchor=context.history_anchor_event_id,
         )
         if spliced is not None:
@@ -348,9 +369,9 @@ class PromptComposer:
             body = spliced
         else:
             logger.debug(
-                "prompt_input_rebuilt cache_key=%s rolled=%s",
+                "prompt_input_rebuilt cache_key=%s shifted=%s",
                 cache_key or "none",
-                rolled,
+                shifted,
             )
         if cache_key:
             self._input_cache.remember(
@@ -363,9 +384,7 @@ class PromptComposer:
                     current_sent=body[-1],
                 ),
             )
-        if static is None:
-            return body
-        return (static, *body)
+        return (*prefix, *body)
 
     @staticmethod
     def relationship_policy(
@@ -383,9 +402,14 @@ class PromptComposer:
         )
 
 
-def _split_static_prefix(
+def _split_stable_prefix(
     messages: tuple[ChatMessage, ...],
-) -> tuple[ChatMessage | None, tuple[ChatMessage, ...]]:
-    if messages and messages[0].role == "system":
-        return messages[0], messages[1:]
-    return None, messages
+) -> tuple[ChatMessage | None, ChatMessage | None, tuple[ChatMessage, ...]]:
+    static: ChatMessage | None = None
+    session: ChatMessage | None = None
+    body = messages
+    if body and body[0].role == "system":
+        static, body = body[0], body[1:]
+    if body and body[0].role == "system":
+        session, body = body[0], body[1:]
+    return static, session, body

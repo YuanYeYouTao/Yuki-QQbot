@@ -218,6 +218,19 @@ class ConversationModule:
             runtime_config=self._runtime_config,
             metrics=persistence.memory_metrics,
         )
+        conversation_history_worker = ConversationHistoryWorker(
+            settings=settings,
+            repository=persistence.conversation_history,
+        )
+        conversation_history_service = ConversationHistoryService(
+            settings=settings,
+            repository=persistence.conversation_history,
+            ledger=persistence.ledger,
+            models=models,
+            notify=conversation_history_worker.notify,
+        )
+        conversation_history_worker.set_processor(conversation_history_service)
+        persistence.ledger.set_history_observer(conversation_history_service.observe_event)
         chat = ChatService(
             settings=settings,
             model_executor=models,
@@ -243,6 +256,8 @@ class ConversationModule:
             voice_preferences=self._voice_preferences,
             tool_artifacts=self._tool_artifacts,
             tool_invocations=self._tool_invocations,
+            history_repository=persistence.conversation_history,
+            history_coverage=conversation_history_service,
         )
         memory_rebuild_service = MemoryRebuildService(
             settings=settings,
@@ -318,19 +333,6 @@ class ConversationModule:
             evaluator=relationship_evaluator,
             runtime_config=self._runtime_config,
         )
-        conversation_history_worker = ConversationHistoryWorker(
-            settings=settings,
-            repository=persistence.conversation_history,
-        )
-        conversation_history_service = ConversationHistoryService(
-            settings=settings,
-            repository=persistence.conversation_history,
-            ledger=persistence.ledger,
-            models=models,
-            notify=conversation_history_worker.notify,
-        )
-        conversation_history_worker.set_processor(conversation_history_service)
-        persistence.ledger.set_history_observer(conversation_history_service.observe_event)
         return ConversationBundle(
             prompt_registry,
             admission_features,

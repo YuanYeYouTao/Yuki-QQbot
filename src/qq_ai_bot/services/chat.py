@@ -46,6 +46,7 @@ from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.cadence import ReplyEffectRepository
 from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
+from qq_ai_bot.conversation.history.repository import ConversationHistoryRepository
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
@@ -112,7 +113,7 @@ from qq_ai_bot.services.agent_runner import (
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.services.context_assembler import ContextAssembler
+from qq_ai_bot.services.context_assembler import ContextAssembler, ConversationHistoryCoverage
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     publish_notification,
@@ -1396,6 +1397,8 @@ class ChatService:
         event_publisher: LifecycleEventPublisher | None = None,
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_invocations: ToolInvocationRecorder | None = None,
+        history_repository: ConversationHistoryRepository | None = None,
+        history_coverage: ConversationHistoryCoverage | None = None,
     ) -> None:
         self._settings = settings
         models = require_model_executor(
@@ -1449,6 +1452,8 @@ class ChatService:
             memory_context=memory_context,
             relationships=self._relationships,
             time_service=self._time,
+            history_repository=history_repository,
+            history_coverage=history_coverage,
         )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
         self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(

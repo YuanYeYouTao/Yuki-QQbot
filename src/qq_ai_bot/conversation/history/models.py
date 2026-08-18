@@ -120,7 +120,10 @@ class ConversationHistoryJob(_HistoryModel):
 class HistoryContextSnapshot(_HistoryModel):
     """Consistent frontier read. Recent raw events are attached in context compile."""
 
-    state: ConversationHistoryState
-    frontier: tuple[ConversationHistorySummary, ...]
-    coverage_end_event_id: int
-    revision: int
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+    state: ConversationHistoryState | None = None
+    frontier: tuple[ConversationHistorySummary, ...] = ()
+    coverage_end_event_id: int = 0
+    revision: int = 0
+    recent_events: tuple[object, ...] = ()

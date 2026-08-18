@@ -135,6 +135,10 @@ class ConversationSettings(DomainSettings):
     conversation_history_rollup_max_level: int = Field(ge=1)
     conversation_history_llm_origins: str
     conversation_history_rollup_prompt_version: str
+    conversation_history_raw_tail_budget_ratio: float = Field(gt=0, le=1)
+    conversation_history_around_before: int = Field(ge=0)
+    conversation_history_around_after: int = Field(ge=0)
+    conversation_history_around_limit: int = Field(ge=1)
 
     @model_validator(mode="after")
     def _delay_order(self) -> ConversationSettings:

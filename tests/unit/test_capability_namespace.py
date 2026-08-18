@@ -94,6 +94,7 @@ _FROZEN_CORE_NAMESPACES = {
     "read_webpage": "web.read",
     "get_recent_chat_history": "memory.history.recent",
     "search_chat_history": "memory.history.search",
+    "get_chat_history_around": "memory.history.around",
     "get_person_memories": "memory.person.read",
     "get_self_memories": "memory.self.read",
     "get_group_memories": "memory.group.read",

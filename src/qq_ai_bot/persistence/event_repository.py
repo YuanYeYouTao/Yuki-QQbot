@@ -418,6 +418,87 @@ class EventLedgerRepository:
         rows.reverse()
         return tuple(_event_record(row) for row in rows)
 
+    async def list_after_id(
+        self,
+        *,
+        bot_user_id: str,
+        scope_type: ScopeType,
+        user_id: str,
+        group_id: str | None,
+        after_event_id: int,
+        limit: int,
+        since: datetime | None = None,
+    ) -> tuple[EventRecord, ...]:
+        query = select(ChatEventModel).where(
+            ChatEventModel.bot_user_id == bot_user_id,
+            ChatEventModel.id > after_event_id,
+        )
+        if scope_type is ScopeType.GROUP:
+            query = query.where(ChatEventModel.group_id == group_id)
+        else:
+            query = query.where(ChatEventModel.private_peer_user_id == user_id)
+        if since is not None:
+            query = query.where(ChatEventModel.occurred_at >= since)
+        async with self._database.sessions() as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        query.order_by(ChatEventModel.id.asc()).limit(max(1, limit))
+                    )
+                ).all()
+            )
+        return tuple(_event_record(row) for row in rows)
+
+    async def list_around(
+        self,
+        *,
+        bot_user_id: str,
+        scope_type: ScopeType,
+        user_id: str,
+        group_id: str | None,
+        event_id: int | None,
+        platform_message_id: str | None,
+        before: int,
+        after: int,
+        since: datetime | None = None,
+    ) -> tuple[EventRecord | None, tuple[EventRecord, ...], tuple[EventRecord, ...]]:
+        """Read nearby ledger events in the current conversation. Does not call NapCat."""
+
+        center: EventRecord | None = None
+        if event_id is not None:
+            center = await self.get_event(event_id)
+        elif platform_message_id:
+            center = await self.find_by_platform_message(
+                bot_user_id=bot_user_id,
+                platform_message_id=platform_message_id,
+            )
+        if center is None:
+            return None, (), ()
+        if center.bot_user_id != bot_user_id:
+            return None, (), ()
+        if scope_type is ScopeType.GROUP:
+            if center.group_id != group_id:
+                return None, (), ()
+        elif center.private_peer_user_id != user_id:
+            return None, (), ()
+        if since is not None and center.occurred_at < since:
+            return None, (), ()
+        earlier = await self.list_before(center, limit=before) if before > 0 else ()
+        later = (
+            await self.list_after_id(
+                bot_user_id=bot_user_id,
+                scope_type=scope_type,
+                user_id=user_id,
+                group_id=group_id,
+                after_event_id=center.id,
+                limit=after,
+                since=since,
+            )
+            if after > 0
+            else ()
+        )
+        return center, earlier, later
+
     async def hydrate_rebuild_subjects(self, event: EventRecord) -> EventRecord:
         """Recover only deterministic legacy mention/reply metadata in the exact conversation."""
 

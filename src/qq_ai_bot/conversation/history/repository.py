@@ -632,6 +632,78 @@ class ConversationHistoryRepository:
                 revision=state.revision,
             )
 
+    async def load_prompt_snapshot(
+        self,
+        identity: ConversationHistoryIdentity,
+        *,
+        recent_limit: int,
+    ) -> HistoryContextSnapshot:
+        """Load frontier and uncovered events in one read transaction."""
+
+        self._validate_identity(identity)
+        if recent_limit <= 0:
+            raise HistoryIdentityError("recent_limit must be positive")
+        async with self._database.sessions() as session:
+            row = await session.scalar(self._state_query(identity))
+            if row is None:
+                events = await self._load_recent_events(
+                    session,
+                    identity,
+                    after_event_id=0,
+                    limit=recent_limit,
+                    newest=True,
+                )
+                return HistoryContextSnapshot(recent_events=events)
+            frontier = await self._load_frontier(session, row.id)
+            coverage_end = row.active_frontier_end_event_id
+            events = await self._load_recent_events(
+                session,
+                identity,
+                after_event_id=coverage_end,
+                limit=recent_limit,
+                newest=True,
+            )
+            return HistoryContextSnapshot(
+                state=self._state(row),
+                frontier=frontier,
+                coverage_end_event_id=coverage_end,
+                revision=row.revision,
+                recent_events=events,
+            )
+
+    async def _load_recent_events(
+        self,
+        session: AsyncSession,
+        identity: ConversationHistoryIdentity,
+        *,
+        after_event_id: int,
+        limit: int,
+        newest: bool,
+    ) -> tuple[EventRecord, ...]:
+        query = select(ChatEventModel).where(
+            ChatEventModel.bot_user_id == identity.bot_user_id,
+            ChatEventModel.scope_type == identity.scope_type.value,
+            ChatEventModel.id > after_event_id,
+        )
+        if identity.scope_type is ScopeType.PRIVATE:
+            query = query.where(
+                ChatEventModel.private_peer_user_id == identity.private_peer_user_id
+            )
+        else:
+            query = query.where(ChatEventModel.group_id == identity.group_id)
+        if identity.reset_at is not None:
+            query = query.where(ChatEventModel.occurred_at >= identity.reset_at)
+        if newest:
+            rows = list(
+                (await session.scalars(query.order_by(ChatEventModel.id.desc()).limit(limit))).all()
+            )
+            rows.reverse()
+        else:
+            rows = list(
+                (await session.scalars(query.order_by(ChatEventModel.id.asc()).limit(limit))).all()
+            )
+        return tuple(_event_record(row) for row in rows)
+
     @staticmethod
     def _validate_identity(identity: ConversationHistoryIdentity) -> None:
         if identity.scope_type is ScopeType.PRIVATE:
