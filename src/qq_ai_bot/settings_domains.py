@@ -123,6 +123,17 @@ class ConversationSettings(DomainSettings):
     conversation_history_rollup_timeout_seconds: float = Field(gt=0)
     conversation_history_rollup_max_attempts: int = Field(ge=1)
     conversation_history_rollup_retry_seconds: str
+    conversation_history_raw_tail_events: int = Field(ge=1)
+    conversation_history_raw_tail_characters: int = Field(ge=1)
+    conversation_history_rollup_l0_min_events: int = Field(ge=1)
+    conversation_history_rollup_l0_min_characters: int = Field(ge=1)
+    conversation_history_rollup_l0_max_events: int = Field(ge=1)
+    conversation_history_rollup_l0_max_characters: int = Field(ge=1)
+    conversation_history_extractive_max_characters: int = Field(ge=1)
+    conversation_history_rollup_fan_in: int = Field(ge=2)
+    conversation_history_rollup_fan_in_characters: int = Field(ge=1)
+    conversation_history_llm_origins: str
+    conversation_history_rollup_prompt_version: str
 
     @model_validator(mode="after")
     def _delay_order(self) -> ConversationSettings:

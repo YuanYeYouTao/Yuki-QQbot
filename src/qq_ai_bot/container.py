@@ -279,6 +279,7 @@ class ApplicationContainer:
         self.memory_evidence_compaction_worker = conversation.memory_evidence_compaction_worker
         self.relationship_worker = conversation.relationship_worker
         self.conversation_history_worker = conversation.conversation_history_worker
+        self.conversation_history_service = conversation.conversation_history_service
         admin = AdminModule(
             settings=settings,
             database=self.database,

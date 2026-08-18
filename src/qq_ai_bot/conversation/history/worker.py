@@ -11,6 +11,7 @@ from typing import Protocol
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.history.errors import (
     ConversationHistoryError,
+    ConversationSummaryQualityError,
     FrontierInvariantError,
     HistoryIdentityError,
     HistoryJobConflictError,
@@ -161,7 +162,7 @@ class ConversationHistoryWorker:
         except BackgroundModelPreempted:
             await self._retry_or_fail(job, lease_owner, "preempted")
             return
-        except StructuredTaskError:
+        except (StructuredTaskError, ConversationSummaryQualityError):
             await self._retry_or_fail(job, lease_owner, "structured_output")
             return
         except _PERMANENT_ERRORS as exc:

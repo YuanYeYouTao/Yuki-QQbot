@@ -165,6 +165,30 @@ class ConversationHistoryRepository:
                     raise
                 return self._job(recovered)
 
+    async def get_open_job(
+        self,
+        state_id: int,
+        *,
+        job_kind: HistoryJobKind,
+    ) -> ConversationHistoryJob | None:
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(ConversationHistoryRollupJobModel)
+                .where(
+                    ConversationHistoryRollupJobModel.state_id == state_id,
+                    ConversationHistoryRollupJobModel.job_kind == job_kind.value,
+                    ConversationHistoryRollupJobModel.status.in_(
+                        (
+                            HistoryJobStatus.PENDING.value,
+                            HistoryJobStatus.PROCESSING.value,
+                        )
+                    ),
+                )
+                .order_by(ConversationHistoryRollupJobModel.id)
+                .limit(1)
+            )
+        return None if row is None else self._job(row)
+
     async def claim_next_job(
         self,
         *,
@@ -478,6 +502,17 @@ class ConversationHistoryRepository:
                 extractive.updated_at = now
             await session.flush()
             await self._sync_frontier_end(session, state_id, now)
+            if extractive is None:
+                state_row = await session.get(ConversationHistoryStateModel, state_id)
+                if state_row is None:
+                    raise HistoryIdentityError("conversation history state disappeared")
+                state_row.pending_event_count = max(
+                    0, state_row.pending_event_count - len(event_ids)
+                )
+                state_row.pending_character_count = max(
+                    0, state_row.pending_character_count - source_character_count
+                )
+                state_row.updated_at = now
             await self._assert_frontier(session, state_id)
             members = await self._members_by_summary(session, (row.id,))
             return self._summary(row, members.get(row.id, ()))

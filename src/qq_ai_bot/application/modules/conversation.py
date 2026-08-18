@@ -14,6 +14,7 @@ from qq_ai_bot.capabilities import ToolArtifactWriter
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.cadence import ReplyEffectRepository
 from qq_ai_bot.conversation.features import AdmissionFeatureBuilder
+from qq_ai_bot.conversation.history.service import ConversationHistoryService
 from qq_ai_bot.conversation.history.worker import ConversationHistoryWorker
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.memory.attribution import MemoryAttributionWorker
@@ -89,6 +90,7 @@ class ConversationBundle:
     memory_dream_worker: DreamWorker
     memory_evidence_compaction_worker: EvidenceCompactionWorker
     relationship_worker: RelationshipWorker
+    conversation_history_service: ConversationHistoryService
     conversation_history_worker: ConversationHistoryWorker
 
 
@@ -320,6 +322,15 @@ class ConversationModule:
             settings=settings,
             repository=persistence.conversation_history,
         )
+        conversation_history_service = ConversationHistoryService(
+            settings=settings,
+            repository=persistence.conversation_history,
+            ledger=persistence.ledger,
+            models=models,
+            notify=conversation_history_worker.notify,
+        )
+        conversation_history_worker.set_processor(conversation_history_service)
+        persistence.ledger.set_history_observer(conversation_history_service.observe_event)
         return ConversationBundle(
             prompt_registry,
             admission_features,
@@ -342,6 +353,7 @@ class ConversationModule:
             memory_dream_worker,
             memory_evidence_compaction_worker,
             relationship_worker,
+            conversation_history_service,
             conversation_history_worker,
         )
 

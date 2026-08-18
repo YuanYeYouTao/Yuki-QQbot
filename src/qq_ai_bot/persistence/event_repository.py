@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -38,6 +40,8 @@ from qq_ai_bot.persistence.repository_records import (
     EventRecord,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class EventLedgerRepository:
     """Append, query, search, and forget permanent raw chat events."""
@@ -45,6 +49,15 @@ class EventLedgerRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
         self._memory_eligibility = MemoryEventEligibilityPolicy()
+        self._history_observer: Callable[[EventRecord], Awaitable[None]] | None = None
+
+    def set_history_observer(
+        self,
+        observer: Callable[[EventRecord], Awaitable[None]] | None,
+    ) -> None:
+        """Observe newly created chat_events. Quality/rebuild fixtures leave this unset."""
+
+        self._history_observer = observer
 
     async def maximum_event_id(self) -> int:
         async with self._database.sessions() as session:
@@ -259,6 +272,15 @@ class EventLedgerRepository:
                 session.add(row)
                 await session.flush()
                 record = _event_record(row)
+            if self._history_observer is not None:
+                try:
+                    await self._history_observer(record)
+                except Exception as exc:
+                    logger.warning(
+                        "conversation_history_observe_failed error_category=%s event_id=%s",
+                        type(exc).__name__,
+                        record.id,
+                    )
             return record, True
         except IntegrityError:
             async with self._database.sessions() as session:

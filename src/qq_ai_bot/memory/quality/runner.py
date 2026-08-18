@@ -272,6 +272,8 @@ class MemoryQualityRunner:
                 sender_is_bot=fixture.speaker == "bot",
             )
             event_ids[fixture.event_ref] = event.id
+            # Quality fixtures must not attach ConversationHistoryService; this ledger
+            # is constructed without a history observer so Flash jobs stay empty.
             claims = tuple(
                 self._claim_payload(item)
                 for item in case.fake_model_outputs
