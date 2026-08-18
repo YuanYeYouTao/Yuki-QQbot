@@ -25,8 +25,12 @@ class JsonFormatter(logging.Formatter):
                 payload[key] = value
         if record.exc_info:
             exception_type = record.exc_info[0]
+            exception = record.exc_info[1]
             if exception_type is not None:
                 payload["exception_category"] = exception_type.__name__
+            if exception is not None:
+                payload["exception_message"] = str(exception)[:500]
+            payload["exception_traceback"] = self.formatException(record.exc_info)[:4000]
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 

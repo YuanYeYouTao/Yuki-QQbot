@@ -418,6 +418,21 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
 
 
 @pytest.mark.asyncio
+async def test_keyerror_during_chat_sends_retry_text(database: Database) -> None:
+    harness = build_harness(database, make_settings(database.url), FakeLLMProvider("ok"))
+
+    async def boom(*_args: object, **_kwargs: object) -> int:
+        raise KeyError("call_01_J1dFmYdl1DWqA3sSWJug1179")
+
+    harness.processor._chat.handle_turn = boom  # type: ignore[method-assign]
+    sender = MemorySender()
+    result = await harness.processor.handle(inbound("点麦当劳", message_id="keyerror"), sender)
+    assert result.reason == "internal_failure"
+    assert result.handled is True
+    assert "请稍后重试" in sender.messages[0].text
+
+
+@pytest.mark.asyncio
 async def test_ordinary_chat_keeps_generic_tool_request_gateway(
     database: Database,
 ) -> None:

@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol, cast
 
+from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.admin.action_service import ActionRegistry
@@ -774,9 +775,25 @@ class MessageProcessor:
             logger.warning("llm_failure exception_category=%s", type(exc).__name__)
             sent = await self._send_text(message, sender, "AI 服务暂时不可用，请稍后重试。")
             result = ProcessResult(True, int(sent), "llm_failure")
+        except ValidationError as exc:
+            logger.error(
+                "turn_validation_failure exception_category=%s",
+                type(exc).__name__,
+                exc_info=exc,
+            )
+            sent = await self._send_text(message, sender, "AI 服务暂时不可用，请稍后重试。")
+            result = ProcessResult(True, int(sent), "validation_failure")
         except (OSError, RuntimeError, TypeError) as exc:
             logger.error("message_send_or_storage_failure", exc_info=exc)
             result = ProcessResult(True, reason="send_or_storage_failure")
+        except Exception as exc:
+            logger.error(
+                "turn_internal_failure exception_category=%s",
+                type(exc).__name__,
+                exc_info=exc,
+            )
+            sent = await self._send_text(message, sender, "AI 服务暂时不可用，请稍后重试。")
+            result = ProcessResult(True, int(sent), "internal_failure")
         else:
             if created and sent_count > 0:
                 try:
