@@ -474,8 +474,7 @@ class _FallbackBackend(_Backend):
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         del runtime, web_was_used
-        if not self.enabled:
-            return ()
+        # Native binding only happens when web_search is already selected.
         return (ChatTool(name="web_search", description="fallback", parameters={}),)
 
 

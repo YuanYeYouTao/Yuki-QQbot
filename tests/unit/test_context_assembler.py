@@ -401,7 +401,7 @@ def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> Non
     assert [item.content for item in seeded.messages] == ["message-3", "message-4", "message-5"]
     assert seeded.anchor_event_id == 3
     assert seeded.event_ids == (3, 4, 5)
-    assert not seeded.rolled
+    assert not seeded.shifted
 
     appended = ContextAssembler._select_history_window(
         rendered(3, 6),
@@ -419,7 +419,7 @@ def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> Non
     ]
     assert appended.anchor_event_id == 3
     assert appended.event_ids == (3, 4, 5, 6)
-    assert not appended.rolled
+    assert not appended.shifted
 
     rolled = ContextAssembler._select_history_window(
         rendered(3, 8),
@@ -432,7 +432,7 @@ def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> Non
     assert [item.content for item in rolled.messages] == ["message-6", "message-7", "message-8"]
     assert rolled.anchor_event_id == 6
     assert rolled.event_ids == (6, 7, 8)
-    assert rolled.rolled
+    assert rolled.shifted
 
 
 def test_history_window_character_roll_keeps_a_contiguous_recent_block() -> None:
@@ -452,7 +452,7 @@ def test_history_window_character_roll_keeps_a_contiguous_recent_block() -> None
     assert [item.content for item in selection.messages] == ["4" * 30, "5" * 30]
     assert selection.anchor_event_id == 4
     assert selection.event_ids == (4, 5)
-    assert selection.rolled
+    assert selection.shifted
 
 
 @pytest.mark.asyncio
