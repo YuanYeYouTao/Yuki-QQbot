@@ -114,9 +114,21 @@ class CapabilityDescriptor:
         return tuple(dict.fromkeys((self.namespace_id, *self.additional_scopes)))
 
     def as_chat_tool(self, description: str | None = None) -> ChatTool:
+        """Build the model-facing function envelope.
+
+        Search documents may keep the long description.  The declared schema
+        sent to the provider uses ``compact_description`` unless the caller
+        overrides it, so first-round token estimates match what the model sees.
+        """
+
+        envelope = (
+            description
+            if description is not None
+            else (self.compact_description or self.description)
+        )
         return ChatTool(
             name=self.model_name,
-            description=description if description is not None else self.description,
+            description=envelope,
             parameters=self.input_schema,
             namespace=self.namespace_id,
             aliases=self.aliases,
