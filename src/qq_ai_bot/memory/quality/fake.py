@@ -35,6 +35,7 @@ class QualityFakeModel(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         payload = json.loads(request.messages[-1].content or "{}")
+        body: dict[str, object]
         if payload.get("source_kind") in {"events", "summaries"}:
             body = {
                 "narrative": "质量夹具不生成会话摘要。",
@@ -49,7 +50,7 @@ class QualityFakeModel(LLMProvider):
         elif "primary_event" in payload:
             self.extraction_requests += 1
             content = str(payload["primary_event"]["content"])
-            body: dict[str, object] = {"claims": self._outputs.get(content, ())}
+            body = {"claims": list(self._outputs.get(content, ()))}
         elif "events" in payload:
             self.extraction_requests += 1
             claims: list[dict[str, object]] = []
