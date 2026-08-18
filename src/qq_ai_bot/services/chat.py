@@ -603,15 +603,15 @@ class _ChatAgentBackend(AgentToolBackend):
             names.append("automation_create")
         web_route = self._runtime.web_route
         if self._native_web_fallback or (
-            web_route is not None
-            and (
-                web_route.provider is WebProvider.TAVILY or bool(web_route.target_urls)
-            )
+            web_route is not None and web_route.provider is WebProvider.TAVILY
         ):
-            # Pin from router facts only: Tavily was chosen, fallback already
-            # happened, or the user sent a public URL. Default native must not
-            # pin, or idle turns would carry web schemas every round.
+            # Tavily was chosen or native already fell back: the function
+            # search/read pair is the Tavily path. Default native must not pin
+            # search, or idle turns would carry web schemas every round.
             names.extend(("web_search", "read_webpage"))
+        elif web_route is not None and web_route.target_urls:
+            # A public URL in the message is a page to read, not a search.
+            names.append("read_webpage")
         if self._runtime.origin is TurnOrigin.AUTONOMOUS_GROUP:
             names.append("decline_reply")
         return tuple(dict.fromkeys(names))

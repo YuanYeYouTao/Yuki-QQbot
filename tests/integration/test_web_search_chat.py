@@ -475,11 +475,9 @@ async def test_tavily_keyword_without_verb_routes_directly_to_tavily(
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_url_read_uses_tavily_fallback(
+async def test_chat_completions_url_read_uses_read_webpage(
     database: Database,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level("INFO")
     target_url = "https://docs.example.org/required-page"
     source = WebSearchSource(
         source_id="required-page",
@@ -509,7 +507,10 @@ async def test_chat_completions_url_read_uses_tavily_fallback(
     assert [message.text for message in sender.messages] == ["Tavily 已经读取到指定页面。"]
     assert web.extract_requests == [(target_url, "读取用户指定的网页")]
     assert len(llm.requests) == 2
-    assert "native_tool_binding_skipped reason=protocol" in caplog.text
+    first_names = {tool.name for tool in llm.requests[0].tools}
+    assert "read_webpage" in first_names
+    assert "web_search" not in first_names
+    assert not llm.requests[0].native_tools
 
 
 @pytest.mark.asyncio
@@ -736,7 +737,7 @@ async def test_native_first_idle_turn_does_not_pin_web_search(database: Database
 
 
 @pytest.mark.asyncio
-async def test_native_first_public_url_pins_web_tools_from_router(
+async def test_native_first_public_url_pins_read_webpage_not_search(
     database: Database,
 ) -> None:
     llm = FakeLLMProvider()
@@ -747,12 +748,13 @@ async def test_native_first_public_url_pins_web_tools_from_router(
         web_provider=FakeWebSearchProvider(response=web_response()),
     )
     result = await harness.processor.handle(
-        event("读取 https://docs.example.org/required-page 并总结。", message_id="url-pin"),
+        event("https://docs.example.org/required-page", message_id="url-pin"),
         MemorySender(),
     )
     assert result.reason == "chat"
     assert llm.requests
     first = llm.requests[0]
     names = {tool.name for tool in first.tools}
-    assert "web_search" in names or bool(first.native_tools)
-    assert "read_webpage" in names or bool(first.native_tools)
+    assert "read_webpage" in names
+    assert "web_search" not in names
+    assert not first.native_tools
