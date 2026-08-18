@@ -115,6 +115,8 @@ class ConversationHistoryJob(_HistoryModel):
     outcome: HistoryJobOutcome | None = None
     result_summary_id: int | None = None
     lease_owner: str | None = None
+    lease_until: datetime | None = None
+    error_category: str | None = None
 
 
 class HistoryContextSnapshot(_HistoryModel):

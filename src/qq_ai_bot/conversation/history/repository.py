@@ -82,6 +82,32 @@ class ConversationHistoryRepository:
                     raise
                 return self._state(existing)
 
+    async def get_state(
+        self, identity: ConversationHistoryIdentity
+    ) -> ConversationHistoryState | None:
+        self._validate_identity(identity)
+        async with self._database.sessions() as session:
+            row = await session.scalar(self._state_query(identity))
+            return None if row is None else self._state(row)
+
+    async def get_state_by_id(self, state_id: int) -> ConversationHistoryState | None:
+        async with self._database.sessions() as session:
+            row = await session.get(ConversationHistoryStateModel, state_id)
+            return None if row is None else self._state(row)
+
+    async def list_states(self) -> tuple[ConversationHistoryState, ...]:
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(ConversationHistoryStateModel).order_by(ConversationHistoryStateModel.id)
+                )
+            ).all()
+        return tuple(self._state(row) for row in rows)
+
+    @property
+    def database(self) -> Database:
+        return self._database
+
     async def observe_event(
         self,
         identity: ConversationHistoryIdentity,
@@ -200,6 +226,7 @@ class ConversationHistoryRepository:
             row = await session.scalar(
                 select(ConversationHistoryRollupJobModel)
                 .where(
+                    ConversationHistoryRollupJobModel.job_kind != HistoryJobKind.REBUILD.value,
                     ConversationHistoryRollupJobModel.next_attempt_at <= now,
                     or_(
                         ConversationHistoryRollupJobModel.status == HistoryJobStatus.PENDING.value,
@@ -371,6 +398,190 @@ class ConversationHistoryRepository:
         async with self._database.sessions() as session:
             return await self._load_frontier(session, state_id)
 
+    async def list_summaries(self, state_id: int) -> tuple[ConversationHistorySummary, ...]:
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(ConversationHistorySummaryModel)
+                    .where(ConversationHistorySummaryModel.state_id == state_id)
+                    .order_by(
+                        ConversationHistorySummaryModel.start_event_id,
+                        ConversationHistorySummaryModel.id,
+                    )
+                )
+            ).all()
+            members = await self._members_by_summary(session, tuple(row.id for row in rows))
+        return tuple(self._summary(row, members.get(row.id, ())) for row in rows)
+
+    async def list_jobs(
+        self,
+        *,
+        state_id: int | None = None,
+        statuses: tuple[HistoryJobStatus, ...] | None = None,
+    ) -> tuple[ConversationHistoryJob, ...]:
+        async with self._database.sessions() as session:
+            query = select(ConversationHistoryRollupJobModel)
+            if state_id is not None:
+                query = query.where(ConversationHistoryRollupJobModel.state_id == state_id)
+            if statuses is not None:
+                query = query.where(
+                    ConversationHistoryRollupJobModel.status.in_(
+                        tuple(item.value for item in statuses)
+                    )
+                )
+            rows = (
+                await session.scalars(query.order_by(ConversationHistoryRollupJobModel.id))
+            ).all()
+        return tuple(self._job(row) for row in rows)
+
+    async def has_live_lease(self, state_id: int, *, now: datetime | None = None) -> bool:
+        current = now or datetime.now(UTC)
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(ConversationHistoryRollupJobModel.id).where(
+                    ConversationHistoryRollupJobModel.state_id == state_id,
+                    ConversationHistoryRollupJobModel.status == HistoryJobStatus.PROCESSING.value,
+                    ConversationHistoryRollupJobModel.lease_until.is_not(None),
+                    ConversationHistoryRollupJobModel.lease_until >= current,
+                )
+            )
+        return row is not None
+
+    async def begin_rebuild_lock(
+        self,
+        state_id: int,
+        *,
+        lease_owner: str,
+        lease_seconds: int,
+        source_fingerprint: str,
+        summarizer_version: str,
+    ) -> ConversationHistoryJob:
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            live = await session.scalar(
+                select(ConversationHistoryRollupJobModel.id).where(
+                    ConversationHistoryRollupJobModel.state_id == state_id,
+                    ConversationHistoryRollupJobModel.status == HistoryJobStatus.PROCESSING.value,
+                    ConversationHistoryRollupJobModel.lease_until.is_not(None),
+                    ConversationHistoryRollupJobModel.lease_until >= now,
+                )
+            )
+            if live is not None:
+                raise HistoryJobConflictError(
+                    "rebuild cannot run while a worker holds a live lease on this state"
+                )
+            row = await session.scalar(
+                select(ConversationHistoryRollupJobModel)
+                .where(
+                    ConversationHistoryRollupJobModel.state_id == state_id,
+                    ConversationHistoryRollupJobModel.job_kind == HistoryJobKind.REBUILD.value,
+                    ConversationHistoryRollupJobModel.source_fingerprint == source_fingerprint,
+                    ConversationHistoryRollupJobModel.summarizer_version == summarizer_version,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                row = ConversationHistoryRollupJobModel(
+                    state_id=state_id,
+                    job_kind=HistoryJobKind.REBUILD.value,
+                    source_level=0,
+                    source_start_id=0,
+                    source_end_id=0,
+                    source_fingerprint=source_fingerprint,
+                    summarizer_version=summarizer_version,
+                    status=HistoryJobStatus.PROCESSING.value,
+                    attempts=1,
+                    lease_owner=lease_owner,
+                    lease_until=now + timedelta(seconds=lease_seconds),
+                    next_attempt_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+                await session.flush()
+                return self._job(row)
+            row.status = HistoryJobStatus.PROCESSING.value
+            row.attempts += 1
+            row.lease_owner = lease_owner
+            row.lease_until = now + timedelta(seconds=lease_seconds)
+            row.next_attempt_at = now
+            row.error_category = None
+            row.outcome = None
+            row.result_summary_id = None
+            row.completed_at = None
+            row.updated_at = now
+            await session.flush()
+            return self._job(row)
+
+    async def invalidate_all_summaries(self, state_id: int) -> int:
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            rows = (
+                await session.scalars(
+                    select(ConversationHistorySummaryModel).where(
+                        ConversationHistorySummaryModel.state_id == state_id,
+                        ConversationHistorySummaryModel.status
+                        != HistorySummaryStatus.INVALIDATED.value,
+                    )
+                )
+            ).all()
+            for row in rows:
+                row.status = HistorySummaryStatus.INVALIDATED.value
+                row.updated_at = now
+            state = await session.get(ConversationHistoryStateModel, state_id)
+            if state is None:
+                raise HistoryIdentityError("conversation history state disappeared")
+            state.revision += 1
+            state.updated_at = now
+            await session.flush()
+            await self._sync_frontier_end(session, state_id, now)
+            await self._assert_frontier(session, state_id)
+            return len(rows)
+
+    async def reconcile_state_counters(
+        self, identity: ConversationHistoryIdentity
+    ) -> ConversationHistoryState:
+        self._validate_identity(identity)
+        state = await self.get_or_create_state(identity)
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            row = await session.get(ConversationHistoryStateModel, state.id)
+            if row is None:
+                raise HistoryIdentityError("conversation history state disappeared")
+            event_query = self._event_identity_query(identity)
+            latest = await session.scalar(select(func.max(ChatEventModel.id)).where(*event_query))
+            coverage = row.active_frontier_end_event_id
+            pending_filters = [*event_query, ChatEventModel.id > coverage]
+            pending_count = await session.scalar(
+                select(func.count(ChatEventModel.id)).where(*pending_filters)
+            )
+            pending_characters = await session.scalar(
+                select(
+                    func.coalesce(
+                        func.sum(
+                            func.length(ChatEventModel.content)
+                            + func.length(ChatEventModel.visual_summary)
+                        ),
+                        0,
+                    )
+                ).where(*pending_filters)
+            )
+            row.last_seen_event_id = int(latest or 0)
+            row.pending_event_count = int(pending_count or 0)
+            row.pending_character_count = int(pending_characters or 0)
+            row.revision += 1
+            row.updated_at = now
+            await session.flush()
+            return self._state(row)
+
+    async def latest_event_id(self, identity: ConversationHistoryIdentity) -> int:
+        self._validate_identity(identity)
+        async with self._database.sessions() as session:
+            latest = await session.scalar(
+                select(func.max(ChatEventModel.id)).where(*self._event_identity_query(identity))
+            )
+        return int(latest or 0)
+
     async def load_source_events(
         self,
         identity: ConversationHistoryIdentity,
@@ -381,19 +592,10 @@ class ConversationHistoryRepository:
         self._validate_identity(identity)
         async with self._database.sessions() as session:
             query = select(ChatEventModel).where(
-                ChatEventModel.bot_user_id == identity.bot_user_id,
-                ChatEventModel.scope_type == identity.scope_type.value,
+                *self._event_identity_query(identity),
                 ChatEventModel.id >= start_event_id,
                 ChatEventModel.id <= end_event_id,
             )
-            if identity.scope_type is ScopeType.PRIVATE:
-                query = query.where(
-                    ChatEventModel.private_peer_user_id == identity.private_peer_user_id
-                )
-            else:
-                query = query.where(ChatEventModel.group_id == identity.group_id)
-            if identity.reset_at is not None:
-                query = query.where(ChatEventModel.occurred_at >= identity.reset_at)
             rows = (await session.scalars(query.order_by(ChatEventModel.id))).all()
         return tuple(_event_record(row) for row in rows)
 
@@ -681,18 +883,9 @@ class ConversationHistoryRepository:
         newest: bool,
     ) -> tuple[EventRecord, ...]:
         query = select(ChatEventModel).where(
-            ChatEventModel.bot_user_id == identity.bot_user_id,
-            ChatEventModel.scope_type == identity.scope_type.value,
+            *self._event_identity_query(identity),
             ChatEventModel.id > after_event_id,
         )
-        if identity.scope_type is ScopeType.PRIVATE:
-            query = query.where(
-                ChatEventModel.private_peer_user_id == identity.private_peer_user_id
-            )
-        else:
-            query = query.where(ChatEventModel.group_id == identity.group_id)
-        if identity.reset_at is not None:
-            query = query.where(ChatEventModel.occurred_at >= identity.reset_at)
         if newest:
             rows = list(
                 (await session.scalars(query.order_by(ChatEventModel.id.desc()).limit(limit))).all()
@@ -715,6 +908,30 @@ class ConversationHistoryRepository:
                 raise HistoryIdentityError("group identity requires group and no peer")
             return
         raise HistoryIdentityError("unsupported conversation scope")
+
+    @staticmethod
+    def identity_from_state(state: ConversationHistoryState) -> ConversationHistoryIdentity:
+        return ConversationHistoryIdentity(
+            bot_user_id=state.bot_user_id,
+            scope_type=ScopeType(state.scope_type),
+            private_peer_user_id=state.private_peer_user_id,
+            group_id=state.group_id,
+            reset_at=state.reset_at,
+        )
+
+    @staticmethod
+    def _event_identity_query(identity: ConversationHistoryIdentity) -> tuple[Any, ...]:
+        filters: list[Any] = [
+            ChatEventModel.bot_user_id == identity.bot_user_id,
+            ChatEventModel.scope_type == identity.scope_type.value,
+        ]
+        if identity.scope_type is ScopeType.PRIVATE:
+            filters.append(ChatEventModel.private_peer_user_id == identity.private_peer_user_id)
+        else:
+            filters.append(ChatEventModel.group_id == identity.group_id)
+        if identity.reset_at is not None:
+            filters.append(ChatEventModel.occurred_at >= identity.reset_at)
+        return tuple(filters)
 
     @staticmethod
     def _state_query(identity: ConversationHistoryIdentity) -> Select[Any]:
@@ -911,4 +1128,6 @@ class ConversationHistoryRepository:
             outcome=HistoryJobOutcome(row.outcome) if row.outcome else None,
             result_summary_id=row.result_summary_id,
             lease_owner=row.lease_owner,
+            lease_until=row.lease_until,
+            error_category=row.error_category,
         )
