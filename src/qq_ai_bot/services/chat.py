@@ -365,6 +365,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._mutation_committed = False
         self._automation_persisted = False
         self._batch: list[ToolCall] = []
+        self._batch_lock = asyncio.Lock()
         self._catalog: UnifiedToolCatalog | None = None
         self._requestable_catalog: UnifiedToolCatalog | None = None
         self._provider_registry: ToolProviderRegistry | None = None
@@ -689,23 +690,24 @@ class _ChatAgentBackend(AgentToolBackend):
                 },
                 ensure_ascii=False,
             )
-        if not self._batch:
-            return json.dumps(
-                {"ok": False, "error": "tool_batch_state_missing"}, ensure_ascii=False
+        async with self._batch_lock:
+            if not self._batch:
+                return json.dumps(
+                    {"ok": False, "error": "tool_batch_state_missing"}, ensure_ascii=False
+                )
+            call_index = next(
+                (
+                    index
+                    for index, item in enumerate(self._batch)
+                    if item.function.name == name and item.function.arguments == arguments_json
+                ),
+                None,
             )
-        call_index = next(
-            (
-                index
-                for index, item in enumerate(self._batch)
-                if item.function.name == name and item.function.arguments == arguments_json
-            ),
-            None,
-        )
-        if call_index is None:
-            return json.dumps(
-                {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
-            )
-        call = self._batch.pop(call_index)
+            if call_index is None:
+                return json.dumps(
+                    {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
+                )
+            call = self._batch.pop(call_index)
         if name == _SET_REPLY_TARGET_NAME:
             return self._set_reply_target(arguments_json)
         if self._tools_closed:

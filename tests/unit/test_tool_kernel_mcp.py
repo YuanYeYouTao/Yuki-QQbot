@@ -288,6 +288,24 @@ async def test_coordinator_keeps_response_controls_outside_business_call_budget(
     assert "tool_limit_exceeded" in result.calls[0][1]
 
 
+def test_coordinator_missing_call_id_returns_error_payload() -> None:
+    from qq_ai_bot.capabilities.coordinator import TOOL_RESULT_MISSING, _attach_batch_results
+
+    calls = (
+        ToolCall(id="call_01_kept", function=ToolFunction(name="a", arguments="{}")),
+        ToolCall(id="call_01_missing", function=ToolFunction(name="b", arguments="{}")),
+    )
+    ordered = _attach_batch_results(
+        calls,
+        results={"call_01_kept": '{"ok":true}'},
+        overflow_ids=set(),
+        limited='{"ok":false,"error":"tool_limit_exceeded"}',
+    )
+    assert ordered[0][2] is True
+    assert json.loads(ordered[1][1])["error"] == TOOL_RESULT_MISSING
+    assert ordered[1][2] is False
+
+
 @pytest.mark.asyncio
 async def test_result_budget_keeps_valid_summary_and_pages_full_artifact(
     database: Database,
