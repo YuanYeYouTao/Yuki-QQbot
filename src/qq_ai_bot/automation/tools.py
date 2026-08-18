@@ -6,12 +6,22 @@ import json
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from qq_ai_bot.automation.compiler import ExecutionPlan, TaskSpec
+from qq_ai_bot.automation.compiler import ExecutionPlan
 from qq_ai_bot.automation.models import AutomationRecord
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.time.formatting import local_iso
+
+_CREATE_DESCRIPTION = (
+    "根据高层 TaskSpec 创建真实持久化任务；不要手写 AutomationScript、步骤、"
+    "底层 capability 名或预算。简单提醒使用 static 且 capabilities 留空；需要"
+    "模型生成内容用 generated；需要运行时查询或操作外部系统用 agentic，并只"
+    "选择必要 capability ID。不要把外部工具说明或 capability 目录写进本工具；"
+    "capabilities 只填后端已委托的 ID，非法 ID 由后端拒绝。创建任务时不得提前"
+    "执行这些外部工具。只有返回 confirmation='persisted' 和 automation_id 后"
+    "才能告诉用户已经创建成功。"
+)
 
 
 def _object_schema(
@@ -22,6 +32,144 @@ def _object_schema(
         "properties": properties,
         "required": list(required),
         "additionalProperties": False,
+    }
+
+
+def _task_intent_schema() -> dict[str, object]:
+    """Compact TaskSpec envelope for the model; backend still validates the real type."""
+
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["name", "goal", "trigger"],
+        "description": "高层任务意图。后端选择策略、计算预算并编译为 DSL。",
+        "properties": {
+            "version": {"type": "integer", "const": 1},
+            "name": {"type": "string", "minLength": 1, "maxLength": 128},
+            "goal": {"type": "string", "minLength": 1, "maxLength": 2500},
+            "trigger": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["type", "seconds"],
+                        "properties": {
+                            "type": {"const": "after"},
+                            "seconds": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 31_536_000,
+                            },
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["type", "local_datetime"],
+                        "properties": {
+                            "type": {"const": "once"},
+                            "local_datetime": {"type": "string"},
+                            "timezone": {"type": "string", "maxLength": 64},
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["type", "hour", "minute"],
+                        "properties": {
+                            "type": {"const": "daily"},
+                            "hour": {"type": "integer", "minimum": 0, "maximum": 23},
+                            "minute": {"type": "integer", "minimum": 0, "maximum": 59},
+                            "timezone": {"type": "string", "maxLength": 64},
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["type", "weekdays", "hour", "minute"],
+                        "properties": {
+                            "type": {"const": "weekly"},
+                            "weekdays": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 7,
+                                "items": {"type": "integer", "minimum": 1, "maximum": 7},
+                            },
+                            "hour": {"type": "integer", "minimum": 0, "maximum": 23},
+                            "minute": {"type": "integer", "minimum": 0, "maximum": 59},
+                            "timezone": {"type": "string", "maxLength": 64},
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["type", "seconds"],
+                        "properties": {
+                            "type": {"const": "interval"},
+                            "seconds": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 31_536_000,
+                            },
+                        },
+                    },
+                ]
+            },
+            "timezone": {"type": "string", "minLength": 1, "maxLength": 64},
+            "strategy": {
+                "type": "string",
+                "enum": ["auto", "static", "generated", "agentic"],
+                "description": "纯提醒用 static；运行时需要模型或工具时用 agentic。",
+            },
+            "capabilities": {
+                "type": "array",
+                "maxItems": 128,
+                "items": {"type": "string", "minLength": 1, "maxLength": 128},
+                "description": "仅填写本任务运行时确实需要的 capability ID；简单提醒留空。",
+            },
+            "constraints": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {"type": "string"},
+            },
+            "context": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "scene": {
+                        "type": "string",
+                        "enum": ["none", "creator_private", "current_group"],
+                    },
+                    "include_relationship": {"type": "boolean"},
+                    "include_memories": {"type": "boolean"},
+                    "history_limit": {"type": "integer", "minimum": 0, "maximum": 30},
+                },
+            },
+            "delivery": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "enum": ["auto", "self_private", "current_group", "none"],
+                    },
+                    "text": {"type": "string", "minLength": 1, "maxLength": 12000},
+                },
+            },
+        },
+        "examples": [
+            {
+                "version": 1,
+                "name": "五分钟后喝水提醒",
+                "goal": "提醒我喝水",
+                "trigger": {"type": "after", "seconds": 300},
+                "strategy": "static",
+                "capabilities": [],
+                "constraints": [],
+                "context": {"scene": "none"},
+                "delivery": {"target": "auto", "text": "该喝水啦～"},
+            }
+        ],
     }
 
 
@@ -67,47 +215,12 @@ class AutomationToolService:
         self._service = service
 
     def definitions(self) -> tuple[ChatTool, ...]:
-        task_schema = TaskSpec.model_json_schema()
-        catalog = self._service.task_capability_catalog()
-        capability_ids = [item["id"] for item in catalog]
-        capabilities_schema = task_schema["properties"]["capabilities"]
-        if isinstance(capabilities_schema, dict):
-            capabilities_schema["items"] = {
-                "type": "string",
-                "enum": capability_ids,
-            }
-            capabilities_schema["description"] = (
-                "仅填写本任务运行时确实需要的 capability ID；简单提醒留空。"
-            )
-        task_schema["description"] = (
-            "高层任务意图。后端会自动选择执行策略、计算预算、解析能力 ID，并编译为严格 DSL。"
-        )
-        task_schema["examples"] = [
-            {
-                "version": 1,
-                "name": "五分钟后喝水提醒",
-                "goal": "提醒我喝水",
-                "trigger": {"type": "after", "seconds": 300},
-                "strategy": "static",
-                "capabilities": [],
-                "constraints": [],
-                "context": {"scene": "none"},
-                "delivery": {"target": "auto", "text": "该喝水啦～"},
-            }
-        ]
-        catalog_hint = "；".join(f"{item['id']}={item['description']}" for item in catalog)
+        task_schema = _task_intent_schema()
         id_schema = {"automation_id": {"type": "integer", "minimum": 1}}
         definitions = (
             ChatTool(
                 name="automation_create",
-                description=(
-                    "根据高层 TaskSpec 创建真实持久化任务；不要手写 AutomationScript、步骤、"
-                    "底层 capability 名或预算。简单提醒使用 static 且 capabilities 留空；需要"
-                    "模型生成内容用 generated；需要运行时查询或操作外部系统用 agentic，并只"
-                    "选择必要 capability ID。创建任务时不得提前执行这些外部工具。只有返回"
-                    "confirmation='persisted' 和 automation_id 后才能告诉用户已经创建成功。"
-                    f"可选 capability ID：{catalog_hint}"
-                ),
+                description=_CREATE_DESCRIPTION,
                 parameters=_object_schema(
                     {"task": task_schema, "max_runs": {"type": "integer", "minimum": 1}},
                     required=("task",),
