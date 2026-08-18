@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from qq_ai_bot.domain.conversations import ScopeType
 
 
 class HistorySummaryStatus(StrEnum):
@@ -50,13 +53,28 @@ class _HistoryModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class ConversationHistoryIdentity(_HistoryModel):
+    bot_user_id: str
+    scope_type: ScopeType
+    private_peer_user_id: str | None = None
+    group_id: str | None = None
+    reset_at: datetime | None = None
+
+
+class ConversationHistoryMember(_HistoryModel):
+    member_type: HistoryMemberType
+    ordinal: int = Field(ge=0)
+    source_event_id: int | None = None
+    source_summary_id: int | None = None
+
+
 class ConversationHistoryState(_HistoryModel):
     id: int
     bot_user_id: str
     scope_type: str
     private_peer_user_id: str | None
     group_id: str | None
-    reset_at: str | None
+    reset_at: datetime | None
     last_seen_event_id: int
     active_frontier_end_event_id: int
     pending_event_count: int = Field(ge=0)
@@ -77,6 +95,7 @@ class ConversationHistorySummary(_HistoryModel):
     source_fingerprint: str
     replaced_by_summary_id: int | None = None
     rendered_text: str = ""
+    members: tuple[ConversationHistoryMember, ...] = ()
 
 
 class ConversationHistoryJob(_HistoryModel):
@@ -88,3 +107,13 @@ class ConversationHistoryJob(_HistoryModel):
     status: HistoryJobStatus
     outcome: HistoryJobOutcome | None = None
     result_summary_id: int | None = None
+    lease_owner: str | None = None
+
+
+class HistoryContextSnapshot(_HistoryModel):
+    """Consistent frontier read. Recent raw events are attached in context compile."""
+
+    state: ConversationHistoryState
+    frontier: tuple[ConversationHistorySummary, ...]
+    coverage_end_event_id: int
+    revision: int
