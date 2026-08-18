@@ -1087,9 +1087,9 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
     envelope = next(
         item.content or ""
         for item in request.messages
-        if item.role == "system" and '"id":"context.people_and_scene"' in (item.content or "")
+        if '"id":"context.people_and_scene"' in (item.content or "")
     )
-    items = json.loads(envelope[envelope.index("[") :])
+    items, _ = json.JSONDecoder().raw_decode(envelope[envelope.index("[") :])
     context = next(item["data"] for item in items if item["id"] == "context.people_and_scene")
     blocks = {item["id"]: item["data"] for item in context["items"]}
 
@@ -1142,9 +1142,9 @@ async def test_context_limits_mentioned_member_facts_to_current_group_block(
     envelope = next(
         item.content or ""
         for item in request.messages
-        if item.role == "system" and '"id":"context.people_and_scene"' in (item.content or "")
+        if '"id":"context.people_and_scene"' in (item.content or "")
     )
-    items = json.loads(envelope[envelope.index("[") :])
+    items, _ = json.JSONDecoder().raw_decode(envelope[envelope.index("[") :])
     context = next(item["data"] for item in items if item["id"] == "context.people_and_scene")
     blocks = {item["id"]: item["data"] for item in context["items"]}
     referenced = blocks["referenced_person.0"]

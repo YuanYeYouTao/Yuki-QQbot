@@ -202,7 +202,7 @@ def emoji_config_specs() -> tuple[ConfigSpec, ...]:
             key,
             label,
             (
-                "Planner 在用户未明确索要表情时选择表情的目标频率，范围 0..1；0.15 表示 15%。"
+                "用户未明确索要表情时，日常主动表情的目标频率，范围 0..1；0.15 表示 15%。"
                 if key == "emoji.spontaneous_frequency"
                 else f"配置{label}。"
             ),

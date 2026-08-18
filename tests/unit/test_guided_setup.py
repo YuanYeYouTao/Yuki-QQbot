@@ -41,7 +41,7 @@ from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
 
 def _base_environment() -> dict[str, str]:
     return {
-        "YUKI_VERSION": "3.6.0",
+        "YUKI_VERSION": "3.6.1",
         "ONEBOT_ACCESS_TOKEN": "onebot-test-token",
         "NAPCAT_WEBUI_TOKEN": "napcat-test-token",
         "SUPERUSERS": "12345678",
@@ -221,7 +221,7 @@ def test_first_run_generates_safe_all_disabled_configuration(tmp_path: Path) -> 
 
     assert _configure(paths, ui) == 0
     environment = EnvironmentDocument.load(paths).values()
-    assert environment["YUKI_VERSION"] == "3.6.0"
+    assert environment["YUKI_VERSION"] == "3.6.1"
     assert len(environment["ONEBOT_ACCESS_TOKEN"]) >= 43
     assert len(environment["NAPCAT_WEBUI_TOKEN"]) >= 43
     assert environment["ONEBOT_ACCESS_TOKEN"] != environment["NAPCAT_WEBUI_TOKEN"]
@@ -481,6 +481,7 @@ def test_model_profiles_route_all_tasks_and_keep_agents_on_main() -> None:
     assert with_flash["routes"]["memory_attribution"] == "flash"
     assert with_flash["routes"]["relationship_evaluation"] == "flash"
     assert with_flash["routes"]["emoji_replacement"] == "flash"
+    assert with_flash["routes"]["conversation_compaction"] == "flash"
     assert with_flash["routes"]["chat_agent"] == "main"
     assert with_flash["routes"]["automation_agent"] == "main"
     assert with_flash["routes"]["plugin_agent_session"] == "main"
@@ -667,7 +668,7 @@ def test_atomic_commit_backs_up_and_does_not_rewrite_unselected_files(tmp_path: 
         paths,
         document,
         SetupConfiguration(
-            environment={**document.values(), "YUKI_VERSION": "3.6.0"},
+            environment={**document.values(), "YUKI_VERSION": "3.6.1"},
             model_profiles="ignored replacement\n",
             mcp_document={"mcpServers": {"ignored": {}}},
             pending_plugins=("example.guided",),

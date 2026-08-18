@@ -29,6 +29,7 @@ _MODEL_TASKS = (
     "automation_agent",
     "plugin_agent_session",
     "utility_structured",
+    "conversation_compaction",
 )
 _SMOKE_PLUGIN_ID = "io.github.yuanyeyoutao.kun-game"
 
@@ -255,7 +256,7 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     alembic_version = compose.run(
         "exec", "-T", "bot", "python", "-c", migration_command, capture=True
     )
-    if alembic_version != "0040":
+    if alembic_version != "0041":
         raise SmokeError(f"unexpected Alembic version: {alembic_version!r}")
     compose.run("exec", "-T", "bot", "qq-ai-bot-cli", "plugin", "discover", capture=True)
     selected = write_plugin_pending(deploy_directory)

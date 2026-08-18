@@ -248,7 +248,7 @@ class MemoryAuditService:
                     SELECT supersedes_id FROM memory_facts WHERE supersedes_id IS NOT NULL
                 ) AND id NOT IN (
                     SELECT source_fact_id FROM memory_fact_relations
-                    WHERE relation_type='equivalent'
+                    WHERE relation_type IN ('equivalent', 'refines')
                 )
             """,
             "evidence_authority_mismatch_count": """

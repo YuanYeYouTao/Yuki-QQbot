@@ -82,6 +82,7 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
     ModelTask.AUTOMATION_AGENT: frozenset({ModelCapability.TOOLS}),
     ModelTask.PLUGIN_AGENT_SESSION: frozenset({ModelCapability.TOOLS}),
     ModelTask.UTILITY_STRUCTURED: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
+    ModelTask.CONVERSATION_COMPACTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
 }
 
 
@@ -201,6 +202,25 @@ def load_model_profile_catalog(
                     source_task.value,
                 )
                 raw_routes[ModelTask.MEMORY_ATTRIBUTION.value] = raw_routes[source_task.value]
+        if ModelTask.CONVERSATION_COMPACTION.value not in raw_routes:
+            source_task = next(
+                (
+                    task
+                    for task in (
+                        ModelTask.MEMORY_DREAM,
+                        ModelTask.UTILITY_STRUCTURED,
+                        ModelTask.MEMORY_EXTRACTION,
+                    )
+                    if task.value in raw_routes
+                ),
+                None,
+            )
+            if source_task is not None:
+                logger.warning(
+                    "model_route_compatibility task=conversation_compaction source=%s",
+                    source_task.value,
+                )
+                raw_routes[ModelTask.CONVERSATION_COMPACTION.value] = raw_routes[source_task.value]
         routes = {
             ModelTask(task_name): ModelRoute(
                 task=ModelTask(task_name),

@@ -1,4 +1,4 @@
-"""Compile stable and dynamic prompt contributions once."""
+"""Compile stable, session, and dynamic prompt contributions once."""
 
 from __future__ import annotations
 
@@ -36,34 +36,42 @@ class PromptCompiler:
             sorted(
                 by_id.values(),
                 key=lambda item: (
-                    item.stability is not PromptStability.STATIC,
+                    _stability_rank(item.stability),
                     -item.priority,
                     item.id,
                 ),
             )
         )
         static = tuple(item for item in ordered if item.stability is PromptStability.STATIC)
-        dynamic = tuple(item for item in ordered if item.stability is not PromptStability.STATIC)
+        session = tuple(item for item in ordered if item.stability is PromptStability.SESSION)
+        dynamic = tuple(item for item in ordered if item.stability is PromptStability.TURN)
         selected_dynamic = self._select(dynamic, dynamic_character_budget)
         stable_text = "\n\n".join(item.content or "" for item in static)
+        session_text = "\n\n".join(item.content or "" for item in session)
         dynamic_text = serialize_dynamic(selected_dynamic)
         messages: list[ChatMessage] = []
         if stable_text:
             messages.append(ChatMessage(role="system", content=stable_text))
+        if session_text:
+            messages.append(ChatMessage(role="system", content=session_text))
         messages.extend(history)
-        if dynamic_text:
-            messages.append(ChatMessage(role="system", content=dynamic_text))
         if current_message is not None:
-            messages.append(current_message)
+            messages.append(_with_dynamic_prefix(current_message, dynamic_text))
+        elif dynamic_text:
+            messages.append(ChatMessage(role="system", content=dynamic_text))
         stable_hash = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()
         history_characters = sum(len(item.content or "") for item in history)
         current_message_characters = len(current_message.content or "") if current_message else 0
         total_characters = (
-            len(stable_text) + len(dynamic_text) + history_characters + current_message_characters
+            len(stable_text)
+            + len(session_text)
+            + len(dynamic_text)
+            + history_characters
+            + current_message_characters
         )
         return CompiledPrompt(
             messages=tuple(messages),
-            selected=static + selected_dynamic,
+            selected=static + session + selected_dynamic,
             metrics=PromptMetrics(
                 static_characters=len(stable_text),
                 dynamic_characters=len(dynamic_text),
@@ -71,9 +79,10 @@ class PromptCompiler:
                 current_message_characters=current_message_characters,
                 total_characters=total_characters,
                 estimated_tokens=math.ceil(total_characters / 4),
-                contribution_count=len(static) + len(selected_dynamic),
+                contribution_count=len(static) + len(session) + len(selected_dynamic),
                 message_count=len(messages),
                 stable_prefix_hash=stable_hash,
+                session_characters=len(session_text),
             ),
         )
 
@@ -100,3 +109,26 @@ class PromptCompiler:
                 used += cost
         selected_ids = {item.id for item in selected}
         return tuple(item for item in contributions if item.id in selected_ids)
+
+
+def _stability_rank(stability: PromptStability) -> int:
+    if stability is PromptStability.STATIC:
+        return 0
+    if stability is PromptStability.SESSION:
+        return 1
+    return 2
+
+
+def _with_dynamic_prefix(message: ChatMessage, dynamic_text: str) -> ChatMessage:
+    """Keep Responses `input` append-only by not inserting a mid-history system turn."""
+
+    if not dynamic_text:
+        return message
+    body = message.content or ""
+    return ChatMessage(
+        role=message.role,
+        content=f"{dynamic_text}\n\n{body}" if body else dynamic_text,
+        tool_calls=message.tool_calls,
+        tool_call_id=message.tool_call_id,
+        reasoning_content=message.reasoning_content,
+    )

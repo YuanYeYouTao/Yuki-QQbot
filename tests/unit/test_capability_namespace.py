@@ -94,6 +94,7 @@ _FROZEN_CORE_NAMESPACES = {
     "read_webpage": "web.read",
     "get_recent_chat_history": "memory.history.recent",
     "search_chat_history": "memory.history.search",
+    "get_chat_history_around": "memory.history.around",
     "get_person_memories": "memory.person.read",
     "get_self_memories": "memory.self.read",
     "get_group_memories": "memory.group.read",
@@ -133,6 +134,7 @@ class TestMcpToolNamespace:
                         "coupons": {
                             "scope": "food.mcdonalds.coupons",
                             "summary": "查询可用优惠券",
+                            "aliases": ["优惠券"],
                             "includeTools": ["available-coupons"],
                         }
                     },
@@ -145,6 +147,7 @@ class TestMcpToolNamespace:
         assert mcp_tool_namespace("mcd", config, "create-order") == "food.mcdonalds.order"
         assert mcp_tool_namespace("mcd", config, "available-coupons") == "food.mcdonalds.coupons"
         assert mcp_tool_namespace("mcd", config, "now-time-info") == "food.mcdonalds"
+        assert config.yuki.tool_bundles["coupons"].aliases == ("优惠券",)
 
 
 class TestValidationResult:

@@ -14,6 +14,8 @@ from qq_ai_bot.capabilities import ToolArtifactWriter
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.cadence import ReplyEffectRepository
 from qq_ai_bot.conversation.features import AdmissionFeatureBuilder
+from qq_ai_bot.conversation.history.service import ConversationHistoryService
+from qq_ai_bot.conversation.history.worker import ConversationHistoryWorker
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.memory.attribution import MemoryAttributionWorker
 from qq_ai_bot.memory.auditing import (
@@ -88,6 +90,8 @@ class ConversationBundle:
     memory_dream_worker: DreamWorker
     memory_evidence_compaction_worker: EvidenceCompactionWorker
     relationship_worker: RelationshipWorker
+    conversation_history_service: ConversationHistoryService
+    conversation_history_worker: ConversationHistoryWorker
 
 
 class ConversationModule:
@@ -214,6 +218,19 @@ class ConversationModule:
             runtime_config=self._runtime_config,
             metrics=persistence.memory_metrics,
         )
+        conversation_history_worker = ConversationHistoryWorker(
+            settings=settings,
+            repository=persistence.conversation_history,
+        )
+        conversation_history_service = ConversationHistoryService(
+            settings=settings,
+            repository=persistence.conversation_history,
+            ledger=persistence.ledger,
+            models=models,
+            notify=conversation_history_worker.notify,
+        )
+        conversation_history_worker.set_processor(conversation_history_service)
+        persistence.ledger.set_history_observer(conversation_history_service.observe_event)
         chat = ChatService(
             settings=settings,
             model_executor=models,
@@ -239,6 +256,8 @@ class ConversationModule:
             voice_preferences=self._voice_preferences,
             tool_artifacts=self._tool_artifacts,
             tool_invocations=self._tool_invocations,
+            history_repository=persistence.conversation_history,
+            history_coverage=conversation_history_service,
         )
         memory_rebuild_service = MemoryRebuildService(
             settings=settings,
@@ -336,6 +355,8 @@ class ConversationModule:
             memory_dream_worker,
             memory_evidence_compaction_worker,
             relationship_worker,
+            conversation_history_service,
+            conversation_history_worker,
         )
 
     @staticmethod
@@ -385,4 +406,10 @@ class ConversationModule:
             "relationship_worker",
             start=bundle.relationship_worker.start,
             close=bundle.relationship_worker.close,
+        )
+        lifecycle.register(
+            "conversation_history_worker",
+            start=bundle.conversation_history_worker.start,
+            close=bundle.conversation_history_worker.close,
+            health=bundle.conversation_history_worker.health,
         )

@@ -63,6 +63,7 @@ class MCPToolBundle(_StrictModel):
 
     scope: str = Field(min_length=1, max_length=128)
     summary: str = Field(min_length=1, max_length=500)
+    aliases: tuple[str, ...] = ()
     include_tools: tuple[str, ...] = Field(alias="includeTools", min_length=1)
 
     @model_validator(mode="after")

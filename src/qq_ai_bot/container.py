@@ -155,6 +155,7 @@ class ApplicationContainer:
         self.relationships = persistence.relationships
         self.relationship_jobs = persistence.relationship_jobs
         self.turn_observations = persistence.turn_observations
+        self.conversation_history = persistence.conversation_history
         self.runtime_foundation = RuntimeFoundationModule(
             turn_observability=self.turn_observations,
             superusers=settings.superusers,
@@ -277,6 +278,8 @@ class ApplicationContainer:
         self.memory_dream_worker = conversation.memory_dream_worker
         self.memory_evidence_compaction_worker = conversation.memory_evidence_compaction_worker
         self.relationship_worker = conversation.relationship_worker
+        self.conversation_history_worker = conversation.conversation_history_worker
+        self.conversation_history_service = conversation.conversation_history_service
         admin = AdminModule(
             settings=settings,
             database=self.database,
@@ -529,7 +532,9 @@ class ApplicationContainer:
 
         agent_capabilities: set[str] = set()
         if PluginPermission.MESSAGE_HISTORY_READ in permissions:
-            agent_capabilities.update({"get_recent_chat_history", "search_chat_history"})
+            agent_capabilities.update(
+                {"get_recent_chat_history", "search_chat_history", "get_chat_history_around"}
+            )
         if PluginPermission.MEMORY_PERSON_READ in permissions:
             agent_capabilities.add("get_person_memories")
         if PluginPermission.MEMORY_GROUP_READ in permissions:

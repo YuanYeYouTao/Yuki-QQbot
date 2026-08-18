@@ -1,4 +1,4 @@
-"""Persistence for Planner-owned person speech preferences."""
+"""Persistence for person speech preferences."""
 
 from __future__ import annotations
 

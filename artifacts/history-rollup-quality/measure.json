@@ -1,0 +1,168 @@
+{
+  "measured_at": "2026-08-18T18:23:53.858598+00:00",
+  "commit": "88046619378ff7acab9cf3e8cfe2d2e2fe636f68",
+  "environment": {
+    "os": "Windows 11",
+    "machine": "AMD64",
+    "python": "3.12.13",
+    "sqlite": "3.53.1",
+    "provider": "none",
+    "notes": "Local SQLite. No Chat/Flash/Vision calls."
+  },
+  "sample_sizes": {
+    "warmup": 10,
+    "observe": 80,
+    "frontier": 80,
+    "assemble": 30,
+    "long_session_events": 200
+  },
+  "observe_event_ms": {
+    "n": 80,
+    "min_ms": 2.739099960308522,
+    "max_ms": 6.164599966723472,
+    "p50_ms": 4.065999994054437,
+    "p95_ms": 5.080480026663279,
+    "p50_ci": {
+      "p": 50,
+      "low": 3.8846000097692013,
+      "high": 4.1473000310361385,
+      "samples": 1000,
+      "method": "percentile_bootstrap"
+    },
+    "p95_ci": {
+      "p": 95,
+      "low": 4.893600047216751,
+      "high": 5.588800006080419,
+      "samples": 1000,
+      "method": "percentile_bootstrap"
+    },
+    "percentile_algorithm": "linear_interpolation",
+    "ci_method": "percentile_bootstrap",
+    "ci_samples": 1000,
+    "ci_seed": 36
+  },
+  "frontier_query_ms": {
+    "n": 80,
+    "min_ms": 4.167200007941574,
+    "max_ms": 7.3673000442795455,
+    "p50_ms": 4.977749980753288,
+    "p95_ms": 6.028225010959431,
+    "p50_ci": {
+      "p": 50,
+      "low": 4.882050008745864,
+      "high": 5.176150007173419,
+      "samples": 1000,
+      "method": "percentile_bootstrap"
+    },
+    "p95_ci": {
+      "p": 95,
+      "low": 5.683089987724088,
+      "high": 7.363599957898259,
+      "samples": 1000,
+      "method": "percentile_bootstrap"
+    },
+    "percentile_algorithm": "linear_interpolation",
+    "ci_method": "percentile_bootstrap",
+    "ci_samples": 1000,
+    "ci_seed": 36
+  },
+  "context_build_on_ms": {
+    "n": 30,
+    "min_ms": 13.960800017230213,
+    "max_ms": 28.479999979026616,
+    "p50_ms": 17.158200003905222,
+    "p95_ms": 22.61033504037186,
+    "p50_ci": {
+      "p": 50,
+      "low": 16.54305000556633,
+      "high": 17.73189997766167,
+      "samples": 1000,
+      "method": "percentile_bootstrap"
+    },
+    "p95_ci": {
+      "p": 95,
+      "low": 19.306099973618984,
+      "high": 28.479999979026616,
+      "samples": 1000,
+      "method": "percentile_bootstrap"
+    },
+    "percentile_algorithm": "linear_interpolation",
+    "ci_method": "percentile_bootstrap",
+    "ci_samples": 1000,
+    "ci_seed": 36
+  },
+  "context_build_off_ms": {
+    "n": 30,
+    "min_ms": 14.625999960117042,
+    "max_ms": 23.393899959046394,
+    "p50_ms": 16.10650002839975,
+    "p95_ms": 21.449745018617246,
+    "p50_ci": {
+      "p": 50,
+      "low": 15.751250000903383,
+      "high": 16.348450008081272,
+      "samples": 1000,
+      "method": "percentile_bootstrap"
+    },
+    "p95_ci": {
+      "p": 95,
+      "low": 17.90380000602454,
+      "high": 23.393899959046394,
+      "samples": 1000,
+      "method": "percentile_bootstrap"
+    },
+    "percentile_algorithm": "linear_interpolation",
+    "ci_method": "percentile_bootstrap",
+    "ci_samples": 1000,
+    "ci_seed": 36
+  },
+  "context_build_worker_fail_ms": {
+    "n": 30,
+    "min_ms": 15.599299978930503,
+    "max_ms": 68.21380002656952,
+    "p50_ms": 18.028799997409806,
+    "p95_ms": 37.508004956180166,
+    "p50_ci": {
+      "p": 50,
+      "low": 17.295400000875816,
+      "high": 19.53370001865551,
+      "samples": 1000,
+      "method": "percentile_bootstrap"
+    },
+    "p95_ci": {
+      "p": 95,
+      "low": 21.424700040370226,
+      "high": 68.21380002656952,
+      "samples": 1000,
+      "method": "percentile_bootstrap"
+    },
+    "percentile_algorithm": "linear_interpolation",
+    "ci_method": "percentile_bootstrap",
+    "ci_samples": 1000,
+    "ci_seed": 36
+  },
+  "context_build_p95_increment_ms": 1.160590021754615,
+  "worker_fail_p95_delta_ms": 14.897669915808304,
+  "history_subject": {
+    "off_characters": 10401,
+    "on_characters": 6765,
+    "character_drop": 0.34958177098355925,
+    "off_estimated_tokens": 2601,
+    "on_estimated_tokens": 1692,
+    "estimated_token_drop": 0.3494809688581315,
+    "token_estimator": "ceil(characters/4) compiler estimate, not provider prompt_tokens",
+    "provider_prompt_tokens": null,
+    "provider_cached_tokens": null
+  },
+  "foreground_model_calls": 0,
+  "extractive_foreground_model_calls": 0,
+  "stable_prefix_hash": "736ebfe5074452a07047468b0beb2233e9ad55ed434ef89d96b0b8ede4c90eb4",
+  "rebuild": {
+    "created_l0_summaries": 1,
+    "coverage_end_event_id": 100,
+    "event_count": 200
+  },
+  "jobs": 1,
+  "compaction_requests_per_1000_events": 5.0,
+  "service_used": "ConversationHistoryService"
+}

@@ -12,7 +12,11 @@ from typing import Protocol, cast
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.capabilities.coordinator import CoordinatedToolResult, ToolInvocationCoordinator
+from qq_ai_bot.capabilities.coordinator import (
+    MISSING_TOOL_RESULT,
+    CoordinatedToolResult,
+    ToolInvocationCoordinator,
+)
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
@@ -832,11 +836,18 @@ class AgentRunner:
                 ordered.append((call, reused_by_id[call.id], False))
                 continue
             representative_id = aliases.get(call.id, call.id)
+            payload = unique_results.get(representative_id)
+            if payload is None:
+                logger.error("tool_result_missing call_id=%s", call.id)
+                ordered.append((call, MISSING_TOOL_RESULT, False))
+                continue
             ordered.append(
                 (
                     call,
-                    unique_results[representative_id],
-                    unique_executed[representative_id] if representative_id == call.id else False,
+                    payload,
+                    unique_executed.get(representative_id, False)
+                    if representative_id == call.id
+                    else False,
                 )
             )
 

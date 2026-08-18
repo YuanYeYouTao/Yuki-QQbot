@@ -220,7 +220,7 @@ class MCPAutomationBridge:
             data = payload if isinstance(payload, dict) else {"result": payload}
             return CapabilityResult(data=data)
 
-        description = tool.description or tool.compact_description or tool.remote_tool_name
+        description = tool.compact_description or tool.remote_tool_name
         return AutomationCapability(
             name=capability_name(tool.server_id, tool.remote_tool_name),
             description=f"MCP {tool.server_id}：{description}",

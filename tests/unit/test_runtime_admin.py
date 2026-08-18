@@ -1142,6 +1142,11 @@ async def test_single_chat_agent_executes_multiple_distinct_mutations_in_order(
 
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
+        tool_names = {tool.name for tool in request.tools}
+        if "admin_set_config" not in tool_names:
+            return _request_tools_response("admin_set_config")
+        if "admin_execute_action" not in tool_names:
+            return _request_tools_response("admin_execute_action", call_id="request-tools-memory")
         calls += 1
         if calls == 1:
             return ChatResponse(
@@ -1183,9 +1188,9 @@ async def test_single_chat_agent_executes_multiple_distinct_mutations_in_order(
             json.loads(message.content or "{}")
             for message in request.messages
             if message.role == "tool"
-        ]
+        ][-2:]
         assert len(results) == 2
-        assert all(item["ok"] is True for item in results)
+        assert all(item.get("ok") is True for item in results)
         return ChatResponse(content="两项修改都完成了。", latency_seconds=0)
 
     settings = make_settings(database.url)

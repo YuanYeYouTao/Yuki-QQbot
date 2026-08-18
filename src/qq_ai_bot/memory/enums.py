@@ -231,7 +231,7 @@ class MemoryRebuildExpiredClaimPolicy(StrEnum):
 
 
 class MemoryContextMode(StrEnum):
-    """Planner-selected amount of long-term memory needed for one reply."""
+    """Amount of long-term memory needed for one reply."""
 
     NONE = "none"
     LEXICAL = "lexical"
@@ -253,7 +253,7 @@ class MemoryAccessMode(StrEnum):
 
 
 class MemoryRecallPurpose(StrEnum):
-    """Planner-owned semantic reason for recalling long-term memory."""
+    """Semantic reason for recalling long-term memory."""
 
     BACKGROUND = "background"
     RECALL = "recall"

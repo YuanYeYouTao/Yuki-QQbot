@@ -42,7 +42,7 @@ Memory V2 将长期记忆拆为事实、证据、逐事件提取任务和可重�
 普通聊天调用链为：
 
 ```text
-当前消息 + 有界回复文本 + Planner 简短 intent
+当前消息 + 有界回复文本 + Memory Runtime / Agent 读工具给出的结构化 intent
   → MemoryQueryBuilder
   → MemoryTargetResolver
   → 对每个实体分别执行带 scope/user/group/status/valid_until 硬过滤的 FTS SQL

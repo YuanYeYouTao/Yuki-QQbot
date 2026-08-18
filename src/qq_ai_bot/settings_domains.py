@@ -116,11 +116,41 @@ class ConversationSettings(DomainSettings):
     conversation_autonomous_batch_limit: int = Field(gt=0)
     conversation_autonomous_presence_window_seconds: int = Field(gt=0)
     conversation_interrupt_autonomous_on_new_message: bool
+    conversation_history_rollup_enabled: bool
+    conversation_history_rollup_worker_concurrency: int = Field(ge=1, le=2)
+    conversation_history_rollup_poll_seconds: float = Field(gt=0)
+    conversation_history_rollup_lease_seconds: int = Field(gt=0)
+    conversation_history_rollup_timeout_seconds: float = Field(gt=0)
+    conversation_history_rollup_max_attempts: int = Field(ge=1)
+    conversation_history_rollup_retry_seconds: str
+    conversation_history_raw_tail_events: int = Field(ge=1)
+    conversation_history_raw_tail_characters: int = Field(ge=1)
+    conversation_history_rollup_l0_min_events: int = Field(ge=1)
+    conversation_history_rollup_l0_min_characters: int = Field(ge=1)
+    conversation_history_rollup_l0_max_events: int = Field(ge=1)
+    conversation_history_rollup_l0_max_characters: int = Field(ge=1)
+    conversation_history_extractive_max_characters: int = Field(ge=1)
+    conversation_history_rollup_fan_in: int = Field(ge=2)
+    conversation_history_rollup_fan_in_characters: int = Field(ge=1)
+    conversation_history_rollup_max_level: int = Field(ge=1)
+    conversation_history_llm_origins: str
+    conversation_history_rollup_prompt_version: str
+    conversation_history_raw_tail_budget_ratio: float = Field(gt=0, le=1)
+    conversation_history_around_before: int = Field(ge=0)
+    conversation_history_around_after: int = Field(ge=0)
+    conversation_history_around_limit: int = Field(ge=1)
 
     @model_validator(mode="after")
     def _delay_order(self) -> ConversationSettings:
         if self.daily_chat_message_delay_min_seconds > self.daily_chat_message_delay_max_seconds:
             raise ValueError("daily chat minimum delay must not exceed maximum delay")
+        delays = tuple(
+            int(part.strip())
+            for part in self.conversation_history_rollup_retry_seconds.split(",")
+            if part.strip()
+        )
+        if not delays or any(item <= 0 for item in delays):
+            raise ValueError("conversation history retry seconds must be positive integers")
         return self
 
 

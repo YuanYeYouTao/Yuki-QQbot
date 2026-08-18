@@ -128,6 +128,13 @@ CORE_NAMESPACES: tuple[CapabilityNamespace, ...] = (
         aliases=("以前", "查记录"),
         tags=("memory", "history"),
     ),
+    _ns(
+        "memory.history.around",
+        "附近消息",
+        description="按 event_id 读取当前会话账本前后原文",
+        aliases=("around", "原文"),
+        tags=("memory", "history"),
+    ),
     _ns("memory.person", "人物记忆", description="人物结构记忆", tags=("memory",)),
     _ns(
         "memory.person.read",

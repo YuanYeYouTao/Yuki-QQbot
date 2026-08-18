@@ -12,6 +12,7 @@ import pytest
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.coordinator import TOOL_RESULT_MISSING, CoordinatedToolResult
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
@@ -350,6 +351,49 @@ def _agent_runtime() -> AgentRuntime:
         max_tool_calls=5,
         max_model_requests=6,
     )
+
+
+@pytest.mark.asyncio
+async def test_missing_call_id_in_batch_returns_error_instead_of_raising() -> None:
+    class DropSecondCoordinator:
+        async def execute_batch(
+            self,
+            calls: tuple[ToolCall, ...],
+            backend: object,
+            runtime: AgentRuntime,
+            *,
+            remaining_calls: int,
+            max_parallel_calls: int,
+        ) -> CoordinatedToolResult:
+            del remaining_calls, max_parallel_calls
+            first = calls[0]
+            execute = backend.execute
+            payload = await execute(first.function.name, first.function.arguments, runtime)
+            return CoordinatedToolResult(((first, payload, True),), 1)
+
+    runner = AgentRunner(FakeLLMProvider("unused"), ConcurrencyManager(1))
+    runner._tool_coordinator = DropSecondCoordinator()  # type: ignore[assignment]
+    backend = VoiceEffectBackend()
+    result = await runner._execute_tool_batch(
+        (
+            ToolCall(
+                id="call_01_kept",
+                function=ToolFunction(name="send_voice", arguments="{}"),
+            ),
+            ToolCall(
+                id="call_01_J1dFmYdl1DWqA3sSWJug1179",
+                function=ToolFunction(name="send_voice", arguments='{"style":"soft"}'),
+            ),
+        ),
+        backend,
+        _agent_runtime(),
+        remaining_calls=5,
+        max_parallel_calls=8,
+        reusable_results={},
+    )
+    payloads = [json.loads(item[1]) for item in result.calls]
+    assert payloads[0]["ok"] is True
+    assert payloads[1]["error"] == TOOL_RESULT_MISSING
 
 
 @pytest.mark.asyncio

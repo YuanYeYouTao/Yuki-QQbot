@@ -322,6 +322,29 @@ class Settings(BaseSettings):
     conversation_autonomous_batch_limit: int = 8
     conversation_autonomous_presence_window_seconds: int = 300
     conversation_interrupt_autonomous_on_new_message: bool = True
+    conversation_history_rollup_enabled: bool = True
+    conversation_history_rollup_worker_concurrency: int = Field(default=1, ge=1, le=2)
+    conversation_history_rollup_poll_seconds: float = Field(default=1.0, gt=0)
+    conversation_history_rollup_lease_seconds: int = Field(default=180, gt=0)
+    conversation_history_rollup_timeout_seconds: float = Field(default=60.0, gt=0)
+    conversation_history_rollup_max_attempts: int = Field(default=7, ge=1)
+    conversation_history_rollup_retry_seconds: str = "15,30,60,120,240,480,960"
+    conversation_history_raw_tail_events: int = Field(default=48, ge=1)
+    conversation_history_raw_tail_characters: int = Field(default=3600, ge=1)
+    conversation_history_rollup_l0_min_events: int = Field(default=32, ge=1)
+    conversation_history_rollup_l0_min_characters: int = Field(default=8000, ge=1)
+    conversation_history_rollup_l0_max_events: int = Field(default=100, ge=1)
+    conversation_history_rollup_l0_max_characters: int = Field(default=16_000, ge=1)
+    conversation_history_extractive_max_characters: int = Field(default=1200, ge=1)
+    conversation_history_rollup_fan_in: int = Field(default=8, ge=2)
+    conversation_history_rollup_fan_in_characters: int = Field(default=4800, ge=1)
+    conversation_history_rollup_max_level: int = Field(default=16, ge=1)
+    conversation_history_llm_origins: str = "user_message"
+    conversation_history_rollup_prompt_version: str = "conversation-rollup-v1"
+    conversation_history_raw_tail_budget_ratio: float = Field(default=0.55, gt=0, le=1)
+    conversation_history_around_before: int = Field(default=6, ge=0)
+    conversation_history_around_after: int = Field(default=6, ge=0)
+    conversation_history_around_limit: int = Field(default=24, ge=1)
     reply_sequence_cancel_on_new_message: bool = True
     reply_hard_max_messages: int = 10
 

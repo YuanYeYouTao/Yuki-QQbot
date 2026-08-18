@@ -276,7 +276,10 @@ class DreamHealth(_DreamModel):
     enabled: bool
     running: bool
     active_run_id: str | None = None
-    pending_clusters: int = Field(ge=0)
+    pending_clusters: int = Field(
+        ge=0,
+        description="Pending clusters on planned or running runs only.",
+    )
     failed_clusters: int = Field(ge=0)
     last_completed_at: datetime | None = None
     last_error_category: str | None = None

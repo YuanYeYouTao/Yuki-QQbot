@@ -994,7 +994,19 @@ class DreamRepository:
                 await session.scalar(
                     select(func.count())
                     .select_from(MemoryDreamClusterModel)
-                    .where(MemoryDreamClusterModel.status == DreamClusterStatus.PENDING.value)
+                    .join(
+                        MemoryDreamRunModel,
+                        MemoryDreamClusterModel.run_id == MemoryDreamRunModel.id,
+                    )
+                    .where(
+                        MemoryDreamClusterModel.status == DreamClusterStatus.PENDING.value,
+                        MemoryDreamRunModel.status.in_(
+                            (
+                                DreamRunStatus.PLANNED.value,
+                                DreamRunStatus.RUNNING.value,
+                            )
+                        ),
+                    )
                 )
                 or 0
             )

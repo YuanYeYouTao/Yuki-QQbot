@@ -4,10 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from qq_ai_bot.domain.messages import ToolCall
+
+logger = logging.getLogger(__name__)
+TOOL_RESULT_MISSING = "tool_result_missing"
+MISSING_TOOL_RESULT = json.dumps(
+    {
+        "ok": False,
+        "error": TOOL_RESULT_MISSING,
+        "detail": "工具批次缺少这次调用的回执，已跳过而不是中断整轮。",
+    },
+    ensure_ascii=False,
+)
 
 
 class CoordinatedToolBackend(Protocol):
@@ -97,12 +109,32 @@ class ToolInvocationCoordinator:
             {"ok": False, "error": "tool_limit_exceeded"},
             ensure_ascii=False,
         )
-        ordered = tuple(
-            (
-                call,
-                limited if call.id in overflow_ids else results[call.id],
-                call.id not in overflow_ids,
-            )
-            for call in calls
+        return CoordinatedToolResult(
+            _attach_batch_results(
+                calls, results=results, overflow_ids=overflow_ids, limited=limited
+            ),
+            counted_executions,
         )
-        return CoordinatedToolResult(ordered, counted_executions)
+
+
+def _attach_batch_results(
+    calls: tuple[ToolCall, ...],
+    *,
+    results: dict[str, str],
+    overflow_ids: set[str],
+    limited: str,
+) -> tuple[tuple[ToolCall, str, bool], ...]:
+    """Map each model call id back to a payload without raising on a missing key."""
+
+    ordered: list[tuple[ToolCall, str, bool]] = []
+    for call in calls:
+        if call.id in overflow_ids:
+            ordered.append((call, limited, False))
+            continue
+        payload = results.get(call.id)
+        if payload is None:
+            logger.error("tool_result_missing call_id=%s", call.id)
+            ordered.append((call, MISSING_TOOL_RESULT, False))
+            continue
+        ordered.append((call, payload, True))
+    return tuple(ordered)

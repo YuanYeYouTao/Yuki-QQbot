@@ -250,3 +250,202 @@ def test_request_tools_uses_the_same_bundle_rule() -> None:
         "calculate_price",
         "create_order",
     }
+
+
+def test_request_tools_evicts_non_bundle_mcp_to_fit_order_bundle() -> None:
+    cheap = [
+        _entry(
+            _descriptor(
+                name,
+                namespace="food.mcdonalds",
+                trust=CapabilityTrustSource.MCP,
+                provider_id="mcp.mcd",
+            )
+        )
+        for name in (
+            "auto_bind_coupons",
+            "available_coupons",
+            "list_nutrition_foods",
+            "mall_order_list",
+            "now_time_info",
+            "order_list",
+            "query_my_account",
+        )
+    ]
+    members = [
+        _entry(
+            _descriptor(
+                name,
+                namespace="food.mcdonalds.order",
+                trust=CapabilityTrustSource.MCP,
+                provider_id="mcp.mcd",
+                bundle="food.mcdonalds.order",
+            ),
+            tokens={"create_order": 2672, "calculate_price": 2430}.get(name, 80),
+        )
+        for name in (
+            "query_meals",
+            "query_meal_detail",
+            "calculate_price",
+            "create_order",
+            "query_order",
+            "query_nearby_stores",
+            "delivery_query_addresses",
+            "delivery_query_stores",
+            "query_my_coupons",
+        )
+    ]
+    planner = AuthorityFirstExposurePlanner(
+        mcp_tool_limit=16,
+        schema_token_budget=12000,
+        mcp_schema_token_budget=8000,
+    )
+    catalog = _catalog(*cheap, *members)
+    current = frozenset(entry.descriptor.model_name for entry in cheap)
+    plan = planner.plan_growth(
+        current_ids=current,
+        catalog=catalog,
+        requestable_ids=frozenset(entry.descriptor.model_name for entry in catalog.entries),
+        hits=(_hit("query_order", "food.mcdonalds.order"),),
+        limit=4,
+        memory_view=None,
+        kernel_tools=(request_tools_definition(),),
+    )
+    names = {entry.descriptor.model_name for entry in plan.entries}
+    assert "create_order" in names
+    assert "query_meals" in names
+    assert "query_order" in names
+    assert "available_coupons" not in names
+    assert "now_time_info" not in names
+    assert plan.reason == "request_tools"
+
+
+def test_initial_evicts_non_bundle_mcp_instead_of_dropping_order_bundle() -> None:
+    cheap = [
+        _entry(
+            _descriptor(
+                name,
+                namespace="food.mcdonalds",
+                trust=CapabilityTrustSource.MCP,
+                provider_id="mcp.mcd",
+            )
+        )
+        for name in (
+            "available_coupons",
+            "list_nutrition_foods",
+            "now_time_info",
+            "order_list",
+            "query_my_account",
+            "mall_order_list",
+            "auto_bind_coupons",
+        )
+    ]
+    members = [
+        _entry(
+            _descriptor(
+                name,
+                namespace="food.mcdonalds.order",
+                trust=CapabilityTrustSource.MCP,
+                provider_id="mcp.mcd",
+                bundle="food.mcdonalds.order",
+            )
+        )
+        for name in (
+            "query_meals",
+            "calculate_price",
+            "create_order",
+            "query_order",
+            "query_nearby_stores",
+            "delivery_query_addresses",
+            "delivery_query_stores",
+            "query_meal_detail",
+            "query_my_coupons",
+        )
+    ]
+    catalog = _catalog(*cheap, *members)
+    plan = _plan(
+        catalog,
+        (
+            *(_hit(entry.descriptor.model_name) for entry in cheap),
+            _hit("query_order", "food.mcdonalds.order"),
+        ),
+        mcp_tool_limit=16,
+    )
+    names = {entry.descriptor.model_name for entry in plan.entries}
+    assert "create_order" in names
+    assert "query_order" in names
+    assert "available_coupons" not in names
+    assert plan.reason == "ready"
+
+
+def test_selected_order_bundle_may_exceed_mcp_schema_budget() -> None:
+    members = [
+        _entry(
+            _descriptor(
+                name,
+                namespace="food.mcdonalds.order",
+                trust=CapabilityTrustSource.MCP,
+                provider_id="mcp.mcd",
+                bundle="food.mcdonalds.order",
+            ),
+            tokens=1000,
+        )
+        for name in (
+            "query_meals",
+            "calculate_price",
+            "create_order",
+            "query_order",
+            "query_nearby_stores",
+            "delivery_query_addresses",
+            "delivery_query_stores",
+            "query_meal_detail",
+            "query_my_coupons",
+        )
+    ]
+    catalog = _catalog(*members)
+    plan = _plan(
+        catalog,
+        (_hit("create_order", "food.mcdonalds.order"),),
+        mcp_tool_limit=16,
+        mcp_schema_token_budget=8000,
+        schema_token_budget=12000,
+    )
+    names = {entry.descriptor.model_name for entry in plan.entries}
+    assert "create_order" in names
+    assert "calculate_price" in names
+    assert plan.reason == "ready"
+
+
+def test_order_bundle_still_drops_when_global_schema_budget_is_exceeded() -> None:
+    members = [
+        _entry(
+            _descriptor(
+                name,
+                namespace="food.mcdonalds.order",
+                trust=CapabilityTrustSource.MCP,
+                provider_id="mcp.mcd",
+                bundle="food.mcdonalds.order",
+            ),
+            tokens=2000,
+        )
+        for name in (
+            "query_meals",
+            "calculate_price",
+            "create_order",
+            "query_order",
+            "query_nearby_stores",
+            "delivery_query_addresses",
+            "delivery_query_stores",
+            "query_meal_detail",
+            "query_my_coupons",
+        )
+    ]
+    plan = _plan(
+        _catalog(*members),
+        (_hit("create_order", "food.mcdonalds.order"),),
+        mcp_tool_limit=16,
+        mcp_schema_token_budget=8000,
+        schema_token_budget=12000,
+    )
+    assert plan.entries == ()
+    assert plan.reason.startswith(BUNDLE_EXCEEDS_BUDGET)

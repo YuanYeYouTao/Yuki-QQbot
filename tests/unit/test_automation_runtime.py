@@ -34,8 +34,9 @@ from qq_ai_bot.automation.registry import (
 )
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
-from qq_ai_bot.automation.tools import AutomationToolService
+from qq_ai_bot.automation.tools import _CREATE_DESCRIPTION, AutomationToolService
 from qq_ai_bot.automation.worker import AutomationWorker
+from qq_ai_bot.capabilities.catalog import estimate_chat_tool_tokens
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.persistence.models import AutomationStepRunModel, AutomationVersionModel
@@ -170,6 +171,69 @@ def test_create_tool_exposes_high_level_task_spec(database) -> None:
     assert "automation_list_history" in {
         item.name for item in AutomationToolService(service).definitions()
     }
+
+
+def test_create_tool_description_does_not_embed_capability_catalog(database) -> None:
+    from pydantic import BaseModel, ConfigDict
+
+    from qq_ai_bot.automation.authority import PermissionLevel
+    from qq_ai_bot.automation.models import RetryPolicy, RiskClass
+    from qq_ai_bot.automation.registry import AutomationCapability
+    from qq_ai_bot.capabilities.search_document import SEARCH_DOCUMENT_TEXT_MAX
+
+    class _Args(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+    registry = build_capability_registry()
+    scheduled = frozenset({TurnOrigin.SCHEDULED_AUTOMATION, TurnOrigin.SYSTEM_TASK})
+    fat_description = "MCP mcd：" + ("菜单价格与门店查询。" * 80)
+    for index in range(20):
+        registry.register(
+            AutomationCapability(
+                name=f"mcp.mcd.long_tool_{index}",
+                description=fat_description,
+                argument_model=_Args,
+                output_schema={"type": "object"},
+                required_permission=PermissionLevel.USER,
+                risk_class=RiskClass.READ,
+                retry_policy=RetryPolicy.NONE,
+                allowed_origins=scheduled,
+            )
+        )
+    service = AutomationService(
+        settings=make_settings(database.url, automation_enabled=True),
+        repository=AutomationRepository(database),
+        registry=registry,
+        time_service=TimeContextService(database),
+    )
+    tool = next(
+        item
+        for item in AutomationToolService(service).definitions()
+        if item.name == "automation_create"
+    )
+    task_schema = tool.parameters["properties"]["task"]
+    capabilities = task_schema["properties"]["capabilities"]["items"]
+    encoded = json.dumps(tool.parameters, ensure_ascii=False)
+    fat_ids = [registry.agent_tool_name(f"mcp.mcd.long_tool_{index}") for index in range(20)]
+    assert tool.description == _CREATE_DESCRIPTION
+    assert len(tool.description) <= SEARCH_DOCUMENT_TEXT_MAX
+    assert "可选 capability ID：" not in tool.description
+    assert "enum" not in tool.description
+    assert fat_description not in tool.description
+    assert fat_description not in encoded
+    assert "$defs" not in task_schema
+    assert "enum" not in capabilities
+    assert all(item_id not in tool.description for item_id in fat_ids)
+    assert all(item_id not in encoded for item_id in fat_ids)
+    assert estimate_chat_tool_tokens(tool) < 1000
+    update = next(
+        item
+        for item in AutomationToolService(service).definitions()
+        if item.name == "automation_update"
+    )
+    update_capabilities = update.parameters["properties"]["task"]["properties"]["capabilities"]
+    assert "enum" not in update_capabilities["items"]
+    assert estimate_chat_tool_tokens(update) < 1000
 
 
 @pytest.mark.asyncio

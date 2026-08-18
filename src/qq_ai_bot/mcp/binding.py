@@ -26,7 +26,7 @@ class MCPPolicyRuntime:
 
 
 def mcp_policy_context(context: ToolInvocationContext) -> CapabilityPolicyContext:
-    """Build the current Host policy context; Planner tool selection is not read."""
+    """Build the current Host policy context from origin, authority, and runtime gates."""
 
     runtime = context.runtime
     metadata = context.provider_metadata or {}

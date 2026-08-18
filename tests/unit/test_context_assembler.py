@@ -112,25 +112,22 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
     await harness.processor.handle(message, MemorySender())
 
     request = harness.provider.requests[0]  # type: ignore[attr-defined]
-    metadata_index = next(
-        index
-        for index, item in enumerate(request.messages)
-        if item.role == "system" and '"id":"context.people_and_scene"' in (item.content or "")
+    envelope = next(
+        item.content or ""
+        for item in request.messages
+        if '"id":"context.people_and_scene"' in (item.content or "")
     )
-    envelope = request.messages[metadata_index].content or ""
-    envelope_items = json.loads(envelope[envelope.index("[") :])
+    envelope_items, _ = json.JSONDecoder().raw_decode(envelope[envelope.index("[") :])
     context_item = next(item for item in envelope_items if item["id"] == "context.people_and_scene")
     payload = context_item["data"]
     payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     payload_items = {item["id"]: item["data"] for item in payload["items"]}
-    history_characters = sum(
-        len(item.content or "") for item in request.messages[metadata_index + 1 :]
-    )
+    history_characters = sum(len(item.content or "") for item in request.messages[1:-1])
 
     assert len(payload_text) <= settings.max_context_characters * 55 // 100
     assert len(payload_text) + history_characters <= settings.max_context_characters
     current_history = request.messages[-1].content or ""
-    assert current_history.startswith("[测试名片|QQ:1001]\n#")
+    assert "[测试名片|QQ:1001]\n#" in current_history
     assert current_history.endswith(">请根据已有信息简短回答")
     assert payload_items["current_person"]["user_id"] == "1001"
     assert len(payload_items["current_person"]["facts"]) < 30
@@ -169,9 +166,9 @@ async def test_context_exposes_event_bound_memory_subject_refs(database: Databas
     envelope = next(
         item.content or ""
         for item in request.messages
-        if item.role == "system" and '"id":"context.people_and_scene"' in (item.content or "")
+        if '"id":"context.people_and_scene"' in (item.content or "")
     )
-    envelope_items = json.loads(envelope[envelope.index("[") :])
+    envelope_items, _ = json.JSONDecoder().raw_decode(envelope[envelope.index("[") :])
     context_item = next(item for item in envelope_items if item["id"] == "context.people_and_scene")
     payload_items = {item["id"]: item["data"] for item in context_item["data"]["items"]}
     subjects = payload_items["available_memory_subjects"]
@@ -404,7 +401,7 @@ def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> Non
     assert [item.content for item in seeded.messages] == ["message-3", "message-4", "message-5"]
     assert seeded.anchor_event_id == 3
     assert seeded.event_ids == (3, 4, 5)
-    assert not seeded.rolled
+    assert not seeded.shifted
 
     appended = ContextAssembler._select_history_window(
         rendered(3, 6),
@@ -422,7 +419,7 @@ def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> Non
     ]
     assert appended.anchor_event_id == 3
     assert appended.event_ids == (3, 4, 5, 6)
-    assert not appended.rolled
+    assert not appended.shifted
 
     rolled = ContextAssembler._select_history_window(
         rendered(3, 8),
@@ -435,7 +432,7 @@ def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> Non
     assert [item.content for item in rolled.messages] == ["message-6", "message-7", "message-8"]
     assert rolled.anchor_event_id == 6
     assert rolled.event_ids == (6, 7, 8)
-    assert rolled.rolled
+    assert rolled.shifted
 
 
 def test_history_window_character_roll_keeps_a_contiguous_recent_block() -> None:
@@ -455,7 +452,7 @@ def test_history_window_character_roll_keeps_a_contiguous_recent_block() -> None
     assert [item.content for item in selection.messages] == ["4" * 30, "5" * 30]
     assert selection.anchor_event_id == 4
     assert selection.event_ids == (4, 5)
-    assert selection.rolled
+    assert selection.shifted
 
 
 @pytest.mark.asyncio

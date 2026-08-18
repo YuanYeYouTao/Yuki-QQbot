@@ -19,9 +19,9 @@
   第三方来源始终记录为 `third_party`，高权威冲突可以实际落为 `contest`，不会冒充本人。
 - 读取本轮提及群友时只开放当前群 `person_group`，不再投影对方跨群 `person` 事实。
 - 普通变更是版本化/状态化操作，不做物理删除；`forgetme` 仍沿用独立隐私删除路径。
-- 普通对话中的创建、纠正、撤回和恢复由 Planner 统一路由到 `mutation + mode=none`。该路径跳过
-  自动召回，首轮依据 capability metadata 只开放已授权的 `memory/write_state` 能力；不依赖
-  `memory_change` 工具名或自然语言关键词硬编码。
+- 普通对话中的创建、纠正、撤回和恢复由 Main Agent 调用 `memory_change`；Memory Runtime 只在
+  真实 `user_message` 轮开放写事务。该路径跳过自动召回，首轮依据 capability metadata 只开放
+  已授权的 `memory/write_state` 能力；不依赖自然语言关键词硬编码。
 - 修改轮次的最终正文由聊天后端根据真实工具回执渲染。未调用、歧义、未找到、noop 或 contest
   不得声称原请求已完成；`invalidate` 必须表述为撤回/失效且保留审计，不得表述为物理删除。
 - mutation 轮次只向主 Agent 暴露唯一写能力并追加有界执行契约；DeepSeek 的 wire payload
@@ -601,7 +601,7 @@ Yuki 调用 `reassign`。后端重新校验原事件中的可信主体引用；�
 - 在核心 Agent capability provider 注册 `memory_change`；
 - 普通用户轮次和允许的自主轮次均可见；
 - 图片、Web、MCP 等不可信外部内容参与当前轮时，可要求证据只能来自真实入站聊天事件；
-- Planner 只决定是否加载 memory write scope，不决定身份或数据库目标；
+- Memory Runtime 只决定是否开放 memory write namespace，不决定身份或数据库目标；
 - 工具结果必须报告实际 commit 状态，回复层不能把失败描述成成功。
 
 ### 12.2 Memory V2

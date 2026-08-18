@@ -144,6 +144,20 @@ class ChatEventModel(Base):
         Index("ix_chat_events_private_peer_time", "private_peer_user_id", "occurred_at"),
         Index("ix_chat_events_automation", "automation_id", "automation_run_id"),
         Index(
+            "ix_chat_events_bot_scope_private_id",
+            "bot_user_id",
+            "scope_type",
+            "private_peer_user_id",
+            "id",
+        ),
+        Index(
+            "ix_chat_events_bot_scope_group_id",
+            "bot_user_id",
+            "scope_type",
+            "group_id",
+            "id",
+        ),
+        Index(
             "uq_chat_events_external_event_target",
             "source_plugin_id",
             "external_event_key",

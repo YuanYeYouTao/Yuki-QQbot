@@ -85,7 +85,10 @@ def build_tools(
 
 
 def runtime(
-    message: InboundMessage | None = None, *, conversation: str = "private:1001"
+    message: InboundMessage | None = None,
+    *,
+    conversation: str = "private:1001",
+    native_web_fallback: bool = False,
 ) -> ToolRuntime:
     event = message or inbound()
     return ToolRuntime(
@@ -95,6 +98,7 @@ def runtime(
         conversation_key=conversation,
         trigger_message_id=event.message_id,
         source_display_requested=False,
+        native_web_fallback=native_web_fallback,
     )
 
 
@@ -299,3 +303,30 @@ async def test_run_limit_retention_cleanup_and_database_restart(tmp_path: Path) 
     assert await repository.cleanup_expired(retention_days=7) == 10
     assert not await repository.latest("private:1001")
     await reopened.close()
+
+
+def test_native_first_mode_catalogs_web_search_before_tavily_fallback(database: Database) -> None:
+    settings = make_settings(
+        database.url,
+        web_enabled=True,
+        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        tavily_api_key="test-placeholder",
+    )
+    sources = WebSearchSourceRepository(database)
+    tools = AgentToolService(
+        settings=settings,
+        ledger=EventLedgerRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
+        actions=AgentActionRepository(database),
+        web_provider=FakeWebSearchProvider(),
+        web_sources=sources,
+    )
+    names = {tool.name for tool in tools.definitions(runtime(native_web_fallback=False))}
+    assert {"web_search", "read_webpage"} <= names
+
+
+def test_disabled_web_mode_omits_web_tools_from_catalog(database: Database) -> None:
+    tools, _sources = build_tools(database, provider=FakeWebSearchProvider(), enabled=False)
+    names = {tool.name for tool in tools.definitions(runtime())}
+    assert "web_search" not in names
+    assert "read_webpage" not in names

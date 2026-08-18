@@ -76,6 +76,7 @@ class PromptMetrics(BaseModel):
     contribution_count: int
     message_count: int
     stable_prefix_hash: str
+    session_characters: int = 0
 
 
 class CompiledPrompt(BaseModel):

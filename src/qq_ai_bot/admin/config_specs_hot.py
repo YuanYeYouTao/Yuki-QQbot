@@ -68,7 +68,7 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "memory.automatic_recall_per_target_limit",
             "自动召回每目标上限",
-            "Planner 自动召回路径中每个合法目标最多保留的事实数。",
+            "Memory Runtime 自动召回路径中每个合法目标最多保留的事实数。",
             value_type="integer",
             minimum=1,
             maximum=20,
@@ -259,7 +259,7 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
                 (
                     "memory_intent_rerank_enabled",
                     "记忆意图重排",
-                    "是否应用 Planner 的结构化记忆意图进行软重排。",
+                    "是否应用 Memory Runtime 或 Agent 读工具给出的结构化记忆意图进行软重排。",
                 ),
                 (
                     "memory_activation_ranking_enabled",

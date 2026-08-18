@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
 from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMProvider
+from qq_ai_bot.prompting.serializer import strip_dynamic_prefix
 
 
 class FakeLLMProvider(LLMProvider):
@@ -27,7 +28,7 @@ class FakeLLMProvider(LLMProvider):
         user_messages = [
             message.content or "" for message in request.messages if message.role == "user"
         ]
-        content = user_messages[-1] if user_messages else ""
+        content = strip_dynamic_prefix(user_messages[-1] if user_messages else "")
         _, envelope_separator, event_line = content.partition("\n")
         if envelope_separator and event_line.startswith("#"):
             event_header, body_separator, body = event_line.partition(">")

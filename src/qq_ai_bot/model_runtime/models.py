@@ -25,6 +25,7 @@ class ModelTask(StrEnum):
     AUTOMATION_AGENT = "automation_agent"
     PLUGIN_AGENT_SESSION = "plugin_agent_session"
     UTILITY_STRUCTURED = "utility_structured"
+    CONVERSATION_COMPACTION = "conversation_compaction"
 
 
 class ModelExecutionPriority(StrEnum):

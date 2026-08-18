@@ -222,7 +222,7 @@ class AuthorityFirstExposurePlanner:
             selected_ids=selected_ids,
             catalog=catalog,
             requestable_ids=requestable_ids,
-            hard_cap=max(0, self._hard_cap - len(kernel_tools)),
+            hard_cap=self._bundle_hard_cap(kernel_tools, growth=False),
             schema_token_budget=self._schema_token_budget,
             mcp_schema_token_budget=self._mcp_schema_token_budget,
             mcp_tool_limit=self._mcp_tool_limit,
@@ -233,7 +233,7 @@ class AuthorityFirstExposurePlanner:
 
         selected = _clip_budget(
             selected,
-            hard_cap=max(0, self._hard_cap - len(kernel_tools)),
+            hard_cap=self._bundle_hard_cap(kernel_tools, growth=False),
             schema_token_budget=self._schema_token_budget,
             preserve_ids={
                 entry.descriptor.model_name for entry in selected if entry.descriptor.bundle_scopes
@@ -299,7 +299,7 @@ class AuthorityFirstExposurePlanner:
             selected_ids=seed_ids,
             catalog=catalog,
             requestable_ids=requestable_ids,
-            hard_cap=max(0, self._hard_cap - len(kernel_tools)),
+            hard_cap=self._bundle_hard_cap(kernel_tools, growth=True),
             schema_token_budget=self._schema_token_budget,
             mcp_schema_token_budget=self._mcp_schema_token_budget,
             mcp_tool_limit=self._mcp_tool_limit,
@@ -323,6 +323,12 @@ class AuthorityFirstExposurePlanner:
             omitted_count=max(0, len(hits) - loaded_count),
             reason=reason,
         )
+
+    def _bundle_hard_cap(self, kernel_tools: tuple[ChatTool, ...], *, growth: bool) -> int:
+        first_round = max(0, self._hard_cap - len(kernel_tools))
+        if not growth or self._mcp_tool_limit is None:
+            return first_round
+        return max(first_round, self._mcp_tool_limit)
 
 
 def _is_synthetic(entry: UnifiedToolCatalogEntry) -> bool:
@@ -366,13 +372,18 @@ def _expand_selected_bundles(
         ]
         if not members:
             continue
-        trial = [entry for entry in kept if scope not in entry.descriptor.bundle_scopes]
+        evicted = _evict_same_provider_non_bundle(kept, scope=scope, members=members)
+        trial = [entry for entry in evicted if scope not in entry.descriptor.bundle_scopes]
         trial.extend(members)
         if _exceeds_caps(
             trial,
             hard_cap=hard_cap,
             schema_token_budget=schema_token_budget,
-            mcp_schema_token_budget=mcp_schema_token_budget,
+            mcp_schema_token_budget=_bundle_mcp_schema_budget(
+                trial,
+                members,
+                mcp_schema_token_budget=mcp_schema_token_budget,
+            ),
             mcp_tool_limit=mcp_tool_limit,
         ):
             rejected.append(scope)
@@ -380,12 +391,50 @@ def _expand_selected_bundles(
                 kept = [entry for entry in kept if scope not in entry.descriptor.bundle_scopes]
                 kept_ids = {entry.descriptor.model_name for entry in kept}
             continue
-        for entry in members:
-            if entry.descriptor.model_name in kept_ids:
-                continue
-            kept.append(entry)
-            kept_ids.add(entry.descriptor.model_name)
+        kept = trial
+        kept_ids = {entry.descriptor.model_name for entry in kept}
     return kept, kept_ids, tuple(rejected)
+
+
+def _evict_same_provider_non_bundle(
+    kept: list[UnifiedToolCatalogEntry],
+    *,
+    scope: str,
+    members: list[UnifiedToolCatalogEntry],
+) -> list[UnifiedToolCatalogEntry]:
+    """Drop leftover lexical MCP hits from the same server so a selected bundle can fit."""
+
+    providers = {entry.descriptor.provider_id for entry in members if entry.descriptor.provider_id}
+    member_ids = {entry.descriptor.model_name for entry in members}
+    return [
+        entry
+        for entry in kept
+        if entry.descriptor.model_name in member_ids
+        or entry.descriptor.trust_source is not CapabilityTrustSource.MCP
+        or entry.descriptor.provider_id not in providers
+        or scope in entry.descriptor.bundle_scopes
+    ]
+
+
+def _bundle_mcp_schema_budget(
+    trial: list[UnifiedToolCatalogEntry],
+    members: list[UnifiedToolCatalogEntry],
+    *,
+    mcp_schema_token_budget: int | None,
+) -> int | None:
+    """Do not let the leftover-MCP budget refuse an already selected bundle."""
+
+    if mcp_schema_token_budget is None:
+        return None
+    member_ids = {entry.descriptor.model_name for entry in members}
+    mcp_ids = {
+        entry.descriptor.model_name
+        for entry in trial
+        if entry.descriptor.trust_source is CapabilityTrustSource.MCP
+    }
+    if mcp_ids and mcp_ids <= member_ids:
+        return None
+    return mcp_schema_token_budget
 
 
 def _exceeds_caps(

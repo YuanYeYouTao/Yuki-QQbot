@@ -21,7 +21,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.delivery import ReplyControlState, ReplySequenceSpec
 from qq_ai_bot.conversation.reply import ReplyEffect
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
 from qq_ai_bot.emoji.models import (
     EmojiPlacement,
@@ -296,6 +296,22 @@ class AgentToolService:
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                     },
                     required=("keyword",),
+                ),
+            ),
+            ChatTool(
+                name="get_chat_history_around",
+                description=(
+                    "读取当前会话账本中某条消息前后的原文。"
+                    "用 event_id 或 platform_message_id 定位，不调用 NapCat。"
+                    "默认半径很小；需要对齐摘要覆盖区间里的原话时使用。"
+                ),
+                parameters=_object_schema(
+                    {
+                        "event_id": {"type": "integer", "minimum": 1},
+                        "platform_message_id": {"type": "string"},
+                        "before": {"type": "integer", "minimum": 0},
+                        "after": {"type": "integer", "minimum": 0},
+                    }
                 ),
             ),
             ChatTool(
@@ -613,17 +629,7 @@ class AgentToolService:
                     ),
                 )
             )
-        if (
-            (
-                self._settings.web.mode is WebMode.TAVILY
-                or (
-                    self._settings.web.mode is WebMode.NATIVE_WITH_TAVILY_FALLBACK
-                    and runtime.native_web_fallback
-                )
-            )
-            and self._web_provider is not None
-            and self._web_sources is not None
-        ):
+        if self._web_catalog_enabled():
             tools.extend(
                 (
                     ChatTool(
@@ -855,6 +861,8 @@ class AgentToolService:
                     return await self._recent_history(runtime)
                 if name == "search_chat_history":
                     return await self._search(arguments, runtime)
+                if name == "get_chat_history_around":
+                    return await self._history_around(arguments, runtime)
                 if name == "get_relationship":
                     return await self._relationship(arguments, runtime)
                 if name == "get_person_memories":
@@ -1375,6 +1383,69 @@ class AgentToolService:
             limit=self._bounded_int(arguments.get("limit"), default=20, maximum=100),
         )
         return self._result(data={"events": [self._event_json(row) for row in rows]})
+
+    async def _history_around(
+        self,
+        arguments: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
+        event_id = arguments.get("event_id")
+        platform_message_id = self._optional_string(arguments.get("platform_message_id"))
+        if event_id is not None and (isinstance(event_id, bool) or not isinstance(event_id, int)):
+            return self._result(error="invalid_event_id", detail="event_id 必须是正整数")
+        if event_id is None and not platform_message_id:
+            return self._result(
+                error="missing_target",
+                detail="必须提供 event_id 或 platform_message_id",
+            )
+        inbound = runtime.inbound
+        identity = (
+            ConversationIdentity.group(inbound.group_id, inbound.sender.user_id)
+            if inbound.scope_type is ScopeType.GROUP and inbound.group_id is not None
+            else ConversationIdentity.private(inbound.sender.user_id)
+        )
+        reset = await self._ledger.context_reset(identity)
+        max_before = self._settings.conversation_history_around_before
+        max_after = self._settings.conversation_history_around_after
+        total_limit = self._settings.conversation_history_around_limit
+        try:
+            before = self._optional_bounded_int(
+                arguments.get("before"), default=max_before, maximum=max_before
+            )
+            after = self._optional_bounded_int(
+                arguments.get("after"), default=max_after, maximum=max_after
+            )
+        except ValueError:
+            return self._result(error="invalid_radius", detail="before/after 必须是整数")
+        if before + after + 1 > total_limit:
+            extra = before + after + 1 - total_limit
+            reduce_before = min(before, extra)
+            before -= reduce_before
+            extra -= reduce_before
+            after = max(0, after - extra)
+        center, earlier, later = await self._ledger.list_around(
+            bot_user_id=inbound.bot_user_id,
+            scope_type=inbound.scope_type,
+            user_id=inbound.sender.user_id,
+            group_id=inbound.group_id,
+            event_id=event_id,
+            platform_message_id=platform_message_id,
+            before=before,
+            after=after,
+            since=reset,
+        )
+        if center is None:
+            return self._result(error="not_found", detail="当前会话找不到这条消息")
+        events = (*earlier, center, *later)
+        return self._result(
+            data={
+                "source": "ledger",
+                "center_event_id": center.id,
+                "before": len(earlier),
+                "after": len(later),
+                "events": [self._event_json(row) for row in events],
+            }
+        )
 
     async def _person_memories(
         self,
@@ -2403,6 +2474,22 @@ class AgentToolService:
         await self._persist_web_response(response, runtime, sources)
         return self._web_result(data=self._web_response_json(response))
 
+    def _web_catalog_enabled(self) -> bool:
+        """Put web tools in the requestable catalog without choosing a provider.
+
+        Native-first used to omit these until Tavily fallback, so
+        ``request_tools`` returned ``capability_not_found`` and the native
+        binder never saw ``web_search``. Catalog membership is not first-round
+        exposure; ``WebProviderRouter`` still selects native vs Tavily.
+        """
+
+        mode = self._settings.web.mode
+        if mode is WebMode.DISABLED:
+            return False
+        if self._web_provider is not None and self._web_sources is not None:
+            return True
+        return mode in {WebMode.NATIVE, WebMode.NATIVE_WITH_TAVILY_FALLBACK}
+
     def _web_dependencies(
         self,
     ) -> tuple[WebSearchProvider, WebSearchSourceRepository]:
@@ -2563,6 +2650,14 @@ class AgentToolService:
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError("limit must be an integer")
         return max(1, min(int(value), maximum))
+
+    @staticmethod
+    def _optional_bounded_int(value: Any, *, default: int, maximum: int) -> int:
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("count must be an integer")
+        return max(0, min(int(value), maximum))
 
     def _event_json(self, row: Any) -> dict[str, Any]:
         display_name = row.sender_display_name

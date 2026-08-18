@@ -2,7 +2,7 @@
 
 The capability runtime never reads memory-internal state; it consumes the
 pure ``MemoryCapabilityView`` built here.  Namespace ids follow the R3
-migration table (R2 §8's ``memory.history.read`` is shorthand for the two
+migration table (R2 §8's ``memory.history.read`` is shorthand for the
 history namespaces below).
 """
 
@@ -20,6 +20,7 @@ from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 MEMORY_READ_NAMESPACES: tuple[str, ...] = (
     "memory.history.recent",
     "memory.history.search",
+    "memory.history.around",
     "memory.person.read",
     "memory.self.read",
     "memory.group.read",

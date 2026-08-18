@@ -46,6 +46,7 @@ from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.cadence import ReplyEffectRepository
 from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
+from qq_ai_bot.conversation.history.repository import ConversationHistoryRepository
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
@@ -112,7 +113,7 @@ from qq_ai_bot.services.agent_runner import (
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.services.context_assembler import ContextAssembler
+from qq_ai_bot.services.context_assembler import ContextAssembler, ConversationHistoryCoverage
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     publish_notification,
@@ -365,6 +366,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._mutation_committed = False
         self._automation_persisted = False
         self._batch: list[ToolCall] = []
+        self._batch_lock = asyncio.Lock()
         self._catalog: UnifiedToolCatalog | None = None
         self._requestable_catalog: UnifiedToolCatalog | None = None
         self._provider_registry: ToolProviderRegistry | None = None
@@ -604,7 +606,13 @@ class _ChatAgentBackend(AgentToolBackend):
         if self._native_web_fallback or (
             web_route is not None and web_route.provider is WebProvider.TAVILY
         ):
+            # Tavily was chosen or native already fell back: the function
+            # search/read pair is the Tavily path. Default native must not pin
+            # search, or idle turns would carry web schemas every round.
             names.extend(("web_search", "read_webpage"))
+        elif web_route is not None and web_route.target_urls:
+            # A public URL in the message is a page to read, not a search.
+            names.append("read_webpage")
         if self._runtime.origin is TurnOrigin.AUTONOMOUS_GROUP:
             names.append("decline_reply")
         return tuple(dict.fromkeys(names))
@@ -689,23 +697,24 @@ class _ChatAgentBackend(AgentToolBackend):
                 },
                 ensure_ascii=False,
             )
-        if not self._batch:
-            return json.dumps(
-                {"ok": False, "error": "tool_batch_state_missing"}, ensure_ascii=False
+        async with self._batch_lock:
+            if not self._batch:
+                return json.dumps(
+                    {"ok": False, "error": "tool_batch_state_missing"}, ensure_ascii=False
+                )
+            call_index = next(
+                (
+                    index
+                    for index, item in enumerate(self._batch)
+                    if item.function.name == name and item.function.arguments == arguments_json
+                ),
+                None,
             )
-        call_index = next(
-            (
-                index
-                for index, item in enumerate(self._batch)
-                if item.function.name == name and item.function.arguments == arguments_json
-            ),
-            None,
-        )
-        if call_index is None:
-            return json.dumps(
-                {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
-            )
-        call = self._batch.pop(call_index)
+            if call_index is None:
+                return json.dumps(
+                    {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
+                )
+            call = self._batch.pop(call_index)
         if name == _SET_REPLY_TARGET_NAME:
             return self._set_reply_target(arguments_json)
         if self._tools_closed:
@@ -1388,6 +1397,8 @@ class ChatService:
         event_publisher: LifecycleEventPublisher | None = None,
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_invocations: ToolInvocationRecorder | None = None,
+        history_repository: ConversationHistoryRepository | None = None,
+        history_coverage: ConversationHistoryCoverage | None = None,
     ) -> None:
         self._settings = settings
         models = require_model_executor(
@@ -1441,6 +1452,8 @@ class ChatService:
             memory_context=memory_context,
             relationships=self._relationships,
             time_service=self._time,
+            history_repository=history_repository,
+            history_coverage=history_coverage,
         )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
         self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(

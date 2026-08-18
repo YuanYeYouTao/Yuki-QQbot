@@ -1,4 +1,4 @@
-"""Resolve Planner voice intent into the existing outbound media pipeline."""
+"""Resolve voice reply-effect intent into the existing outbound media pipeline."""
 
 from __future__ import annotations
 

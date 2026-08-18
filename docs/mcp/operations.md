@@ -1,8 +1,8 @@
 # MCP 运维
 
 普通用户可查看：`/ai mcp list`、`show`、`status`、`tools` 和 `search`。SUPERUSERS 可执行
-`refresh`、`reconnect`、`enable`、`disable`、`doctor` 和确定性 `call`。诊断调用绕过 Planner，
-但仍经过同一 Manager、结果归一化和结果预算。
+`refresh`、`reconnect`、`enable`、`disable`、`doctor` 和确定性 `call`。诊断调用绕过
+Capability Search 的自然语言检索，但仍经过同一 Manager、结果归一化和结果预算。
 
 `/healthz` 公开启用状态、配置/连接 Server 数、缓存工具数和活动调用数，不连接 lazy Server。
 `/ai status` 还显示最近调用时间和最近错误类别。调用指标位于 `tool_invocations`，不保存参数、结果或

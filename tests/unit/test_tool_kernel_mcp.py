@@ -18,6 +18,7 @@ from qq_ai_bot.capabilities import (
     CapabilityDescriptor,
     CapabilityEffect,
     CapabilityExposure,
+    CapabilityIdempotency,
     CapabilityRisk,
     CapabilityTrustSource,
     ChatToolCapabilityProvider,
@@ -85,6 +86,38 @@ def test_schema_token_estimate_includes_function_envelope() -> None:
     assert estimate_chat_tool_tokens(short) > len(json.dumps(short.parameters)) // 4
 
 
+def test_as_chat_tool_declares_compact_description() -> None:
+    long_description = "远端完整菜单与下单字段说明。" * 40
+    compact = "查询或创建一笔订单。"
+    descriptor = CapabilityDescriptor(
+        canonical_name="mcp.order.create",
+        model_name="create_order",
+        group="mcp",
+        namespace="mcp.order",
+        description=long_description,
+        compact_description=compact,
+        input_schema={"type": "object", "properties": {"sku": {"type": "string"}}},
+        output_schema={"type": "object"},
+        effect=CapabilityEffect.WRITE_STATE,
+        risk=CapabilityRisk.MUTATE,
+        trust_source=CapabilityTrustSource.MCP,
+        allowed_origins=frozenset(TurnOrigin),
+        required_permissions=frozenset(),
+        uses_external_data=True,
+        cancellable=True,
+        idempotency=CapabilityIdempotency.CONDITIONAL,
+    )
+    declared = descriptor.as_chat_tool()
+    overridden = descriptor.as_chat_tool(description=long_description)
+    fallback = replace(descriptor, compact_description="").as_chat_tool()
+
+    assert declared.description == compact
+    assert long_description not in declared.description
+    assert overridden.description == long_description
+    assert fallback.description == long_description
+    assert estimate_chat_tool_tokens(declared) < estimate_chat_tool_tokens(overridden)
+
+
 def test_conditional_mutation_result_preserves_explicit_commit_state() -> None:
     lookup_only = normalize_legacy_result(
         {"ok": True, "data": {"status": "selection_required"}, "mutation_committed": False},
@@ -150,6 +183,39 @@ class _StaticProvider:
 
     async def close(self) -> None:
         return None
+
+
+def test_catalog_schema_token_estimate_uses_compact_envelope() -> None:
+    long_description = "完整远端工具说明，不应进入声明信封。" * 30
+    compact = "短说明。"
+    descriptor = CapabilityDescriptor(
+        canonical_name="mcp.order.create",
+        model_name="create_order",
+        group="mcp",
+        namespace="mcp.order",
+        description=long_description,
+        compact_description=compact,
+        input_schema={"type": "object", "properties": {}},
+        output_schema={"type": "object"},
+        effect=CapabilityEffect.WRITE_STATE,
+        risk=CapabilityRisk.MUTATE,
+        trust_source=CapabilityTrustSource.MCP,
+        allowed_origins=frozenset(TurnOrigin),
+        required_permissions=frozenset(),
+        uses_external_data=True,
+        cancellable=True,
+        idempotency=CapabilityIdempotency.CONDITIONAL,
+        provider_id="mcp.order",
+        provider_tool_name="create-order",
+    )
+    registry = ToolProviderRegistry()
+    registry.register(_StaticProvider("mcp.order", (descriptor,)))
+    entry = registry.catalog(object()).by_model_name("create_order")
+    assert entry is not None
+    assert entry.estimated_schema_tokens == estimate_chat_tool_tokens(descriptor.as_chat_tool())
+    assert entry.estimated_schema_tokens < estimate_chat_tool_tokens(
+        descriptor.as_chat_tool(description=long_description)
+    )
 
 
 @pytest.mark.asyncio
@@ -286,6 +352,24 @@ async def test_coordinator_keeps_response_controls_outside_business_call_budget(
     assert backend.completed == ["set_reply_target"]
     assert [ran for _call, _payload, ran in result.calls] == [False, True]
     assert "tool_limit_exceeded" in result.calls[0][1]
+
+
+def test_coordinator_missing_call_id_returns_error_payload() -> None:
+    from qq_ai_bot.capabilities.coordinator import TOOL_RESULT_MISSING, _attach_batch_results
+
+    calls = (
+        ToolCall(id="call_01_kept", function=ToolFunction(name="a", arguments="{}")),
+        ToolCall(id="call_01_missing", function=ToolFunction(name="b", arguments="{}")),
+    )
+    ordered = _attach_batch_results(
+        calls,
+        results={"call_01_kept": '{"ok":true}'},
+        overflow_ids=set(),
+        limited='{"ok":false,"error":"tool_limit_exceeded"}',
+    )
+    assert ordered[0][2] is True
+    assert json.loads(ordered[1][1])["error"] == TOOL_RESULT_MISSING
+    assert ordered[1][2] is False
 
 
 @pytest.mark.asyncio

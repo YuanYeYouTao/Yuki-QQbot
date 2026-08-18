@@ -49,6 +49,7 @@ _FLASH_TASKS = frozenset(
         ModelTask.EMOJI_REPLACEMENT,
         ModelTask.AUTOMATION_TEXT_GENERATION,
         ModelTask.UTILITY_STRUCTURED,
+        ModelTask.CONVERSATION_COMPACTION,
     }
 )
 

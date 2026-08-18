@@ -159,10 +159,10 @@ class EmojiIntent(StrEnum):
 
 
 class EmojiReplyPlan(_FrozenModel):
-    """Planner-owned behavioural intent; it never contains an asset identifier."""
+    """Reply-effect behavioural intent; it never contains an asset identifier."""
 
-    # Planner emits JSON strings for enum values. Other persisted/runtime emoji
-    # models remain strict; only this LLM boundary model accepts JSON enums.
+    # The LLM boundary model accepts JSON enum strings. Other persisted/runtime
+    # emoji models remain strict.
     model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
 
     intent: EmojiIntent = Field(
@@ -190,7 +190,7 @@ class EmojiReplyPlan(_FrozenModel):
 
 
 class PendingReplyEffect(_FrozenModel):
-    """A queued user-visible effect created by Planner or the Agent tool."""
+    """A queued user-visible effect created by the Agent tool, plugin, or automation."""
 
     kind: Literal["emoji"] = "emoji"
     mode: EmojiReplyMode
