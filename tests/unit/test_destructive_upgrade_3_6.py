@@ -130,7 +130,7 @@ def _seed_0036_shaped_db(path: Path) -> None:
         connection.commit()
 
 
-def test_constructed_3_5_3_deployment_upgrades_to_0040_without_losing_memory(
+def test_constructed_3_5_3_deployment_upgrades_to_0041_without_losing_memory(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "deploy"
@@ -178,7 +178,7 @@ def test_constructed_3_5_3_deployment_upgrades_to_0040_without_losing_memory(
 
     _migrate(db, "head")
     with sqlite3.connect(db) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0040",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0041",)
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -186,6 +186,10 @@ def test_constructed_3_5_3_deployment_upgrades_to_0040_without_losing_memory(
         assert "planner_runs" not in tables
         assert "runtime_turn_observations" in tables
         assert "reply_effect_events" in tables
+        assert "conversation_history_states" in tables
+        assert "conversation_history_summaries" in tables
+        assert "conversation_history_summary_members" in tables
+        assert "conversation_history_rollup_jobs" in tables
         assert connection.execute("SELECT content FROM memory_facts").fetchone() == (_SECRET_FACT,)
         assert connection.execute("SELECT COUNT(*) FROM memory_facts").fetchone() == (1,)
         assert connection.execute("SELECT task FROM model_invocations").fetchone() == ("planner",)

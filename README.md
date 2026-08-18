@@ -9,7 +9,7 @@
 <p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.6.0"><img src="https://img.shields.io/badge/Version-3.6.0-orange" alt="Version 3.6.0"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.6.1"><img src="https://img.shields.io/badge/Version-3.6.1-orange" alt="Version 3.6.1"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2 and OneBot v11">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -83,7 +83,7 @@ Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份�
 
 - QQ 事件先标准化、准入、去重并写入事件账本，再进入对话编排。
 - 管理命令和静态插件绑定可走确定性入口；普通聊天在本地 Runtime 准备后只进入 Main Agent。
-- Conversation Runtime 只做准入与自主群评分，不能直接发送消息、修改数据或授予身份权限。
+- Conversation Runtime 负责准入、自主群评分与 History Rollup，不能直接发送消息、修改数据或授予身份权限。
 - 主 Agent 只能看到本轮被授权的工具；数据库、OneBot、插件和外部服务都由后端执行。
 - 只有 NapCat 返回真实发送回执后，系统才把回复视为已投递，并启动相应后台工作。
 
@@ -91,7 +91,7 @@ Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份�
 
 | 模块 | 当前能力 |
 | --- | --- |
-| 对话编排 | 私聊、群聊、回复与 @ 元数据、多轮历史、Conversation Runtime 准入与自主群评分 |
+| 对话编排 | 私聊、群聊、回复与 @ 元数据、多轮历史、Conversation Runtime 准入、自主群评分与 History Rollup |
 | Main Agent | OpenAI-compatible Chat Completions / Responses、思考模型、有界工具循环、输出清理与分段发送 |
 | Memory V2 | 身份隔离、自动提炼、混合召回、结构化意图重排、自然衰减、使用强化、冲突与版本链 |
 | Tool Kernel | Core、Admin、Automation、Plugin、MCP、Web 能力统一注册、筛选、授权、预算和审计 |
@@ -361,12 +361,14 @@ release check。更多细节见 [Memory V2 架构](docs/architecture/memory-v2.m
 
 ## Agent 与工具系统
 
-Conversation Runtime 负责准入与自主群评分；Capability Runtime 用本地 FTS 决定首批工具；
-Main Agent 负责回答和实际工具调用。工具内核再按 origin、namespace、effect、risk、创建者身份、当前
-群权限和轮次预算做最终治理。
+Conversation Runtime 负责准入与自主群评分，并把会话历史编译成 SESSION 摘要前沿加未覆盖近窗原文；
+Capability Runtime 用本地 FTS 决定首批工具；Main Agent 负责回答和实际工具调用。工具内核再按
+origin、namespace、effect、risk、创建者身份、当前群权限和轮次预算做最终治理。
 
 ```text
 [Conversation Runtime]
+      |
+      +-- History Rollup (SESSION frontier + uncovered raw tail)
       |
       v
 [Memory Runtime]
@@ -430,7 +432,7 @@ MCP Client 支持 stdio 和 Streamable HTTP，包含动态发现、元数据缓�
 
 ### 1. 运行引导安装器
 
-从 [Yuki 3.6.0 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.6.0)
+从 [Yuki 3.6.1 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.6.1)
 下载对应安装器。它会校验部署包、拉取正式镜像，并在一次性容器中启动彩色向导；宿主机不需要
 Python、uv 或源码。
 
@@ -640,6 +642,10 @@ GitHub Actions 还会验证 Docker Compose、运行时镜像、隔离的 Genie-T
 ## 文档
 
 - [完整使用帮助](docs/help.md)
+- [3.6.1 发布与升级说明](docs/releases/v3.6.1.md)
+- [从 3.6.0 升级到 3.6.1](docs/upgrade-3.6.1.md)
+- [会话历史 Rollup 合同](docs/architecture/conversation-rollup.md)
+- [3.6.1 History Rollup 性能报告](docs/performance/3.6.1-history-rollup-report.md)
 - [3.6.0 运行时架构](docs/architecture/yuki-3.6.0-runtime.md)
 - [3.6.0 发布与升级说明](docs/releases/v3.6.0.md)
 - [从 3.5.3 升级到 3.6.0](docs/upgrade-3.6.0.md)

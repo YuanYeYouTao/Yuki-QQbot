@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,14 +20,6 @@ class TerminalToolOutcome(_SourceModel):
     outcome: str
     durable_effect: str
     public_result: str
-
-
-class TerminalToolOutcomeSource(Protocol):
-    """Future adapter over Agent Action / tool receipts. Unused until those fields are audited."""
-
-    def terminal_outcomes_for_range(
-        self, start_event_id: int, end_event_id: int
-    ) -> tuple[TerminalToolOutcome, ...]: ...
 
 
 class SourceEventProjection(_SourceModel):

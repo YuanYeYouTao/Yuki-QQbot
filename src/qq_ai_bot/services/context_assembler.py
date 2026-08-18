@@ -103,7 +103,7 @@ class _HistoryWindowSelection:
 
     messages: tuple[ChatMessage, ...]
     anchor_event_id: int | None
-    rolled: bool
+    shifted: bool
     event_ids: tuple[int, ...] = ()
 
 
@@ -1235,7 +1235,7 @@ class ContextAssembler:
             history_messages=selection.messages,
             current_message=current_message,
             history_anchor_event_id=selection.anchor_event_id,
-            raw_history_window_shifted=selection.rolled,
+            raw_history_window_shifted=selection.shifted,
             visible_event_ids=frozenset(
                 (*selection.event_ids, *((current_row.id,) if current_row is not None else ()))
             ),
@@ -1270,7 +1270,7 @@ class ContextAssembler:
             return _HistoryWindowSelection(
                 messages=tuple(item for _, _, item in candidate),
                 anchor_event_id=(candidate[0][0] if candidate else fallback_anchor_event_id),
-                rolled=False,
+                shifted=False,
                 event_ids=tuple(
                     event_id for _, event_ids, _ in candidate for event_id in event_ids
                 ),
@@ -1279,7 +1279,7 @@ class ContextAssembler:
             return _HistoryWindowSelection(
                 messages=tuple(item for _, _, item in candidate),
                 anchor_event_id=(candidate[0][0] if candidate else fallback_anchor_event_id),
-                rolled=False,
+                shifted=False,
                 event_ids=tuple(
                     event_id for _, event_ids, _ in candidate for event_id in event_ids
                 ),
@@ -1289,7 +1289,7 @@ class ContextAssembler:
             return _HistoryWindowSelection(
                 messages=(),
                 anchor_event_id=fallback_anchor_event_id,
-                rolled=anchor_event_id is not None,
+                shifted=anchor_event_id is not None,
             )
 
         low_event_limit = max(1, int(high_event_limit * low_watermark_ratio))
@@ -1310,7 +1310,7 @@ class ContextAssembler:
         return _HistoryWindowSelection(
             messages=tuple(item for _, _, item in selected),
             anchor_event_id=(selected[0][0] if selected else fallback_anchor_event_id),
-            rolled=anchor_event_id is not None,
+            shifted=anchor_event_id is not None,
             event_ids=tuple(event_id for _, event_ids, _ in selected for event_id in event_ids),
         )
 
@@ -1384,6 +1384,6 @@ class ContextAssembler:
             history_messages=selection.messages,
             current_message=ChatMessage(role="system", content=trigger),
             history_anchor_event_id=selection.anchor_event_id,
-            raw_history_window_shifted=selection.rolled,
+            raw_history_window_shifted=selection.shifted,
             visible_event_ids=frozenset((*selection.event_ids, current_event.id)),
         )

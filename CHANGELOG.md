@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 3.6.1 - 2026-08-19
+
+### Conversation History Rollup
+
+- 长会话在有 extractive / active 覆盖后缩短原文近窗，把较早历史编译成第二条 SESSION system。
+  `chat_events` 仍是唯一原文；摘要不进入 Memory V2。
+- 切窗当下只写零 LLM 的 extractive；后台 `ModelTask.CONVERSATION_COMPACTION`（默认 Flash）把同一
+  `source_fingerprint` 升级为结构化摘要。没有覆盖时禁止切窗。
+- `PromptCompiler.compile` 为三路：STATIC → SESSION → history → current+TURN。SESSION 先占
+  历史字符余额，再选近窗。static 前缀不含 rollup。
+- 新增 `get_chat_history_around`；缩短近窗后可按 `#event_id` 回读被覆盖原文。
+- Alembic `0041` 增加四张 `conversation_history_*` 表，不改写原始事件与 Memory V2。
+- 运维命令：`qq-ai-bot-cli history-rollup status|inspect|rebuild|invalidate|reconcile`。
+  默认脱敏，不含正文。
+
+### 升级与观测
+
+- 从 3.6.0 升级见 [3.6.1 升级指南](docs/upgrade-3.6.1.md) 与
+  [发布说明](docs/releases/v3.6.1.md)。
+- 本地测量见 [3.6.1 History Rollup 性能报告](docs/performance/3.6.1-history-rollup-report.md)。
+  真实 Provider 的 `prompt_tokens - cached_tokens` 与 Flash 事实召回尚未测量，不外推。
+
 ## 3.6.0 - 2026-08-18
 
 ### Conversation / Memory / Capability Runtime
