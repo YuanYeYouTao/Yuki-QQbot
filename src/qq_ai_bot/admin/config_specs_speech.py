@@ -94,7 +94,7 @@ def speech_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "speech.spontaneous_frequency",
             "日常自主语音频率",
-            "Planner 在用户未主动询问语音时选择语音的目标频率，范围 0..1。",
+            "用户未主动询问语音时，Conversation Runtime 允许主动语音的目标频率，范围 0..1。",
             aliases=("主动语音频率", "语音频率"),
             value_type="number",
             minimum=0,

@@ -1,4 +1,4 @@
-"""Apply Planner-authorized persistent voice preferences."""
+"""Apply persistent voice preferences written by set_voice_preference."""
 
 from __future__ import annotations
 

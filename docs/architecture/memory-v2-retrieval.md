@@ -8,7 +8,7 @@ Core 记忆工具、聊天上下文、管理员 search 和 Plugin API v1 `Memory
 
 `relevant` 模式的顺序固定为：
 
-1. `MemoryQueryBuilder` 规范化当前文字、有界回复摘录和 Planner intent。
+1. `MemoryQueryBuilder` 规范化当前文字、有界回复摘录和 Memory Runtime / Agent 读工具给出的结构化 intent。
 2. `MemoryTargetResolver` 从真实当前事件生成相互独立的人物/群目标。
 3. 查询非空且语义开关开启时，生成一次 query embedding。
 4. 每个目标分别执行 FTS/短词 LIKE 和当前 profile 的目标内语义搜索。

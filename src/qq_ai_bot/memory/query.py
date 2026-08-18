@@ -31,7 +31,7 @@ def normalize_query_text(value: str, *, maximum: int = 1200) -> str:
 
 
 class MemoryQueryBuilder:
-    """Build a strict query from current-event text and structured Planner intent."""
+    """Build a strict query from current-event text and structured memory intent."""
 
     def __init__(self, targets: MemoryTargetResolver) -> None:
         self._targets = targets
@@ -116,8 +116,8 @@ class MemoryQueryBuilder:
     ) -> MemoryQuery:
         """Build a query inside pre-resolved targets.
 
-        Calls without Planner intent are management/plugin reads and retain the
-        legacy neutral ordering.
+        Calls without structured intent are management/plugin reads and retain
+        the legacy neutral ordering.
         """
 
         memory = runtime.memory
@@ -132,8 +132,8 @@ class MemoryQueryBuilder:
                 normalized_text=normalize_query_text(text),
                 mode=mode,
                 targets=targets,
-                # Planner kind preferences are soft rerank signals, never a
-                # candidate filter that could hide otherwise exact memories.
+                # Kind preferences are soft rerank signals, never a candidate
+                # filter that could hide otherwise exact memories.
                 kinds=(),
                 candidate_limit=memory.lexical_candidate_limit,
                 limit_per_target=limit if limit is not None else default_limit,

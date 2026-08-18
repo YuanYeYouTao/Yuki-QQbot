@@ -26,7 +26,7 @@ class VoiceMode(StrEnum):
 
 
 class VoiceIntent(StrEnum):
-    """Semantic voice intent selected only by Planner."""
+    """Semantic voice intent for a reply-effect turn."""
 
     NEUTRAL = "neutral"
     EXPLICIT_REQUEST = "explicit_request"
@@ -199,9 +199,10 @@ class SpeechGeneration(_FrozenModel):
 
 
 class VoicePreferenceChange(_FrozenModel):
-    # This model is parsed from JSON emitted by Planner, where enum members are
-    # necessarily represented by strings. Keep extra/frozen guarantees without
-    # inheriting the internal Python-only strict enum requirement.
+    # This model is parsed from JSON emitted by the Agent tool, where enum
+    # members are necessarily represented by strings. Keep extra/frozen
+    # guarantees without inheriting the internal Python-only strict enum
+    # requirement.
     model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
 
     mode: VoicePreferenceMode

@@ -22,14 +22,14 @@ Binding 路径，不存在按品牌编写的执行分支。
 目录后，桥接层会原子替换该 Server 的动态定义；Schema 改变时旧快照不再匹配，禁用 Server 或
 删除允许项时定义会消失。两种情况都会由既有执行器阻止旧任务，而不是把新能力自动补授给它。
 
-普通聊天没有选择 MCP scope 时不注入 MCP Schema，也不会为了健康检查连接 lazy Server。
+普通聊天没有命中 MCP 工具时不注入 MCP Schema，也不会为了健康检查连接 lazy Server。
 
 Gateway 不拥有目标工具的风险。`call` 必须经过 `resolve_tool` 取得当前已启用、已发现并通过
 include/exclude 的元数据，再用目标 Descriptor 进入现有 `CapabilityPolicyEngine` 和
 `MCPToolBinding`；只读模式、图片/联网限制、scope 与本轮选择都按目标工具检查。search 不执行，
 describe 只返回定义。
 
-`yuki.toolBundles` 可把一个 Server 的多项工具声明为不可拆分的 Planner scope，一个工具也可
+`yuki.toolBundles` 可把一个 Server 的多项工具声明为不可拆分的 semantic namespace，一个工具也可
 加入多个 Bundle。Bundle 只解决目录选择完整性，不定义步骤顺序或条件，因此没有额外 Workflow
 DSL。远端 `destructiveHint` 映射为破坏性风险，`openWorldHint` 保留在 Provider 元数据中，但
 两者都不能取代本地策略。

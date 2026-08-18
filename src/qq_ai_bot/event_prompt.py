@@ -18,7 +18,7 @@ _MEDIA_DESCRIPTION = re.compile(r"\[(?:表情|语音)：[\s\S]*\]")
 
 
 class ChatEventPromptRenderer:
-    """Render one canonical prompt envelope for both Planner and main Agent."""
+    """Render one canonical prompt envelope for the main Agent."""
 
     def __init__(
         self,

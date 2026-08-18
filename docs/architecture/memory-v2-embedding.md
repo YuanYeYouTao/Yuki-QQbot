@@ -11,7 +11,7 @@ NumPy、LLM rerank 或历史聊天扫描。
 
 ```text
 当前问题
-  -> Planner 选择 none / lexical / hybrid / overview
+  -> Memory Runtime 决定本轮是否预取，以及 lexical / hybrid / overview
   -> 后端解析真实人物/群目标
   -> 每个目标分别执行带 scope/user/group/status/profile 条件的 SQL
   -> FTS/BM25 候选 + 目标内余弦相似候选
@@ -22,7 +22,7 @@ NumPy、LLM rerank 或历史聊天扫描。
 向量检索不会全库搜索后再猜身份。当前人物、人物在当前群、当前群以及真实 @/回复得到的引用
 人物始终独立检索。不同 QQ、不同群或私聊资料不会因为语义相似而越界。
 
-Planner 只选择检索深度，不能选择人物、QQ、群或会话范围：
+检索深度由 Memory Runtime 会话合同与 Main Agent 的显式 read Tool 决定，不能选择人物、QQ、群或会话范围：
 
 - `none`：无需长期记忆的纯效果或即时短回应；不进入长期记忆检索。
 - `lexical`：普通日常交流；只使用本地 FTS/LIKE，不访问 Embedding Provider。

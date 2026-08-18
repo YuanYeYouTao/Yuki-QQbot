@@ -126,7 +126,7 @@ class SpeechGenerationModel(Base):
 
 
 class PersonSpeechPreferenceModel(Base):
-    """One enforceable person-level speech preference selected through Planner."""
+    """One enforceable person-level speech preference set via set_voice_preference."""
 
     __tablename__ = "person_speech_preferences"
     __table_args__ = (

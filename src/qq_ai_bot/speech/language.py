@@ -1,4 +1,4 @@
-"""Resolve a safe Genie target language from Planner intent and actual reply text."""
+"""Resolve a safe Genie target language from voice intent and actual reply text."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ _CHINESE_G2P_COMPATIBILITY = str.maketrans(
 
 
 def resolve_target_language(profile: VoiceProfile, text: str, hint: str = "auto") -> str:
-    """Prefer strong script evidence, then a validated Planner hint, then profile default."""
+    """Prefer strong script evidence, then a validated language hint, then profile default."""
 
     supported = set(profile.supported_languages) or {profile.language}
     detected = _detected_language(text)

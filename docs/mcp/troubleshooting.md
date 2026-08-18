@@ -5,7 +5,7 @@
 - `disabled`：检查全局 `MCP_ENABLED`、运行时 `mcp.enabled` 和 Server enable 状态
 - `failed/timeout`：运行 `/ai mcp doctor <server>`，检查本地命令、cwd、网络和超时
 - 工具列表为空：执行 `refresh`；确认 includeTools/excludeTools 没有过滤目标
-- 普通聊天看不到工具：检查 Planner 是否选择对应动态 scope，以及 Schema/数量预算
+- 普通聊天看不到工具：检查 Capability Search 是否命中对应 namespace，以及 Schema/数量预算
 - 结果截断：根据返回的 `artifact_handle` 让 Agent 调用 `read_tool_artifact`
 - 两个同名工具：模型名包含 Server ID，不应手工改成相同名称
 

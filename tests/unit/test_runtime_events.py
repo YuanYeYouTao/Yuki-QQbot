@@ -232,6 +232,9 @@ def test_capability_search_report_exposes_ids_not_query_text() -> None:
     assert "web_search" in report.capability_ids
     assert "SECRET-REPLY-EXCERPT" not in report.capability_ids
     assert "search the web for news" not in report.capability_ids
+    names = [tool.name for tool in runtime.definitions()]
+    assert names.count("request_tools") == 1
+    assert len(names) == len(set(names))
 
 
 class _RecordingPublisher:

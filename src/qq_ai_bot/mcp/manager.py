@@ -229,7 +229,7 @@ class MCPManager:
                 raise
 
     async def ensure_metadata(self, server_id: str) -> tuple[MCPToolMetadata, ...]:
-        """Populate a lazy server catalog only when its Planner scope is selected."""
+        """Populate a lazy server catalog when Capability Runtime needs that server."""
 
         return await self.refresh(server_id, force=False)
 

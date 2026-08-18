@@ -97,7 +97,7 @@ def scene_from_inbound(
 def apply_memory_tool_groups(
     view: MemoryCapabilityView, planner_groups: frozenset[str]
 ) -> frozenset[str]:
-    """Capability view owns first-round Memory scope; Planner scopes cannot add it."""
+    """Capability view owns first-round Memory namespace; search cannot add write scope."""
 
     stripped = frozenset(
         scope for scope in planner_groups if scope != "memory" and not scope.startswith("memory.")

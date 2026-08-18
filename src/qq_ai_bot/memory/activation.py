@@ -219,7 +219,7 @@ class MemoryActivationRepository:
 
 
 class MemoryIntentRanker:
-    """Apply only explicit Planner features inside an already legal target."""
+    """Apply only explicit structured-intent features inside an already legal target."""
 
     def __init__(self, metrics: MemoryLifecycleMetrics | None = None) -> None:
         self._metrics = metrics

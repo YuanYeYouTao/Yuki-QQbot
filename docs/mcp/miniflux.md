@@ -59,8 +59,8 @@ ports:
 - 普通聊天允许管理订阅源、文章和分类，包括明确的删除操作。
 - 自动化只允许查询订阅、文章、分类、计数和健康状态，不允许后台删除或修改。
 - 用户管理、API Key 管理、`export` 和 `flush_history` 不在 `includeTools` 中。
-- Planner 使用 `mcp.miniflux.subscriptions`、`mcp.miniflux.articles` 和
-  `mcp.miniflux.categories` 三个小型能力包，主 Agent 无需一次加载全部 Schema。
+- Capability Runtime 按 `mcp.miniflux.subscriptions`、`mcp.miniflux.articles` 和
+  `mcp.miniflux.categories` 三个小型 namespace 检索，主 Agent 无需一次加载全部 Schema。
 
 可用命令：
 

@@ -1,7 +1,11 @@
 # Yuki-QQbot
 
+> **3.6.1 正式版：**长会话 Conversation History Rollup。有覆盖摘要后缩短原文近窗，SESSION 前沿
+> 换回被切掉的连续性。Alembic head 为 `0041`，Plugin API 仍为 `2.0`。从 3.6.0 升级见
+> [3.6.1 升级指南](upgrade-3.6.1.md)。
+
 > **3.6.0 正式版：**删除强制 Planner。普通聊天由 Conversation Runtime 准入后直接进入 Main Agent；
-> Memory Runtime 与 Capability Runtime 在模型前完成本地准备。Alembic head 为 `0040`，
+> Memory Runtime 与 Capability Runtime 在模型前完成本地准备。当时 Alembic head 为 `0040`，
 > Plugin API 为 `2.0`。从 3.5.3 升级见 [3.6.0 升级指南](upgrade-3.6.0.md)。
 
 > **3.5.3 正式版：**新增 `qq-ai-bot-cli setup` 彩色引导配置和 Linux / Windows 安装器。
@@ -424,7 +428,7 @@ LLM_FLASH_API_KEY=你的Flash密钥
 LLM_FLASH_MODEL=你的Flash模型名
 ```
 
-TOML 只保存环境变量名称，不保存密钥。默认路由为：`chat_agent`、`automation_agent`、`plugin_agent_session` 使用 `pro`；`planner`、`memory_extraction`、`memory_consolidation`、`relationship_evaluation`、`emoji_replacement`、`automation_text_generation`、`utility_structured` 使用 `flash`。同一 endpoint 会共享 HTTP 连接池，但每个档案仍保留自己的超时、重试、思考和输出默认值。
+TOML 只保存环境变量名称，不保存密钥。默认路由为：`chat_agent`、`automation_agent`、`plugin_agent_session` 使用 `pro`；`memory_extraction`、`memory_self_reflection`、`memory_consolidation`、`memory_dream`、`memory_attribution`、`relationship_evaluation`、`emoji_replacement`、`automation_text_generation`、`utility_structured` 使用 `flash`。同一 endpoint 会共享 HTTP 连接池，但每个档案仍保留自己的超时、重试、思考和输出默认值。schema v3 已删除 `planner` 与 `tool_selection` 路由。
 
 可用诊断：
 
