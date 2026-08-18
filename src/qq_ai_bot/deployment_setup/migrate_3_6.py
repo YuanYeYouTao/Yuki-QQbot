@@ -38,6 +38,7 @@ from qq_ai_bot.observability.runtime_baseline import (
 )
 
 _ATTRIBUTION_FALLBACKS = ("utility_structured", "planner")
+_COMPACTION_FALLBACKS = ("memory_dream", "utility_structured", "memory_extraction")
 _MEMORY_FALLBACKS = (
     ("memory_self_reflection", "memory_extraction"),
     ("memory_consolidation", "memory_extraction"),
@@ -280,6 +281,11 @@ def _migrate_profile_document(
     for target, source in _MEMORY_FALLBACKS:
         if target not in next_routes and source in next_routes:
             next_routes[target] = next_routes[source]
+    if "conversation_compaction" not in next_routes:
+        for source in _COMPACTION_FALLBACKS:
+            if source in next_routes:
+                next_routes["conversation_compaction"] = next_routes[source]
+                break
     fill_from = next_routes.get("chat_agent") or next_routes.get("planner")
     if fill_from is not None:
         for task in ModelTask:

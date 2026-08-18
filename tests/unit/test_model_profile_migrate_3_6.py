@@ -127,6 +127,7 @@ def test_migrate_3_6_materializes_attribution_from_utility_then_strips_planner(
     assert (result.backup / "config/model_profiles.toml").is_file()
     catalog = _load(profiles)
     assert catalog.routes[ModelTask.MEMORY_ATTRIBUTION].profile_id == "flash"
+    assert catalog.routes[ModelTask.CONVERSATION_COMPACTION].profile_id == "flash"
     assert ModelTask.CHAT_AGENT in catalog.routes
     assert "planner" not in profiles.read_text(encoding="utf-8")
 

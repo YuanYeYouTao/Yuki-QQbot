@@ -481,6 +481,7 @@ def test_model_profiles_route_all_tasks_and_keep_agents_on_main() -> None:
     assert with_flash["routes"]["memory_attribution"] == "flash"
     assert with_flash["routes"]["relationship_evaluation"] == "flash"
     assert with_flash["routes"]["emoji_replacement"] == "flash"
+    assert with_flash["routes"]["conversation_compaction"] == "flash"
     assert with_flash["routes"]["chat_agent"] == "main"
     assert with_flash["routes"]["automation_agent"] == "main"
     assert with_flash["routes"]["plugin_agent_session"] == "main"

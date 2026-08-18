@@ -29,6 +29,7 @@ _MODEL_TASKS = (
     "automation_agent",
     "plugin_agent_session",
     "utility_structured",
+    "conversation_compaction",
 )
 _SMOKE_PLUGIN_ID = "io.github.yuanyeyoutao.kun-game"
 
