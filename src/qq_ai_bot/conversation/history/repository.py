@@ -186,6 +186,14 @@ class ConversationHistoryRepository:
                             ConversationHistoryRollupJobModel.lease_until < now,
                         ),
                     ),
+                    ~ConversationHistoryRollupJobModel.state_id.in_(
+                        select(ConversationHistoryRollupJobModel.state_id).where(
+                            ConversationHistoryRollupJobModel.status
+                            == HistoryJobStatus.PROCESSING.value,
+                            ConversationHistoryRollupJobModel.lease_until.is_not(None),
+                            ConversationHistoryRollupJobModel.lease_until >= now,
+                        )
+                    ),
                 )
                 .order_by(
                     ConversationHistoryRollupJobModel.next_attempt_at,
@@ -222,18 +230,50 @@ class ConversationHistoryRepository:
             await session.refresh(row)
             return self._job(row)
 
-    async def retry_job(self, job_id: int, *, delay_seconds: int, error_category: str) -> None:
+    async def retry_job(
+        self,
+        job_id: int,
+        *,
+        lease_owner: str,
+        delay_seconds: int,
+        error_category: str,
+    ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             row = await session.get(ConversationHistoryRollupJobModel, job_id)
             if row is None:
                 raise HistoryJobConflictError("job disappeared")
+            if row.lease_owner != lease_owner:
+                raise HistoryJobConflictError("lease owner mismatch")
             row.status = HistoryJobStatus.PENDING.value
             row.lease_owner = None
             row.lease_until = None
             row.error_category = error_category
             row.next_attempt_at = now + timedelta(seconds=delay_seconds)
             row.updated_at = now
+
+    async def fail_job(
+        self,
+        job_id: int,
+        *,
+        lease_owner: str,
+        error_category: str,
+    ) -> ConversationHistoryJob:
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            row = await session.get(ConversationHistoryRollupJobModel, job_id)
+            if row is None:
+                raise HistoryJobConflictError("job disappeared")
+            if row.lease_owner != lease_owner:
+                raise HistoryJobConflictError("lease owner mismatch")
+            row.status = HistoryJobStatus.FAILED.value
+            row.error_category = error_category
+            row.lease_owner = None
+            row.lease_until = None
+            row.completed_at = now
+            row.updated_at = now
+            await session.flush()
+            return self._job(row)
 
     async def complete_job(
         self,
@@ -263,6 +303,25 @@ class ConversationHistoryRepository:
             row.updated_at = now
             await session.flush()
             return self._job(row)
+
+    async def release_leases_for_owner(self, lease_owner: str) -> int:
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            result = await session.execute(
+                update(ConversationHistoryRollupJobModel)
+                .where(
+                    ConversationHistoryRollupJobModel.status == HistoryJobStatus.PROCESSING.value,
+                    ConversationHistoryRollupJobModel.lease_owner == lease_owner,
+                )
+                .values(
+                    status=HistoryJobStatus.PENDING.value,
+                    lease_owner=None,
+                    lease_until=None,
+                    next_attempt_at=now,
+                    updated_at=now,
+                )
+            )
+            return int(cast(CursorResult[Any], result).rowcount)
 
     async def release_stale_leases(self, *, now: datetime | None = None) -> int:
         current = now or datetime.now(UTC)
@@ -732,9 +791,13 @@ class ConversationHistoryRepository:
             id=row.id,
             state_id=row.state_id,
             job_kind=HistoryJobKind(row.job_kind),
+            source_level=row.source_level,
+            source_start_id=row.source_start_id,
+            source_end_id=row.source_end_id,
             source_fingerprint=row.source_fingerprint,
             summarizer_version=row.summarizer_version,
             status=HistoryJobStatus(row.status),
+            attempts=row.attempts,
             outcome=HistoryJobOutcome(row.outcome) if row.outcome else None,
             result_summary_id=row.result_summary_id,
             lease_owner=row.lease_owner,

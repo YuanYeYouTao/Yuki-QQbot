@@ -102,9 +102,13 @@ class ConversationHistoryJob(_HistoryModel):
     id: int
     state_id: int
     job_kind: HistoryJobKind
+    source_level: int = Field(ge=0)
+    source_start_id: int
+    source_end_id: int
     source_fingerprint: str
     summarizer_version: str
     status: HistoryJobStatus
+    attempts: int = Field(ge=0)
     outcome: HistoryJobOutcome | None = None
     result_summary_id: int | None = None
     lease_owner: str | None = None

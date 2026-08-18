@@ -322,6 +322,13 @@ class Settings(BaseSettings):
     conversation_autonomous_batch_limit: int = 8
     conversation_autonomous_presence_window_seconds: int = 300
     conversation_interrupt_autonomous_on_new_message: bool = True
+    conversation_history_rollup_enabled: bool = True
+    conversation_history_rollup_worker_concurrency: int = Field(default=1, ge=1, le=2)
+    conversation_history_rollup_poll_seconds: float = Field(default=1.0, gt=0)
+    conversation_history_rollup_lease_seconds: int = Field(default=180, gt=0)
+    conversation_history_rollup_timeout_seconds: float = Field(default=60.0, gt=0)
+    conversation_history_rollup_max_attempts: int = Field(default=7, ge=1)
+    conversation_history_rollup_retry_seconds: str = "15,30,60,120,240,480,960"
     reply_sequence_cancel_on_new_message: bool = True
     reply_hard_max_messages: int = 10
 

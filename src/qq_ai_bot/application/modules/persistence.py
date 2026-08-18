@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.history.repository import ConversationHistoryRepository
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.memory.activation import MemoryActivationRepository, MemoryIntentRanker
 from qq_ai_bot.memory.audit import MemoryAuditService
@@ -70,6 +71,7 @@ class PersistenceBundle:
     relationships: RelationshipRepository
     relationship_jobs: RelationshipJobRepository
     turn_observations: RuntimeTurnObservationRepository
+    conversation_history: ConversationHistoryRepository
 
 
 class PersistenceModule:
@@ -182,4 +184,5 @@ class PersistenceModule:
                 max_attempts=settings.relationship_max_attempts,
             ),
             turn_observations=RuntimeTurnObservationRepository(database),
+            conversation_history=ConversationHistoryRepository(database),
         )
