@@ -381,9 +381,7 @@ async def _evaluate_one_case(
             "\n".join(message.content or "" for message in context.history_messages),
         )
     )
-    if case["id"] == "context_reset" and (
-        "昨天的点餐" in haystack or "优惠券还没核销" in haystack
-    ):
+    if case["id"] == "context_reset" and ("昨天的点餐" in haystack or "优惠券还没核销" in haystack):
         failed.append(f"{case['id']}: old epoch leaked after reset")
     missing = [needle for needle in needles if needle not in haystack]
     recall = 0.0 if not needles else (len(needles) - len(missing)) / len(needles)

@@ -709,9 +709,7 @@ class ConversationHistoryRepository:
                 state_row = await session.get(ConversationHistoryStateModel, state_id)
                 if state_row is None:
                     raise HistoryIdentityError("conversation history state disappeared")
-                state_row.pending_event_count = max(
-                    0, state_row.pending_event_count - len(ordered)
-                )
+                state_row.pending_event_count = max(0, state_row.pending_event_count - len(ordered))
                 state_row.pending_character_count = max(
                     0, state_row.pending_character_count - source_character_count
                 )

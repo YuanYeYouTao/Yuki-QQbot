@@ -160,9 +160,7 @@ class WebThenOneBotLLM(LLMProvider):
                         id="request-onebot",
                         function=ToolFunction(
                             name="request_tools",
-                            arguments=json.dumps(
-                                {"query": "call_onebot_api", "max_results": 1}
-                            ),
+                            arguments=json.dumps({"query": "call_onebot_api", "max_results": 1}),
                         ),
                     ),
                 ),
