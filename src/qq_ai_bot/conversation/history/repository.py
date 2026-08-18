@@ -635,9 +635,10 @@ class ConversationHistoryRepository:
             raise FrontierInvariantError("L0 summary requires event members")
         if mode is HistorySummaryMode.EXTRACTIVE and summarizer_version.strip() == "":
             raise FrontierInvariantError("extractive summarizer_version is required")
-        ordered = tuple(sorted(event_ids))
-        if ordered != event_ids:
-            raise FrontierInvariantError("L0 event members must be in id order")
+        # Ledger snapshots follow occurred_at; member coverage must be by event id.
+        ordered = tuple(sorted(dict.fromkeys(event_ids)))
+        if len(ordered) != len(event_ids):
+            raise FrontierInvariantError("L0 event members must be unique")
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             existing = await session.scalar(
@@ -687,7 +688,7 @@ class ConversationHistoryRepository:
             )
             session.add(row)
             await session.flush()
-            for ordinal, event_id in enumerate(event_ids):
+            for ordinal, event_id in enumerate(ordered):
                 session.add(
                     ConversationHistorySummaryMemberModel(
                         summary_id=row.id,
@@ -709,7 +710,7 @@ class ConversationHistoryRepository:
                 if state_row is None:
                     raise HistoryIdentityError("conversation history state disappeared")
                 state_row.pending_event_count = max(
-                    0, state_row.pending_event_count - len(event_ids)
+                    0, state_row.pending_event_count - len(ordered)
                 )
                 state_row.pending_character_count = max(
                     0, state_row.pending_character_count - source_character_count

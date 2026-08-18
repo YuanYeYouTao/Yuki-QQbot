@@ -238,8 +238,8 @@ class HistoryCompactionPolicy:
         )
         return RawRangeCandidate(
             event_ids=event_ids,
-            start_event_id=event_ids[0],
-            end_event_id=event_ids[-1],
+            start_event_id=min(event_ids),
+            end_event_id=max(event_ids),
             character_count=characters,
             fingerprint=source_fingerprint(sliced),
             extractive_text=extractive_compact(

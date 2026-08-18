@@ -11,6 +11,10 @@ from typing import Any, Protocol
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.history.errors import (
+    FrontierInvariantError,
+    HistoryJobConflictError,
+)
 from qq_ai_bot.conversation.history.models import (
     ConversationHistoryIdentity,
     ConversationHistorySummary,
@@ -1156,18 +1160,25 @@ class ContextAssembler:
             record = current_row
             fallback = current_row.id
         rendered = renderer.main_agent_history(history_rows)
-        summary = await coverage.ensure_extractive_coverage(
-            record,
-            rendered=rendered,
-            anchor_event_id=self._history_window_anchor(
-                self._history_window_key(
-                    identity, reset, coverage_end=0, revision=snapshot.revision
-                )
-            ),
-            high_event_limit=max(0, event_limit - 1),
-            high_character_limit=max(0, remainder - current_chars),
-            fallback_anchor_event_id=fallback,
-        )
+        try:
+            summary = await coverage.ensure_extractive_coverage(
+                record,
+                rendered=rendered,
+                anchor_event_id=self._history_window_anchor(
+                    self._history_window_key(
+                        identity, reset, coverage_end=0, revision=snapshot.revision
+                    )
+                ),
+                high_event_limit=max(0, event_limit - 1),
+                high_character_limit=max(0, remainder - current_chars),
+                fallback_anchor_event_id=fallback,
+            )
+        except (FrontierInvariantError, HistoryJobConflictError) as exc:
+            logger.warning(
+                "conversation_history_coverage_skipped error_category=%s",
+                type(exc).__name__,
+            )
+            return snapshot, recent, session_text
         if summary is None:
             return snapshot, recent, session_text
         reloaded = await self._load_history_snapshot(

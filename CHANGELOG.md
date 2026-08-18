@@ -16,6 +16,8 @@
 - Alembic `0041` 增加四张 `conversation_history_*` 表，不改写原始事件与 Memory V2。
 - 运维命令：`qq-ai-bot-cli history-rollup status|inspect|rebuild|invalidate|reconcile`。
   默认脱敏，不含正文。
+- L0 成员按 `event_id` 排序。时间乱序事件不再让聊天轮因 `FrontierInvariantError` 失败；
+  覆盖失败时退回原文近窗。
 
 ### 升级与观测
 

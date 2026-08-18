@@ -117,6 +117,27 @@ async def test_l0_members_keep_event_order_and_fingerprint_is_idempotent(
 
 
 @pytest.mark.asyncio
+async def test_l0_commit_sorts_time_ordered_event_ids(
+    database: Database,
+) -> None:
+    repository = ConversationHistoryRepository(database)
+    identity = _identity()
+    event_ids = await _seed_events(database, identity, 3)
+    state = await repository.get_or_create_state(identity)
+    reversed_ids = tuple(reversed(event_ids))
+    summary = await _commit_l0(
+        repository,
+        state_id=state.id,
+        event_ids=reversed_ids,
+        fingerprint="fp-time-order",
+    )
+    assert tuple(member.source_event_id for member in summary.members) == event_ids
+    assert summary.start_event_id == event_ids[0]
+    assert summary.end_event_id == event_ids[-1]
+    await repository.validate_frontier(state.id)
+
+
+@pytest.mark.asyncio
 async def test_parent_covers_contiguous_children_and_rejects_gaps_or_levels(
     database: Database,
 ) -> None:
