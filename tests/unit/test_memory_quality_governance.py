@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.enums import (
     MemoryConflictState,
     MemoryFactRelationType,
@@ -128,6 +129,92 @@ async def test_audit_accepts_superseded_fact_with_semantic_relation_chain(
     report = await MemoryProductionQualityAudit(database).run()
     issue = next(item for item in report.issues if item.issue_code == "superseded_without_chain")
     assert issue.count == 0
+
+
+@pytest.mark.asyncio
+async def test_consistency_health_accepts_refines_as_a_supersession_chain(
+    database: Database,
+) -> None:
+    repository = MemoryFactRepository(database)
+    service = MemoryFactService(repository)
+    older = await service.remember(
+        MemoryFactCreate(
+            scope_type="person",
+            subject_user_id="1001",
+            memory_key="health:older",
+            category="quality",
+            content="synthetic older fact",
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    newer = await service.remember(
+        MemoryFactCreate(
+            scope_type="person",
+            subject_user_id="1001",
+            memory_key="health:newer",
+            category="quality",
+            content="synthetic newer fact",
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    async with repository.transaction() as session:
+        await repository.transition(
+            older.id,
+            status=MemoryStatus.SUPERSEDED,
+            conflict_state=MemoryConflictState.CLEAR,
+            invalidated_reason=None,
+            action=MemoryStateAction.SUPERSEDED,
+            reason_code="memory_dream_synthesize",
+            source_event_id=None,
+            actor_user_id=None,
+            session=session,
+        )
+        await repository.add_relation(
+            source_fact_id=older.id,
+            target_fact_id=newer.id,
+            relation_type=MemoryFactRelationType.REFINES,
+            confidence=1.0,
+            source_event_id=None,
+            session=session,
+        )
+
+    health = await MemoryAuditService(repository).health()
+    assert health.superseded_without_chain_count == 0
+    assert health.healthy is True
+
+
+@pytest.mark.asyncio
+async def test_consistency_health_flags_superseded_fact_with_no_successor(
+    database: Database,
+) -> None:
+    repository = MemoryFactRepository(database)
+    service = MemoryFactService(repository)
+    older = await service.remember(
+        MemoryFactCreate(
+            scope_type="person",
+            subject_user_id="1001",
+            memory_key="health:orphan",
+            category="quality",
+            content="synthetic orphan fact",
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    async with repository.transaction() as session:
+        await repository.transition(
+            older.id,
+            status=MemoryStatus.SUPERSEDED,
+            conflict_state=MemoryConflictState.CLEAR,
+            invalidated_reason=None,
+            action=MemoryStateAction.SUPERSEDED,
+            reason_code="broken_chain",
+            source_event_id=None,
+            actor_user_id=None,
+            session=session,
+        )
+
+    health = await MemoryAuditService(repository).health()
+    assert health.superseded_without_chain_count == 1
+    assert health.healthy is False
 
 
 @pytest.mark.asyncio

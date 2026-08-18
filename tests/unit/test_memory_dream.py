@@ -601,6 +601,53 @@ async def test_cancelled_dream_run_can_enter_rollback(database: Database) -> Non
     assert current.status is DreamRunStatus.ROLLING_BACK
 
 
+def _empty_dream_statistics() -> DreamPlanStatistics:
+    return DreamPlanStatistics(
+        eligible_facts=0,
+        ready_facts=0,
+        missing_embeddings=0,
+        ambiguous_bot_facts=0,
+        partitions=0,
+        candidate_clusters=0,
+        isolated_facts=0,
+        estimated_model_calls=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dream_health_counts_pending_only_on_live_runs(database: Database) -> None:
+    dreams = DreamRepository(database)
+    await PeopleRepository(database).observe(user_id="1001", nickname="owner")
+    statistics = _empty_dream_statistics()
+    cancelled = await dreams.create_run(
+        mode=DreamRunMode.FULL,
+        statistics=statistics,
+        clusters=(
+            ("dead-1", "partition", "8000", "fact", (1,), "fp-1"),
+            ("dead-2", "partition", "8000", "fact", (2,), "fp-2"),
+        ),
+        snapshot_max_fact_id=2,
+        actor_user_id="1001",
+        scheduled_slot=None,
+    )
+    assert await dreams.cancel(cancelled.public_id)
+    planned = await dreams.create_run(
+        mode=DreamRunMode.FULL,
+        statistics=statistics,
+        clusters=(("live-1", "partition", "8000", "fact", (3,), "fp-3"),),
+        snapshot_max_fact_id=3,
+        actor_user_id="1001",
+        scheduled_slot=None,
+    )
+
+    snapshot = await dreams.health(enabled=True)
+
+    assert planned.status is DreamRunStatus.PLANNED
+    assert snapshot.pending_clusters == 1
+    assert snapshot.running is False
+    assert snapshot.active_run_id is None
+
+
 @pytest.mark.asyncio
 async def test_dream_merge_is_atomic_audited_and_reversible(database: Database) -> None:
     mutations, facts, ledger, dreams = _services(database)
