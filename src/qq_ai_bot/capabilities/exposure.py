@@ -379,7 +379,11 @@ def _expand_selected_bundles(
             trial,
             hard_cap=hard_cap,
             schema_token_budget=schema_token_budget,
-            mcp_schema_token_budget=mcp_schema_token_budget,
+            mcp_schema_token_budget=_bundle_mcp_schema_budget(
+                trial,
+                members,
+                mcp_schema_token_budget=mcp_schema_token_budget,
+            ),
             mcp_tool_limit=mcp_tool_limit,
         ):
             rejected.append(scope)
@@ -410,6 +414,27 @@ def _evict_same_provider_non_bundle(
         or entry.descriptor.provider_id not in providers
         or scope in entry.descriptor.bundle_scopes
     ]
+
+
+def _bundle_mcp_schema_budget(
+    trial: list[UnifiedToolCatalogEntry],
+    members: list[UnifiedToolCatalogEntry],
+    *,
+    mcp_schema_token_budget: int | None,
+) -> int | None:
+    """Do not let the leftover-MCP budget refuse an already selected bundle."""
+
+    if mcp_schema_token_budget is None:
+        return None
+    member_ids = {entry.descriptor.model_name for entry in members}
+    mcp_ids = {
+        entry.descriptor.model_name
+        for entry in trial
+        if entry.descriptor.trust_source is CapabilityTrustSource.MCP
+    }
+    if mcp_ids and mcp_ids <= member_ids:
+        return None
+    return mcp_schema_token_budget
 
 
 def _exceeds_caps(
