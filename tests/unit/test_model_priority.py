@@ -265,4 +265,3 @@ async def test_exclusive_preempts_best_effort_background() -> None:
         await background
     assert provider.background_cancelled.is_set()
     await executor.close()
-
