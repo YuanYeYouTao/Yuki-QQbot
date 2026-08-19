@@ -124,9 +124,7 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
     payload_items = {item["id"]: item["data"] for item in payload["items"]}
     history_characters = sum(len(item.content or "") for item in request.messages[1:-1])
 
-    metadata_budget = int(
-        settings.max_context_characters * settings.context_metadata_budget_ratio
-    )
+    metadata_budget = int(settings.max_context_characters * settings.context_metadata_budget_ratio)
     assert len(payload_text) <= metadata_budget
     assert len(payload_text) + history_characters <= settings.max_context_characters
     current_history = request.messages[-1].content or ""
