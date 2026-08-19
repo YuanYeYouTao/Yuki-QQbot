@@ -1,6 +1,6 @@
 {
   "suite_version": "history-rollup-replay/v1",
-  "notes": "Synthetic labeled replay set for structural and extractive gates. Not a Flash quality corpus.",
+  "notes": "Synthetic labeled replay set for structural and extractive gates. Not a Flash quality corpus. The frozen-near-window gate (short messages, coverage advances without skipping ids) runs programmatically in quality.py.",
   "cases": [
     {
       "id": "long_tech_discussion",

@@ -329,8 +329,8 @@ class Settings(BaseSettings):
     conversation_history_rollup_timeout_seconds: float = Field(default=60.0, gt=0)
     conversation_history_rollup_max_attempts: int = Field(default=7, ge=1)
     conversation_history_rollup_retry_seconds: str = "15,30,60,120,240,480,960"
-    conversation_history_raw_tail_events: int = Field(default=48, ge=1)
-    conversation_history_raw_tail_characters: int = Field(default=3600, ge=1)
+    conversation_history_raw_tail_events: int = Field(default=32, ge=1)
+    conversation_history_raw_tail_characters: int = Field(default=1600, ge=1)
     conversation_history_rollup_l0_min_events: int = Field(default=32, ge=1)
     conversation_history_rollup_l0_min_characters: int = Field(default=8000, ge=1)
     conversation_history_rollup_l0_max_events: int = Field(default=100, ge=1)
@@ -341,7 +341,7 @@ class Settings(BaseSettings):
     conversation_history_rollup_max_level: int = Field(default=16, ge=1)
     conversation_history_llm_origins: str = "user_message"
     conversation_history_rollup_prompt_version: str = "conversation-rollup-v1"
-    conversation_history_raw_tail_budget_ratio: float = Field(default=0.55, gt=0, le=1)
+    conversation_history_raw_tail_budget_ratio: float = Field(default=0.40, gt=0, le=1)
     conversation_history_sync_extractive_max_slices: int = Field(default=3, ge=1)
     conversation_history_around_before: int = Field(default=6, ge=0)
     conversation_history_around_after: int = Field(default=6, ge=0)

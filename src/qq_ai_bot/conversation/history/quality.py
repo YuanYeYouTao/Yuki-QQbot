@@ -310,6 +310,25 @@ async def evaluate_replay_suite(
             )
         finally:
             await pollution_db.close()
+        frozen_path = root / "frozen-short.db"
+        frozen_db = Database(f"sqlite+aiosqlite:///{frozen_path.as_posix()}")
+        await frozen_db.create_schema()
+        try:
+            frozen_failed = await _evaluate_frozen_short_window(
+                frozen_db,
+                replay_settings(
+                    frozen_db.url,
+                    max_context_characters=800,
+                    conversation_history_rollup_l0_min_events=16,
+                    conversation_history_rollup_l0_min_characters=10,
+                    conversation_history_raw_tail_events=8,
+                    conversation_history_raw_tail_characters=400,
+                    conversation_history_sync_extractive_max_slices=3,
+                ),
+            )
+            failed.extend(frozen_failed)
+        finally:
+            await frozen_db.close()
     if pollution:
         failed.append(pollution)
     return {
@@ -322,6 +341,7 @@ async def evaluate_replay_suite(
         "source_coverage": 1.0 if not any("coverage" in item for item in failed) else 0.0,
         "summary_raw_overlap": 0 if not any("overlap" in item for item in failed) else 1,
         "replacement_errors": 0 if not any("replacement" in item for item in failed) else 1,
+        "frozen_left_edge_skips": 0 if not any("frozen-short" in item for item in failed) else 1,
     }
 
 
@@ -440,6 +460,70 @@ def _coverage_and_overlap(
             overlap = True
         previous_end = item.end_event_id
     return True, overlap
+
+
+async def _evaluate_frozen_short_window(database: Database, settings: Settings) -> list[str]:
+    """Short messages over budget must advance coverage without skipping prompt ids."""
+
+    failed: list[str] = []
+    ledger = EventLedgerRepository(database)
+    repository = ConversationHistoryRepository(database)
+    peer = "frozen-short"
+    identity = ConversationHistoryIdentity(
+        bot_user_id=_BOT,
+        scope_type=ScopeType.PRIVATE,
+        private_peer_user_id=peer,
+    )
+    ids: list[int] = []
+    for index in range(1, 81):
+        inbound = InboundMessage(
+            message_id=f"fs-{index}",
+            event_type="message",
+            scope_type=ScopeType.PRIVATE,
+            sender=SenderIdentity(user_id=peer),
+            text="ok",
+            bot_user_id=_BOT,
+            received_at=_NOW + timedelta(seconds=index),
+        )
+        record, _created = await ledger.append_inbound(inbound, bot_user_id=_BOT)
+        ids.append(record.id)
+    first = await assemble_case(database, settings, identity, "fs-80", text="ok")
+    if first.metrics.covered_to is None:
+        failed.append("frozen-short: expected coverage after over-budget shorts")
+        return failed
+    if min(first.visible_event_ids) != first.metrics.covered_to + 1:
+        failed.append("frozen-short: prompt left edge skipped coverage")
+    snapshot = await repository.load_context_snapshot(
+        (await repository.get_or_create_state(identity)).id
+    )
+    previous_end = 0
+    for item in sorted(snapshot.frontier, key=lambda row: row.start_event_id):
+        if previous_end and item.start_event_id != previous_end + 1:
+            failed.append("frozen-short: coverage is not contiguous")
+            break
+        previous_end = item.end_event_id
+    inbound = InboundMessage(
+        message_id="fs-81",
+        event_type="message",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id=peer),
+        text="ok",
+        bot_user_id=_BOT,
+        received_at=_NOW + timedelta(seconds=81),
+    )
+    await ledger.append_inbound(inbound, bot_user_id=_BOT)
+    second = await assemble_case(database, settings, identity, "fs-81", text="ok")
+    if second.metrics.covered_to is None:
+        failed.append("frozen-short: coverage disappeared after append")
+        return failed
+    if min(second.visible_event_ids) != second.metrics.covered_to + 1:
+        failed.append("frozen-short: prompt left edge jumped after append")
+    if (
+        not second.metrics.raw_history_window_shifted
+        and first.history_anchor_event_id != second.history_anchor_event_id
+    ):
+        failed.append("frozen-short: left edge moved without coverage advancing")
+    return failed
 
 
 async def _cross_session_pollution(database: Database, settings: Settings) -> str | None:

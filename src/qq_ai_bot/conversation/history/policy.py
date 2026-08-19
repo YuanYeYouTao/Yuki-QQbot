@@ -19,8 +19,8 @@ RenderedHistory = tuple[tuple[int, tuple[int, ...], ChatMessage], ...]
 class HistoryCompactionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    raw_tail_events: int = Field(default=48, ge=1)
-    raw_tail_characters: int = Field(default=3600, ge=1)
+    raw_tail_events: int = Field(default=32, ge=1)
+    raw_tail_characters: int = Field(default=1600, ge=1)
     l0_min_events: int = Field(default=32, ge=1)
     l0_min_characters: int = Field(default=8000, ge=1)
     l0_max_events: int = Field(default=100, ge=1)

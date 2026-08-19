@@ -1,5 +1,9 @@
 # Yuki-QQbot
 
+> **3.6.2（未发布）：**近窗左沿只认 `coverage_end`。超预算时同步 extractive，不再从尾巴滑动切窗。
+> 热尾是条数与渲染字符的交集。预算数字只触发压缩。无需新 Alembic。升级见
+> [3.6.2 升级指南](upgrade-3.6.2.md)。
+
 > **3.6.1 正式版：**长会话 Conversation History Rollup。有覆盖摘要后缩短原文近窗，SESSION 前沿
 > 换回被切掉的连续性。Alembic head 为 `0041`，Plugin API 仍为 `2.0`。从 3.6.0 升级见
 > [3.6.1 升级指南](upgrade-3.6.1.md)。
@@ -1291,7 +1295,11 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `RECENT_HISTORY_TOOL_LIMIT` | `20` |
 | `LOCAL_CONTEXT_EVENT_LIMIT` | `1000` |
 | `MAX_CONTEXT_CHARACTERS` | `12000`（字符，不是 token） |
-| `HISTORY_WINDOW_LOW_WATERMARK_RATIO` | `0.67` |
+| `HISTORY_WINDOW_LOW_WATERMARK_RATIO` | `0.67`（保留键；Prompt 选窗不再使用） |
+| `CONVERSATION_HISTORY_RAW_TAIL_EVENTS` | `32` |
+| `CONVERSATION_HISTORY_RAW_TAIL_CHARACTERS` | `1600`（渲染字符；触发压缩，不滑动切窗） |
+| `CONVERSATION_HISTORY_RAW_TAIL_BUDGET_RATIO` | `0.40` |
+| `CONVERSATION_HISTORY_SYNC_EXTRACTIVE_MAX_SLICES` | `3` |
 | `TOOLING_SELECTED_TOOL_LIMIT` | `32` |
 | `TOOLING_SCHEMA_TOKEN_BUDGET` | `12000` |
 | `MCP_SELECTED_TOOL_LIMIT` | `16` |

@@ -46,3 +46,4 @@ async def test_replay_suite_structural_gates() -> None:
     assert report["summary_raw_overlap"] == 0
     assert report["replacement_errors"] == 0
     assert report["source_coverage"] == 1.0
+    assert report["frozen_left_edge_skips"] == 0
