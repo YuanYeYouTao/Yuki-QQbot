@@ -274,7 +274,7 @@ async def test_flash_replaces_extractive_on_same_fingerprint(database: Database)
     assert upgraded.source_fingerprint == fingerprint
     assert upgraded.id != extractive.id
     assert executor.calls == 1
-    assert executor.priorities == [ModelExecutionPriority.BEST_EFFORT_BACKGROUND]
+    assert executor.priorities == [ModelExecutionPriority.EXCLUSIVE]
     identity = ConversationHistoryIdentity(
         bot_user_id="bot-1",
         scope_type=ScopeType.PRIVATE,

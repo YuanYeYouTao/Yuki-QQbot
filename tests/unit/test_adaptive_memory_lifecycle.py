@@ -181,11 +181,11 @@ async def test_automatic_recall_global_and_per_target_limits_are_stable(
         requested_limit=2,
     )
 
-    assert len(background.hits) == 3
-    assert len(focused.hits) == 6
+    assert len(background.hits) == 2
+    assert len(focused.hits) == 3
     assert len(overview.hits) == 4
     assert pinned.fact.id in {hit.fact.id for hit in background.hits}
-    assert all(len(block.hits) <= 4 for block in focused.blocks)
+    assert all(len(block.hits) <= 2 for block in focused.blocks)
     assert background.candidate_count == 40
     assert background.trace_hits == tuple(hits)
 

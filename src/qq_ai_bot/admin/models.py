@@ -146,11 +146,11 @@ class MemoryRetrievalRuntimeConfig:
     always_on_explicit_preference_limit: int
     query_term_limit: int
     short_query_fallback_enabled: bool
-    automatic_recall_per_target_limit: int = 4
-    automatic_recall_background_limit: int = 3
-    automatic_recall_continuation_limit: int = 4
-    automatic_recall_focused_limit: int = 6
-    automatic_recall_overview_limit: int = 8
+    automatic_recall_per_target_limit: int = 2
+    automatic_recall_background_limit: int = 2
+    automatic_recall_continuation_limit: int = 2
+    automatic_recall_focused_limit: int = 3
+    automatic_recall_overview_limit: int = 4
     self_enabled: bool = False
     semantic_enabled: bool = True
     semantic_candidate_limit: int = 50

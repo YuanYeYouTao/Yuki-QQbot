@@ -1069,7 +1069,15 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
         )
     )
     await memories.remember(_fact(content="另一个人的秘密", memory_key="other", user_id="1002"))
-    harness = build_harness(database, make_settings(database.url, max_context_characters=20_000))
+    harness = build_harness(
+        database,
+        make_settings(
+            database.url,
+            max_context_characters=20_000,
+            memory_automatic_recall_background_limit=10,
+            memory_automatic_recall_per_target_limit=10,
+        ),
+    )
     await harness.groups.set_enabled("2001", True)
     message = InboundMessage(
         message_id="memory-context",

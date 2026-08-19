@@ -143,3 +143,125 @@ async def test_foreground_does_not_wait_for_background_cleanup_when_capacity_exi
     with pytest.raises(BackgroundModelPreempted):
         await background
     await executor.close()
+
+
+class ExclusiveGateProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.exclusive_started = asyncio.Event()
+        self.exclusive_release = asyncio.Event()
+        self.exclusive_cancelled = asyncio.Event()
+        self.order: list[str] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        content = request.messages[0].content or ""
+        if content == "exclusive":
+            self.exclusive_started.set()
+            try:
+                await self.exclusive_release.wait()
+            except asyncio.CancelledError:
+                self.exclusive_cancelled.set()
+                raise
+            self.order.append("exclusive")
+            return ChatResponse(content="exclusive", latency_seconds=0)
+        self.order.append("foreground")
+        return ChatResponse(content="foreground", latency_seconds=0)
+
+
+class OccupiedForegroundProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.foreground_started = asyncio.Event()
+        self.foreground_release = asyncio.Event()
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        content = request.messages[0].content or ""
+        if content == "foreground":
+            self.foreground_started.set()
+            await self.foreground_release.wait()
+            return ChatResponse(content="foreground", latency_seconds=0)
+        return ChatResponse(content="exclusive", latency_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_exclusive_blocks_later_foreground_without_preemption() -> None:
+    provider = ExclusiveGateProvider()
+    executor = _executor(provider)
+    exclusive = asyncio.create_task(
+        executor.execute(
+            ModelTask.CONVERSATION_COMPACTION,
+            ChatRequest(messages=(ChatMessage(role="user", content="exclusive"),)),
+            priority=ModelExecutionPriority.EXCLUSIVE,
+        )
+    )
+    await asyncio.wait_for(provider.exclusive_started.wait(), timeout=1)
+    foreground = asyncio.create_task(
+        executor.execute(
+            ModelTask.CHAT_AGENT,
+            ChatRequest(messages=(ChatMessage(role="user", content="foreground"),)),
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert not foreground.done()
+    assert not exclusive.done()
+    provider.exclusive_release.set()
+    exclusive_response = await asyncio.wait_for(exclusive, timeout=1)
+    foreground_response = await asyncio.wait_for(foreground, timeout=1)
+    assert exclusive_response.content == "exclusive"
+    assert foreground_response.content == "foreground"
+    assert not provider.exclusive_cancelled.is_set()
+    assert provider.order == ["exclusive", "foreground"]
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_exclusive_waits_for_in_flight_foreground() -> None:
+    provider = OccupiedForegroundProvider()
+    executor = _executor(provider)
+    foreground = asyncio.create_task(
+        executor.execute(
+            ModelTask.CHAT_AGENT,
+            ChatRequest(messages=(ChatMessage(role="user", content="foreground"),)),
+        )
+    )
+    await asyncio.wait_for(provider.foreground_started.wait(), timeout=1)
+    exclusive = asyncio.create_task(
+        executor.execute(
+            ModelTask.CONVERSATION_COMPACTION,
+            ChatRequest(messages=(ChatMessage(role="user", content="exclusive"),)),
+            priority=ModelExecutionPriority.EXCLUSIVE,
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert not exclusive.done()
+    provider.foreground_release.set()
+    foreground_response = await asyncio.wait_for(foreground, timeout=1)
+    exclusive_response = await asyncio.wait_for(exclusive, timeout=1)
+    assert foreground_response.content == "foreground"
+    assert exclusive_response.content == "exclusive"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_exclusive_preempts_best_effort_background() -> None:
+    provider = PreemptibleProvider()
+    executor = _executor(provider)
+    background = asyncio.create_task(
+        executor.execute(
+            ModelTask.MEMORY_ATTRIBUTION,
+            ChatRequest(messages=(ChatMessage(role="user", content="background"),)),
+            priority=ModelExecutionPriority.BEST_EFFORT_BACKGROUND,
+        )
+    )
+    await asyncio.wait_for(provider.background_started.wait(), timeout=1)
+    exclusive = await asyncio.wait_for(
+        executor.execute(
+            ModelTask.CONVERSATION_COMPACTION,
+            ChatRequest(messages=(ChatMessage(role="user", content="exclusive"),)),
+            priority=ModelExecutionPriority.EXCLUSIVE,
+        ),
+        timeout=1,
+    )
+    assert exclusive.content == "foreground"
+    with pytest.raises(BackgroundModelPreempted):
+        await background
+    assert provider.background_cancelled.is_set()
+    await executor.close()

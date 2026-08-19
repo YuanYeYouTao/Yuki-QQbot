@@ -318,7 +318,7 @@ async def evaluate_replay_suite(
                 frozen_db,
                 replay_settings(
                     frozen_db.url,
-                    max_context_characters=800,
+                    max_context_characters=900,
                     conversation_history_rollup_l0_min_events=16,
                     conversation_history_rollup_l0_min_characters=10,
                     conversation_history_raw_tail_events=8,

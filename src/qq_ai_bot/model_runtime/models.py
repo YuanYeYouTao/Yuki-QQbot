@@ -32,6 +32,7 @@ class ModelExecutionPriority(StrEnum):
     """Scheduling priority for provider calls inside the shared executor."""
 
     FOREGROUND = "foreground"
+    EXCLUSIVE = "exclusive"
     BEST_EFFORT_BACKGROUND = "best_effort_background"
 
 

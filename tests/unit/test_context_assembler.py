@@ -65,7 +65,7 @@ def test_current_self_metadata_is_emitted_only_with_selected_facts() -> None:
 async def test_context_assembler_enforces_one_dynamic_character_budget(
     database: Database,
 ) -> None:
-    settings = make_settings(database.url, max_context_characters=1200)
+    settings = make_settings(database.url, max_context_characters=2000)
     harness = build_harness(database, settings)
     memories = MemoryFactService(MemoryFactRepository(database))
     for index in range(30):
@@ -124,7 +124,8 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
     payload_items = {item["id"]: item["data"] for item in payload["items"]}
     history_characters = sum(len(item.content or "") for item in request.messages[1:-1])
 
-    assert len(payload_text) <= settings.max_context_characters * 55 // 100
+    metadata_budget = int(settings.max_context_characters * settings.context_metadata_budget_ratio)
+    assert len(payload_text) <= metadata_budget
     assert len(payload_text) + history_characters <= settings.max_context_characters
     current_history = request.messages[-1].content or ""
     assert "[测试名片|QQ:1001]\n#" in current_history

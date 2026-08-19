@@ -82,8 +82,8 @@ class TestConsumerBudgets:
             ),
             runtime,  # type: ignore[arg-type]
         )
-        assert background == 3
-        assert continuation == 4
+        assert background == 2
+        assert continuation == 2
 
     def test_agent_tool_defaults_to_focused_or_overview(self) -> None:
         runtime = _runtime()
@@ -102,8 +102,8 @@ class TestConsumerBudgets:
             _request(requested_limit=12),
             runtime,  # type: ignore[arg-type]
         )
-        assert relevant == 6
-        assert overview == 8
+        assert relevant == 3
+        assert overview == 4
         assert explicit == 12
 
     def test_plugin_and_admin_use_requested_or_entity_limit(self) -> None:
