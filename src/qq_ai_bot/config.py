@@ -342,6 +342,7 @@ class Settings(BaseSettings):
     conversation_history_llm_origins: str = "user_message"
     conversation_history_rollup_prompt_version: str = "conversation-rollup-v1"
     conversation_history_raw_tail_budget_ratio: float = Field(default=0.55, gt=0, le=1)
+    conversation_history_sync_extractive_max_slices: int = Field(default=3, ge=1)
     conversation_history_around_before: int = Field(default=6, ge=0)
     conversation_history_around_after: int = Field(default=6, ge=0)
     conversation_history_around_limit: int = Field(default=24, ge=1)

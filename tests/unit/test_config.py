@@ -260,6 +260,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.max_context_characters == 12_000
     assert settings.local_context_event_limit == 1_000
     assert settings.history_window_low_watermark_ratio == 0.67
+    assert settings.conversation_history_sync_extractive_max_slices == 3
     assert settings.tooling_selected_tool_limit == 32
     assert settings.tooling_schema_token_budget == 12000
     assert settings.mcp_selected_tool_limit == 16
