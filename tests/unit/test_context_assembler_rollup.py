@@ -178,7 +178,7 @@ async def test_no_coverage_does_not_shorten_near_window(database: Database) -> N
     settings = make_settings(
         database.url,
         conversation_history_rollup_enabled=True,
-        max_context_characters=700,
+        max_context_characters=900,
     )
     ledger = EventLedgerRepository(database)
     ids = await _seed_events(ledger, 12, text="很长的历史")
@@ -197,7 +197,7 @@ async def test_extractive_coverage_advances_left_edge_without_sliding(
     settings = make_settings(
         database.url,
         conversation_history_rollup_enabled=True,
-        max_context_characters=700,
+        max_context_characters=900,
         conversation_history_rollup_l0_min_events=2,
         conversation_history_rollup_l0_min_characters=20,
         conversation_history_raw_tail_events=4,
