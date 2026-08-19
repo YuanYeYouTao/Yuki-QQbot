@@ -287,10 +287,6 @@ def test_history_prompt_keeps_speakers_and_reply_target_self_contained() -> None
         events,
         inbound=inbound,
         content=inbound.text,
-        character_budget=10_000,
-        event_limit=30,
-        low_watermark_ratio=0.67,
-        anchor_event_id=None,
     )
 
     history = bounded.history_messages
@@ -376,83 +372,106 @@ def test_main_agent_history_groups_adjacent_messages_from_the_same_identity() ->
     )
 
 
-def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> None:
-    def rendered(
-        start: int,
-        end: int,
-    ) -> tuple[tuple[int, tuple[int, ...], ChatMessage], ...]:
-        return tuple(
-            (
-                event_id,
-                (event_id,),
-                ChatMessage(role="user", content=f"message-{event_id}"),
+def test_history_window_keeps_left_edge_when_messages_append() -> None:
+    now = datetime.now(UTC)
+
+    def events_upto(end: int) -> tuple[EventRecord, ...]:
+        rows: list[EventRecord] = [
+            EventRecord(
+                id=1,
+                bot_user_id="9999",
+                platform_message_id="m-1",
+                scope_type=ScopeType.PRIVATE,
+                sender_user_id="9999",
+                direction="outbound",
+                content="opener",
+                visual_summary="",
+                segments=(),
+                occurred_at=now,
+                private_peer_user_id="1001",
             )
-            for event_id in range(start, end + 1)
+        ]
+        rows.extend(
+            EventRecord(
+                id=event_id,
+                bot_user_id="9999",
+                platform_message_id=f"m-{event_id}",
+                scope_type=ScopeType.PRIVATE,
+                sender_user_id="1001",
+                direction="inbound",
+                content=f"message-{event_id}",
+                visual_summary="",
+                segments=(),
+                occurred_at=now,
+                private_peer_user_id="1001",
+            )
+            for event_id in range(2, end + 1)
+        )
+        return tuple(rows)
+
+    def inbound_for(event_id: int) -> InboundMessage:
+        return InboundMessage(
+            message_id=f"m-{event_id}",
+            event_type="message",
+            scope_type=ScopeType.PRIVATE,
+            sender=SenderIdentity(user_id="1001"),
+            text=f"message-{event_id}",
+            bot_user_id="9999",
         )
 
-    seeded = ContextAssembler._select_history_window(
-        rendered(1, 5),
-        anchor_event_id=None,
-        high_event_limit=5,
-        high_character_limit=10_000,
-        low_watermark_ratio=0.6,
-        fallback_anchor_event_id=6,
+    first = ContextAssembler._bounded_history(
+        events_upto(5),
+        inbound=inbound_for(5),
+        content="message-5",
     )
-    assert [item.content for item in seeded.messages] == ["message-3", "message-4", "message-5"]
-    assert seeded.anchor_event_id == 3
-    assert seeded.event_ids == (3, 4, 5)
-    assert not seeded.shifted
-
-    appended = ContextAssembler._select_history_window(
-        rendered(3, 6),
-        anchor_event_id=seeded.anchor_event_id,
-        high_event_limit=5,
-        high_character_limit=10_000,
-        low_watermark_ratio=0.6,
-        fallback_anchor_event_id=7,
+    appended = ContextAssembler._bounded_history(
+        events_upto(8),
+        inbound=inbound_for(8),
+        content="message-8",
+        raw_history_window_shifted=False,
     )
-    assert [item.content for item in appended.messages] == [
-        "message-3",
-        "message-4",
-        "message-5",
-        "message-6",
-    ]
-    assert appended.anchor_event_id == 3
-    assert appended.event_ids == (3, 4, 5, 6)
-    assert not appended.shifted
-
-    rolled = ContextAssembler._select_history_window(
-        rendered(3, 8),
-        anchor_event_id=appended.anchor_event_id,
-        high_event_limit=5,
-        high_character_limit=10_000,
-        low_watermark_ratio=0.6,
-        fallback_anchor_event_id=9,
-    )
-    assert [item.content for item in rolled.messages] == ["message-6", "message-7", "message-8"]
-    assert rolled.anchor_event_id == 6
-    assert rolled.event_ids == (6, 7, 8)
-    assert rolled.shifted
+    assert first.history_messages[0].content == appended.history_messages[0].content
+    assert first.history_anchor_event_id == appended.history_anchor_event_id == 1
+    assert not appended.raw_history_window_shifted
+    assert 1 in appended.visible_event_ids
+    assert 7 in appended.visible_event_ids
+    assert 8 in appended.visible_event_ids
 
 
-def test_history_window_character_roll_keeps_a_contiguous_recent_block() -> None:
-    rendered = tuple(
-        (event_id, (event_id,), ChatMessage(role="user", content=str(event_id) * 30))
+def test_history_window_does_not_drop_prefix_to_fit_a_character_budget() -> None:
+    now = datetime.now(UTC)
+    events = tuple(
+        EventRecord(
+            id=event_id,
+            bot_user_id="9999",
+            platform_message_id=f"m-{event_id}",
+            scope_type=ScopeType.PRIVATE,
+            sender_user_id="1001",
+            direction="inbound",
+            content=str(event_id) * 30,
+            visual_summary="",
+            segments=(),
+            occurred_at=now,
+            private_peer_user_id="1001",
+        )
         for event_id in range(1, 6)
     )
-    selection = ContextAssembler._select_history_window(
-        rendered,
-        anchor_event_id=1,
-        high_event_limit=10,
-        high_character_limit=100,
-        low_watermark_ratio=0.6,
-        fallback_anchor_event_id=6,
+    inbound = InboundMessage(
+        message_id="m-5",
+        event_type="message",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id="1001"),
+        text="5" * 30,
+        bot_user_id="9999",
     )
-
-    assert [item.content for item in selection.messages] == ["4" * 30, "5" * 30]
-    assert selection.anchor_event_id == 4
-    assert selection.event_ids == (4, 5)
-    assert selection.shifted
+    bounded = ContextAssembler._bounded_history(
+        events,
+        inbound=inbound,
+        content="5" * 30,
+    )
+    assert bounded.history_anchor_event_id == 1
+    assert {1, 2, 3, 4}.issubset(bounded.visible_event_ids)
+    assert 5 in bounded.visible_event_ids
 
 
 @pytest.mark.asyncio

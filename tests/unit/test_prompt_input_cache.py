@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from tests.conftest import make_settings
 
 from qq_ai_bot.domain.messages import ChatMessage
@@ -170,3 +171,101 @@ def test_composer_finalize_appends_second_turn() -> None:
         "在呢",
         "dyn2\n\n你想我了吗",
     ]
+
+
+def test_composer_splices_when_left_edge_stays_and_turn_is_only_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spliced: list[bool] = []
+    original = splice_appended_input
+
+    def tracked(previous, **kwargs):  # type: ignore[no-untyped-def]
+        result = original(previous, **kwargs)
+        spliced.append(result is not None)
+        return result
+
+    monkeypatch.setattr(
+        "qq_ai_bot.services.prompt_composer.splice_appended_input",
+        tracked,
+    )
+    composer = PromptComposer(make_settings("sqlite+aiosqlite:///:memory:"))
+    history = (_msg("assistant", "[Yuki|QQ:9]\n#10>先前一句"),)
+    first = composer._finalize(
+        _context(history=history, current=_msg("user", "[远野|QQ:1]\n#11>在吗")),
+        CompiledPrompt(
+            messages=(
+                _msg("system", "stable"),
+                *history,
+                _msg("user", "dyn1\n\n[远野|QQ:1]\n#11>在吗"),
+            ),
+            selected=(),
+            metrics=_metrics(),
+        ),
+    )
+    second_history = (
+        *history,
+        _msg("user", "[远野|QQ:1]\n#11>在吗"),
+        _msg("assistant", "[Yuki|QQ:9]\n#12>在呢"),
+    )
+    second = composer._finalize(
+        _context(history=second_history, current=_msg("user", "[远野|QQ:1]\n#13>下一句")),
+        CompiledPrompt(
+            messages=(
+                _msg("system", "stable"),
+                *second_history,
+                _msg("user", "dyn2\n\n[远野|QQ:1]\n#13>下一句"),
+            ),
+            selected=(),
+            metrics=_metrics(),
+        ),
+    )
+    assert spliced == [False, True]
+    assert [item.role for item in first[1:3]] == ["assistant", "user"]
+    assert [item.role for item in second[1:4]] == ["assistant", "user", "assistant"]
+    assert second[1].content == history[0].content
+    assert second[2].content == "dyn1\n\n[远野|QQ:1]\n#11>在吗"
+
+
+def test_composer_rebuilds_when_coverage_end_advanced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spliced: list[bool] = []
+    original = splice_appended_input
+
+    def tracked(previous, **kwargs):  # type: ignore[no-untyped-def]
+        result = original(previous, **kwargs)
+        spliced.append(result is not None)
+        return result
+
+    monkeypatch.setattr(
+        "qq_ai_bot.services.prompt_composer.splice_appended_input",
+        tracked,
+    )
+    composer = PromptComposer(make_settings("sqlite+aiosqlite:///:memory:"))
+    history = (_msg("user", "h1"),)
+    composer._finalize(
+        _context(history=history, current=_msg("user", "在吗")),
+        CompiledPrompt(
+            messages=(_msg("system", "stable"), *history, _msg("user", "dyn1\n\n在吗")),
+            selected=(),
+            metrics=_metrics(),
+        ),
+    )
+    rebuilt = composer._finalize(
+        _context(
+            history=(_msg("user", "h2"),),
+            current=_msg("user", "下一句"),
+            rolled=True,
+        ),
+        CompiledPrompt(
+            messages=(
+                _msg("system", "stable"),
+                _msg("user", "h2"),
+                _msg("user", "dyn2\n\n下一句"),
+            ),
+            selected=(),
+            metrics=_metrics(),
+        ),
+    )
+    assert spliced == [False, False]
+    assert [item.content for item in rebuilt] == ["stable", "h2", "dyn2\n\n下一句"]

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 3.6.2
+
+### Conversation History
+
+- 近窗左沿只认落库 `coverage_end`，超预算时同步 extractive，不再按高低水位从尾巴滑动重切。
+  合同见 [conversation-rollup.md](docs/architecture/conversation-rollup.md)；实施见
+  [3.6.2 任务书](docs/architecture/Yuki-3.6.2-Frozen-History-Tail-Taskbook.md)。
+- 热尾改为条数帽与渲染字符帽的交集；短消息不再把整段未覆盖原文护住。
+- 有覆盖后仍可继续切 extractive。`raw_history_window_shifted` 仅在本 turn `coverage_end` 前进时为真。
+- 默认热尾 `32` 条 / `1600` 渲染字符，近窗预算比 `0.40`；同一 assemble 最多同步 extractive `3` 刀。
+  这些键可运营，不写死在运行时分类器里。
+- 无需新 Alembic。升级见 [3.6.2 升级指南](docs/upgrade-3.6.2.md)。不在本版本改 `__init__.py` 版本号。
+
 ## 3.6.1 - 2026-08-19
 
 ### Conversation History Rollup

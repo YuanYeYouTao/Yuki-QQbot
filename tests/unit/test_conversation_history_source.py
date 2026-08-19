@@ -9,6 +9,7 @@ from qq_ai_bot.conversation.history.source import (
     ConversationSourceSnapshot,
     build_source_snapshot,
     extractive_compact,
+    source_event_prompt_characters,
     source_fingerprint,
 )
 from qq_ai_bot.domain.conversations import ScopeType
@@ -166,3 +167,13 @@ def test_source_snapshot_is_immutable() -> None:
     except Exception:
         return
     raise AssertionError("source snapshot must reject mutation")
+
+
+def test_source_event_prompt_characters_count_envelope_not_bare_content() -> None:
+    snapshot = _snapshot((_event(12, content="hi", visual_summary="一张自拍"),))
+    item = snapshot.events[0]
+    counted = source_event_prompt_characters(item)
+    assert counted > len(item.content)
+    assert counted == len(
+        f"[发送者:{item.sender_label}|QQ:{item.sender_user_id}|消息:{item.event_id}] "
+    ) + len(f"{item.content}\n{item.visual_summary}")

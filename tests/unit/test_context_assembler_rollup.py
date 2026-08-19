@@ -10,6 +10,7 @@ import pytest
 from tests.conftest import make_settings
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.conversation.history.errors import FrontierInvariantError
 from qq_ai_bot.conversation.history.models import (
     ConversationHistoryIdentity,
     HistorySummaryMode,
@@ -163,7 +164,7 @@ async def test_covered_raw_starts_after_frontier_and_skips_list_recent(
     assert "get_chat_history_around" in context.session_text
     assert context.metrics.covered_to == covered[-1]
     assert context.metrics.rollup_characters == len(context.session_text)
-    assert min(context.visible_event_ids) > covered[-1]
+    assert min(context.visible_event_ids) == covered[-1] + 1
     assert set(covered).isdisjoint(context.visible_event_ids)
     assert uncovered[-1] in context.visible_event_ids
     assert "conversation_summary" not in json.dumps(context.metadata_payload, ensure_ascii=False)
@@ -190,7 +191,9 @@ async def test_no_coverage_does_not_shorten_near_window(database: Database) -> N
 
 
 @pytest.mark.asyncio
-async def test_extractive_coverage_then_allows_shift(database: Database) -> None:
+async def test_extractive_coverage_advances_left_edge_without_sliding(
+    database: Database,
+) -> None:
     settings = make_settings(
         database.url,
         conversation_history_rollup_enabled=True,
@@ -214,8 +217,13 @@ async def test_extractive_coverage_then_allows_shift(database: Database) -> None
     context = await _assemble(assembler, database, settings, f"m-{_PEER}-12")
     assert context.metrics.covered_to is not None
     assert context.session_text
-    assert min(context.visible_event_ids) > context.metrics.covered_to
+    assert min(context.visible_event_ids) == context.metrics.covered_to + 1
     assert ids[0] not in context.visible_event_ids
+    assert context.metrics.raw_history_window_shifted
+    again = await _assemble(assembler, database, settings, f"m-{_PEER}-12")
+    assert again.history_messages
+    assert again.history_messages[0].content == context.history_messages[0].content
+    assert not again.metrics.raw_history_window_shifted
 
 
 @pytest.mark.asyncio
@@ -316,3 +324,99 @@ async def test_assemble_external_uses_session_budget(database: Database) -> None
     )
     assert context.session_text
     assert context.metrics.rollup_characters == len(context.session_text)
+    assert min(context.visible_event_ids) == ids[3]
+    assert ids[0] not in context.visible_event_ids
+
+
+@pytest.mark.asyncio
+async def test_covered_snapshot_starts_at_coverage_end_not_the_newest_limit(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    repository = ConversationHistoryRepository(database)
+    ids = await _seed_events(ledger, 140, text="ok")
+    await _commit_cover(repository, ids[:100], "fp-hole")
+    snapshot = await repository.load_prompt_snapshot(_IDENTITY, recent_limit=20)
+    recent_ids = tuple(event.id for event in snapshot.recent_events)
+    assert recent_ids == ids[100:120]
+
+
+@pytest.mark.asyncio
+async def test_covered_short_messages_keep_left_edge_across_appends(
+    database: Database,
+) -> None:
+    settings = make_settings(
+        database.url,
+        conversation_history_rollup_enabled=True,
+        conversation_history_raw_tail_events=200,
+        conversation_history_raw_tail_characters=50_000,
+        conversation_history_raw_tail_budget_ratio=1.0,
+    )
+    ledger = EventLedgerRepository(database)
+    repository = ConversationHistoryRepository(database)
+    ids = await _seed_events(ledger, 20, text="ok")
+    await _commit_cover(repository, ids, "fp-short")
+    opener, _created = await ledger.append(
+        bot_user_id=_BOT,
+        platform_message_id="opener-1",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id=_BOT,
+        direction="outbound",
+        content="coverage opener",
+        private_peer_user_id=_PEER,
+        occurred_at=_NOW + timedelta(seconds=40),
+        sender_is_bot=True,
+    )
+    later = await _seed_events(ledger, 80, start=21, text="ok")
+    assembler = _assembler(database, settings, ledger=ledger, repository=repository)
+    first = await _assemble(assembler, database, settings, f"m-{_PEER}-100")
+    assert first.metrics.covered_to == ids[-1]
+    assert min(first.visible_event_ids) == opener.id
+    assert first.history_anchor_event_id == opener.id
+    left = first.history_messages[0].content
+    assert "coverage opener" in left
+    second = await _assemble(assembler, database, settings, f"m-{_PEER}-100")
+    assert second.history_messages[0].content == left
+    assert not second.metrics.raw_history_window_shifted
+    await _seed_events(ledger, 1, start=101, text="ok")
+    third = await _assemble(assembler, database, settings, f"m-{_PEER}-101")
+    assert third.history_messages[0].content == left
+    assert min(third.visible_event_ids) == opener.id
+    assert later[-1] in third.visible_event_ids
+    assert not third.metrics.raw_history_window_shifted
+
+
+@pytest.mark.asyncio
+async def test_frontier_error_does_not_slide_uncovered_prefix(
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = make_settings(
+        database.url,
+        conversation_history_rollup_enabled=True,
+        conversation_history_raw_tail_events=4,
+        conversation_history_raw_tail_characters=200,
+    )
+    ledger = EventLedgerRepository(database)
+    repository = ConversationHistoryRepository(database)
+    ids = await _seed_events(ledger, 80, text="ok")
+    await _commit_cover(repository, ids[:20], "fp-boom")
+
+    class _BoomCoverage:
+        async def ensure_extractive_coverage(self, *args: object, **kwargs: object) -> None:
+            raise FrontierInvariantError("synthetic frontier")
+
+    assembler = _assembler(
+        database,
+        settings,
+        ledger=ledger,
+        coverage=_BoomCoverage(),
+        repository=repository,
+    )
+    with caplog.at_level("WARNING"):
+        context = await _assemble(assembler, database, settings, f"m-{_PEER}-80")
+    assert context.metrics.covered_to == ids[19]
+    assert min(context.visible_event_ids) == ids[20]
+    assert ids[20] in context.visible_event_ids
+    assert "conversation_history_coverage_skipped" in caplog.text
+    assert not context.metrics.raw_history_window_shifted

@@ -862,7 +862,7 @@ class ConversationHistoryRepository:
                 identity,
                 after_event_id=coverage_end,
                 limit=recent_limit,
-                newest=True,
+                newest=coverage_end <= 0,
             )
             return HistoryContextSnapshot(
                 state=self._state(row),

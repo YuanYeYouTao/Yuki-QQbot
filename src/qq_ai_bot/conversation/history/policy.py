@@ -8,10 +8,10 @@ from qq_ai_bot.conversation.history.source import (
     ConversationSourceSnapshot,
     SourceEventProjection,
     extractive_compact,
+    source_event_prompt_characters,
     source_fingerprint,
 )
 from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.services.context_assembler import ContextAssembler
 
 RenderedHistory = tuple[tuple[int, tuple[int, ...], ChatMessage], ...]
 
@@ -19,8 +19,8 @@ RenderedHistory = tuple[tuple[int, tuple[int, ...], ChatMessage], ...]
 class HistoryCompactionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    raw_tail_events: int = Field(default=48, ge=1)
-    raw_tail_characters: int = Field(default=3600, ge=1)
+    raw_tail_events: int = Field(default=32, ge=1)
+    raw_tail_characters: int = Field(default=1600, ge=1)
     l0_min_events: int = Field(default=32, ge=1)
     l0_min_characters: int = Field(default=8000, ge=1)
     l0_max_events: int = Field(default=100, ge=1)
@@ -84,12 +84,12 @@ class HistoryCompactionPolicy:
         used = 0
         char_index = len(events)
         for index in range(len(events) - 1, -1, -1):
-            used += len(events[index].content) + len(events[index].visual_summary)
+            used += source_event_prompt_characters(events[index])
             char_index = index
             if used >= self.config.raw_tail_characters:
                 break
         char_start = events[char_index].event_id
-        first_protected = min(event_start, char_start)
+        first_protected = max(event_start, char_start)
         protected = tuple(item.event_id for item in events if item.event_id >= first_protected)
         return HotTailBoundary(
             first_protected_event_id=first_protected,
@@ -97,25 +97,25 @@ class HistoryCompactionPolicy:
         )
 
     def allow_raw_window_shift(self, *, has_active_coverage: bool) -> bool:
+        """True when Prompt left edge is already pinned by active coverage.
+
+        3.6.2: this does not authorize assembler sliding and must not skip
+        sync extractive once coverage exists.
+        """
+
         return has_active_coverage
 
     def must_roll_prefix(
         self,
         rendered: RenderedHistory,
         *,
+        snapshot: ConversationSourceSnapshot,
         anchor_event_id: int | None,
         high_event_limit: int,
         high_character_limit: int,
         fallback_anchor_event_id: int | None,
     ) -> tuple[int, ...]:
-        selection = ContextAssembler._select_history_window(
-            rendered,
-            anchor_event_id=anchor_event_id,
-            high_event_limit=high_event_limit,
-            high_character_limit=high_character_limit,
-            low_watermark_ratio=self.config.history_window_low_watermark_ratio,
-            fallback_anchor_event_id=fallback_anchor_event_id,
-        )
+        del fallback_anchor_event_id
         candidate = rendered
         if anchor_event_id is not None:
             anchor_index = next(
@@ -125,25 +125,34 @@ class HistoryCompactionPolicy:
             if anchor_index is not None:
                 candidate = rendered[anchor_index:]
         candidate_characters = sum(len(item.content or "") for _, _, item in candidate)
-        must_roll = (
-            anchor_event_id is None
-            or next(
-                (index for index, item in enumerate(rendered) if item[0] == anchor_event_id),
-                None,
-            )
-            is None
-            or len(candidate) > high_event_limit
-            or candidate_characters > high_character_limit
+        over_budget = (
+            len(candidate) > high_event_limit or candidate_characters > high_character_limit
         )
-        if not must_roll:
+        if not over_budget:
             return ()
-        kept = set(selection.event_ids)
-        return tuple(
-            event_id
-            for _, event_ids, _ in candidate
-            for event_id in event_ids
-            if event_id not in kept
-        )
+        tail = self.hot_tail_boundary(snapshot)
+        protected = tail.first_protected_event_id
+        by_id = {item.event_id: item for item in snapshot.events}
+        collected: list[int] = []
+        characters = 0
+        for _, event_ids, message in candidate:
+            for event_id in event_ids:
+                if protected is not None and event_id >= protected:
+                    return tuple(collected)
+                source = by_id.get(event_id)
+                size = (
+                    len(source.content) + len(source.visual_summary)
+                    if source is not None
+                    else len(message.content or "")
+                )
+                if collected and (
+                    len(collected) >= self.config.l0_max_events
+                    or characters + size > self.config.l0_max_characters
+                ):
+                    return tuple(collected)
+                collected.append(event_id)
+                characters += size
+        return tuple(collected)
 
     def select_l0_candidate(
         self,

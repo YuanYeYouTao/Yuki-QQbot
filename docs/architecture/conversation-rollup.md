@@ -1,8 +1,8 @@
 # 会话 Rollup：省钱且不砍功能
 
-> 状态：**3.6.1 冻结实施合同**（2026-08-19）。实现步骤见 [Yuki-3.6.1-Conversation-History-Rollup-Taskbook.md](Yuki-3.6.1-Conversation-History-Rollup-Taskbook.md)；本合同与任务书冲突时，以任务书修订稿为准，并回写本文。  
+> 状态：**3.6.2 冻结实施合同**（2026-08-19）。3.6.1 交付见 [Yuki-3.6.1-Conversation-History-Rollup-Taskbook.md](Yuki-3.6.1-Conversation-History-Rollup-Taskbook.md)；近窗左沿与热尾以 [Yuki-3.6.2-Frozen-History-Tail-Taskbook.md](Yuki-3.6.2-Frozen-History-Tail-Taskbook.md) 为准。冲突时以较新任务书为准，并回写本文。  
 > 对应 3.6.0 R4 预留位：`conversation_summary` 在合同未齐前固定为 `None`（见 [04-R4-CONVERSATION-RUNTIME.md](yuki-3.6.0-refactor-plan/04-R4-CONVERSATION-RUNTIME.md) §4.2）。齐了之后也只接受本表 `status=active` 行。  
-> 目标：把闲聊主 Agent 的 **uncached 历史**压下来，同时保留近窗连续性、引用、以及按 `event_id` 回读更早上文的能力。
+> 目标：把闲聊主 Agent 的 **uncached 历史**压下来，同时让未覆盖原文在 DeepSeek 前缀缓存里能追加命中；保留近窗连续性、引用、以及按 `event_id` 回读更早上文的能力。
 
 ---
 
@@ -12,7 +12,8 @@
 - Rollup 属于 Conversation Runtime，不是 Memory V2。不创建 `MemoryFact`，不增加 Evidence，不参与 Activation，不生成 Recall Receipt，不进入 Memory Mutation，不进 Memory FTS / Embedding。
 - Summary 是可重建、可替换、可审计的派生视图，不是当前事实权威。
 - 普通聊天主路径不得增加一次 Compaction **模型**请求。切窗当下只允许零 LLM 的 extractive。
-- 没有 extractive / active 覆盖时，禁止把原文近窗 shift 掉。
+- 没有 extractive / active 覆盖时，禁止丢掉未覆盖原文前缀。
+- 有覆盖后 Prompt 左沿只许 `coverage_end` 前进。禁止按高低水位从最新往回重切近窗。
 - Prompt 永远保留一段精确近期原文。摘要只替代较早历史。摘要区间与近窗原文不得重叠，也不得出现覆盖空洞。
 - Context Reset 开启新的摘要 epoch。任何摘要不得跨越 Reset。
 - Yuki 层级名为 `L0` / `L1` / `L2` / …，记录真实起止时间。禁止用 month/year 当 Level 名。
@@ -36,9 +37,9 @@
 
 ## 2. 结论先说
 
-Yuki 现在的「roll」是 **丢前缀原文**，不是压缩。水位一到，被切掉的 `#event_id` 气泡从 prompt 里消失，进程内 `anchor_event_id` 前移；账本还在，但主模型看不见。
+3.6.0/3.6.1 的「roll」若靠高低水位从尾巴重切，就是 **丢前缀原文**：左沿每轮移动，DeepSeek 前缀缓存在 SESSION 处断开，近窗整段按 miss 计价。账本还在，但主模型每轮当新文档买一遍。
 
-省 token 的动作是：有覆盖摘要之后 **主动缩短原文近窗**，用一小段派生摘要换回被切掉的连续性；不是在 12k 字符池上再叠一层摘要。
+3.6.2 省 token 的动作是：用派生摘要前进 `coverage_end` 来缩短原文；**装进 Prompt 的未覆盖气泡左沿冻结、只追加**。超预算时同步 extractive，不准滑。不是在 12k 字符池上再叠一层摘要。
 
 目标 Prompt 形状（必须能映射到改过后的 `PromptCompiler.compile`）：
 
@@ -84,7 +85,7 @@ Yuki 现在的「roll」是 **丢前缀原文**，不是压缩。水位一到，
 - Letta / MemGPT：摘要走便宜模型；只靠递归摘要，长期问答很弱，必须保留检索。Yuki 已有历史/记忆工具。
 - Diana（同为 QQ Agent）：同步 extractive 防空洞，异步 LLM 换质量，原文落盘，层级卷起。Yuki 不把 Summary 放进 Structured Memory，不用 month/year 当 Level 名，不用进程内字符串当权威。
 
-Yuki 触发继续绑现有高低水位，不另搞关键词「该不该压」分类器。
+Yuki 用近窗渲染体积/条数触发压缩，不另搞关键词「该不该压」分类器。体积超预算时切 L0，不滑动选窗。
 
 ---
 
@@ -94,16 +95,16 @@ Yuki 触发继续绑现有高低水位，不另搞关键词「该不该压」分
 |---|---|---|
 | 单调 `chat_events.id` | 有 | 覆盖闭区间 |
 | `#event_id` 信封 | `event_prompt.py` | 近窗继续带 id；摘要里的 id 不可 `set_reply_target` |
-| 高/低水位 | `_select_history_window` | 有覆盖后高水位改为扣完摘要后的 history 余额的 50–60% |
-| 窗口锚点 | 进程内 `OrderedDict`，重启丢失 | 落库 `coverage_end`；assemble 只拉 `id > coverage_end` |
+| 近窗左沿 | 3.6.1 仍可能按低水位从尾巴重切 | 只认落库 `coverage_end`；assemble 只拉 `id > coverage_end` 且 ASC |
+| 热尾 | 48 条或 3600 字取更大保护 | 条数帽与渲染字符帽的 **交集**（保留集更小） |
 | `conversation_summary` | 固定 `None` | 只接受本表 active 行 |
 | `context_resets` | 有 | 新 epoch，旧摘要不得出现 |
 | Memory V2 | 事实 / episode / dream | 并列，不是会话摘要存储 |
 | `get_recent_chat_history` | NapCat ~20 | 不承担 around |
 | `search_chat_history` | 关键词 | 3.6.1 必须补 around |
-| `PromptCompiler` | 二元 STATIC / 非 STATIC | 必须改成 STATIC / SESSION / TURN |
+| `PromptCompiler` | 三路 STATIC / SESSION / TURN（3.6.1） | 保持；SESSION 不得进 TURN 前缀 |
 
-`local_context_event_limit` 默认 1000，真正卡住的是 12k 池。Hot Tail 默认 **48 事件或 3600 渲染字符，取更大**，全部进配置；16/4000 对 QQ 闲聊过狠。
+`local_context_event_limit` 默认 1000，真正卡住的是 12k 池。Hot Tail 是上限：最近 `raw_tail_events` 条与最近 `raw_tail_characters` 渲染字符取交集，全部进配置。短消息不得因为裸正文不够 3600 就把整段未覆盖区间护住。
 
 ---
 
@@ -125,7 +126,7 @@ Yuki 触发继续绑现有高低水位，不另搞关键词「该不该压」分
 - 在 history 中间插 system。
 - 把 rollup 挂在当前消息前缀（今天不改 `compile()` 就会发生；摘要每轮 uncached，近窗原文一点没少）。
 
-`PromptMetrics.stable_prefix_hash` 继续只哈希 STATIC。SESSION 另计 `session_characters`，不得计入 `dynamic_characters`。Frontier 不变时 SESSION 与近窗都可以走前缀缓存；Frontier 更新允许与水位 shift 一样打断 history 缓存，不许动 static。
+`PromptMetrics.stable_prefix_hash` 继续只哈希 STATIC。SESSION 另计 `session_characters`，不得计入 `dynamic_characters`。Frontier 与 `coverage_end` 不变时 SESSION 与近窗都可以走前缀缓存：近窗左沿冻结、只在末尾追加。公开指标 `raw_history_window_shifted` 仅在本 turn `coverage_end` 前进时为真，composer 据此丢弃 input cache；只追加一条新消息不得把它打真。仅当 `coverage_end` / Frontier 前进时允许打断 history 缓存，不许动 static。禁止用高低水位滑动把 `input[0]` 每轮改掉。
 
 ### 6.2 预算：摘要从 history 余额出钱
 
@@ -133,26 +134,28 @@ Yuki 触发继续绑现有高低水位，不另搞关键词「该不该压」分
 history 余额 = max_context_characters - metadata_json     # 人格不在这个池里
 先渲染 SESSION → rollup_characters
 history_budget = max(0, 余额 - rollup_characters)
-有覆盖后：近窗高水位 = history_budget * raw_tail_budget_ratio（默认 0.55）
-无覆盖：维持今天行为，不插入 SESSION system
+有覆盖后：近窗预算 = min(history_budget * raw_tail_budget_ratio, 可选渲染字符硬顶)
+该预算只触发同步 extractive，不从最新往回挑选 Prompt 起点
+无覆盖：不插入 SESSION system；bootstrap 后一旦写出第一刀 extractive，改走 id > coverage_end
 ```
 
-Summary 使用余额的 15–25%（默认 ratio 0.20，最低 600、最高 1600 字符）。禁止 `2400 摘要 + 原 12k 近窗`。
+Summary 使用余额的 15–25%（默认 ratio 0.20，最低 600、最高 1600 字符）。禁止 `2400 摘要 + 原 12k 近窗`。禁止「从尾巴填满预算」充当压缩。
 
 `assemble()` 与 `assemble_external()` 同一套 Snapshot / 预算 / SESSION。插件内部 `session_repository` 不是 `chat_events`，不压缩。
 
 ### 6.3 双轨：先保空洞，再换质量
 
 ```text
-must_roll 且将被丢掉的前缀 [L, R] 达到门槛
-  1. 同步、零 LLM：写 status=active、mode=extractive 的 L0
-     立刻可进 SESSION → 这之后才允许把原文收到低水位
+未覆盖渲染体积或条数超过近窗预算
+  1. 同步、零 LLM：从紧挨 coverage_end、且早于热尾的左端切一块 extractive L0
+     立刻可进 SESSION → Prompt 左沿改为新的 coverage_end+1
+     同一 assemble 最多同步若干刀（配置），仍超则整段未覆盖保留进 Prompt，不得滑动
   2. 异步：enqueue raw_range job，Flash 把同一 source_fingerprint 升级为 model_summary
      同一事务里 extractive → rolled_up，禁止两行同时 active
-  失败则继续用 extractive
+  失败则继续用 extractive；不变式错误时不滑，聊天继续
 ```
 
-允许窗口尚未 must_roll 时预抽最早未覆盖区间（不缩短近窗）。
+允许尚未超预算时预抽最早未覆盖区间（不缩短近窗，也不滑动）。
 
 Flash 默认仅 `TurnOrigin.USER_MESSAGE`。`AUTONOMOUS_GROUP` / `PLUGIN_SESSION` / `PLUGIN_BACKGROUND` 默认只 extractive。白名单是配置里的 `TurnOrigin` 列表，不写死群号。
 
@@ -259,6 +262,8 @@ instruction:
 - 阻塞用户回合直到 LLM 摘要完成。
 - 缩短近窗却不提供 around。
 - 另起 `conversation-history-rollup.md` 与本合同并行。
+- 从最新往回滑动重切近窗来「装进预算」。
+- 用「字数不到热尾上限就把整段当热尾」挡住第二刀 L0。
 
 ---
 
@@ -271,7 +276,8 @@ instruction:
 - 只能引用本轮可见原文气泡。
 - Reset 后旧摘要立即消失。
 - 人格 cache 不因引入 rollup 而塌（static 字节级稳定）。
-- 无覆盖不切窗；有 extractive 才允许 shift。
+- 无覆盖不丢未覆盖前缀；有 extractive 才前进 `coverage_end`。
+- Prompt 近窗左沿不因新消息从尾巴重切。
 
 省钱（同一会话、同一模型、无工具闲聊）：
 
@@ -285,8 +291,9 @@ instruction:
 
 | 文档 | 关系 |
 |---|---|
-| 本文件 | 冻结合同：source / trust / version / invalidation + 3.6.1 硬修正 |
-| [任务书](Yuki-3.6.1-Conversation-History-Rollup-Taskbook.md) | 12 个顺序 commit；不得合成一次大提交 |
+| 本文件 | 冻结合同：source / trust / version / invalidation + 3.6.2 近窗左沿 |
+| [3.6.1 任务书](Yuki-3.6.1-Conversation-History-Rollup-Taskbook.md) | 已落地的 12 个 commit |
+| [3.6.2 任务书](Yuki-3.6.2-Frozen-History-Tail-Taskbook.md) | 冻结近窗；6 个顺序 commit |
 | R4 §4.2 | 本合同补齐其推迟的 `conversation_summary` |
 | Memory V2 | 并行；事实 ≠ 会话压缩 |
 | Tool Kernel | around / search 走 Capability + artifact 预算 |

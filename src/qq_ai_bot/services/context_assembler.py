@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -50,7 +49,6 @@ from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
 
 logger = logging.getLogger(__name__)
-_HISTORY_WINDOW_STATE_LIMIT = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,16 +100,6 @@ class _BoundedMessages:
 
 
 @dataclass(frozen=True, slots=True)
-class _HistoryWindowSelection:
-    """One stable history epoch selected between configurable watermarks."""
-
-    messages: tuple[ChatMessage, ...]
-    anchor_event_id: int | None
-    shifted: bool
-    event_ids: tuple[int, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class _HistoryPromptWindow:
     """One consistent rollup snapshot used to compile SESSION plus uncovered raw."""
 
@@ -121,6 +109,18 @@ class _HistoryPromptWindow:
     revision: int
     frontier: tuple[ConversationHistorySummary, ...]
     rollup_mode: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _UncoveredPromptView:
+    """Rendered uncovered history used to decide sync extractive."""
+
+    history_rows: tuple[EventRecord, ...]
+    rendered: tuple[tuple[int, tuple[int, ...], ChatMessage], ...]
+    record: EventRecord
+    fallback_event_id: int
+    current_characters: int
+    rendered_characters: int
 
 
 class ConversationHistoryCoverage(Protocol):
@@ -160,7 +160,6 @@ class ContextAssembler:
         self._history_repository = history_repository
         self._history_coverage = history_coverage
         self._history_renderer = HistorySummaryRenderer()
-        self._history_window_anchors: OrderedDict[str, int] = OrderedDict()
 
     async def assemble(
         self,
@@ -190,9 +189,6 @@ class ContextAssembler:
             event_limit=runtime.context.local_event_limit,
         )
         recent = snapshot.recent
-        history_window_key = self._history_window_key(
-            identity, reset, coverage_end=snapshot.coverage_end, revision=snapshot.revision
-        )
         external_events = self._external_event_context(recent)
         if memory_retrieval is not None:
             retrieval = memory_retrieval
@@ -361,7 +357,7 @@ class ContextAssembler:
             default=str,
         )
         remainder = max(0, total_budget - len(metadata_json))
-        snapshot, recent, session_text = await self._ensure_coverage_before_shift(
+        snapshot, recent, session_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
             inbound=inbound,
@@ -374,30 +370,29 @@ class ContextAssembler:
         history_window_key = self._history_window_key(
             identity, reset, coverage_end=snapshot.coverage_end, revision=snapshot.revision
         )
-        history_budget = max(0, remainder - len(session_text))
-        if snapshot.coverage_end > 0:
-            history_budget = int(
-                history_budget * self._settings.conversation_history_raw_tail_budget_ratio
-            )
         bounded_messages = self._bounded_history(
             recent,
             inbound=inbound,
             content=content,
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
-            character_budget=history_budget,
-            event_limit=runtime.context.local_event_limit,
-            low_watermark_ratio=self._settings.history_window_low_watermark_ratio,
-            anchor_event_id=self._history_window_anchor(history_window_key),
-            allow_shift=snapshot.coverage_end > 0,
-        )
-        self._remember_history_window_anchor(
-            history_window_key,
-            bounded_messages.history_anchor_event_id,
+            raw_history_window_shifted=shifted,
         )
         history_messages = bounded_messages.history_messages
         current_message = bounded_messages.current_message
         history_characters = sum(len(message.content or "") for message in history_messages)
+        uncovered_events = len(
+            tuple(row for row in recent if row.platform_message_id != inbound.message_id)
+        )
+        over_budget = int(
+            history_characters
+            > self._near_window_character_budget(
+                remainder=remainder,
+                session_text=session_text,
+                coverage_end=snapshot.coverage_end,
+            )
+            or uncovered_events > max(0, runtime.context.local_event_limit - 1)
+        )
         metrics = ContextMetrics(
             metadata_characters=len(metadata_json),
             history_characters=history_characters,
@@ -411,13 +406,16 @@ class ContextAssembler:
         logger.debug(
             "context_assembled metadata_characters=%d history_characters=%d "
             "history_messages=%d current_message_characters=%d "
-            "raw_history_window_shifted=%s rollup_characters=%d",
+            "raw_history_window_shifted=%s rollup_characters=%d "
+            "uncovered_events=%d over_budget=%d",
             metrics.metadata_characters,
             metrics.history_characters,
             metrics.history_messages,
             metrics.current_message_characters,
             metrics.raw_history_window_shifted,
             metrics.rollup_characters,
+            uncovered_events,
+            over_budget,
         )
         return AssembledContext(
             metadata_payload=metadata_payload,
@@ -474,9 +472,6 @@ class ContextAssembler:
             event_limit=runtime.context.local_event_limit,
         )
         recent = snapshot.recent
-        history_window_key = self._history_window_key(
-            history_identity, reset, coverage_end=snapshot.coverage_end, revision=snapshot.revision
-        )
         retrieval = await self._memory_context.retrieve_for_turn(
             inbound=inbound,
             content=event.content,
@@ -537,7 +532,7 @@ class ContextAssembler:
         )
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         remainder = max(0, self._settings.max_context_characters - len(metadata_json))
-        snapshot, recent, session_text = await self._ensure_coverage_before_shift(
+        snapshot, recent, session_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
             inbound=inbound,
@@ -551,25 +546,12 @@ class ContextAssembler:
         history_window_key = self._history_window_key(
             history_identity, reset, coverage_end=snapshot.coverage_end, revision=snapshot.revision
         )
-        history_budget = max(0, remainder - len(session_text))
-        if snapshot.coverage_end > 0:
-            history_budget = int(
-                history_budget * self._settings.conversation_history_raw_tail_budget_ratio
-            )
         bounded_messages = self._bounded_external_history(
             recent,
             current_event=event,
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
-            character_budget=history_budget,
-            event_limit=runtime.context.local_event_limit,
-            low_watermark_ratio=self._settings.history_window_low_watermark_ratio,
-            anchor_event_id=self._history_window_anchor(history_window_key),
-            allow_shift=snapshot.coverage_end > 0,
-        )
-        self._remember_history_window_anchor(
-            history_window_key,
-            bounded_messages.history_anchor_event_id,
+            raw_history_window_shifted=shifted,
         )
         history = bounded_messages.history_messages
         current_message = bounded_messages.current_message
@@ -1012,23 +994,28 @@ class ContextAssembler:
         reset_marker = reset.isoformat() if reset is not None else "none"
         return f"{identity.key}|reset:{reset_marker}|cov:{coverage_end}|rev:{revision}"
 
-    def _history_window_anchor(self, key: str) -> int | None:
-        anchor = self._history_window_anchors.get(key)
-        if anchor is not None:
-            self._history_window_anchors.move_to_end(key)
-        return anchor
+    def _near_window_character_budget(
+        self,
+        *,
+        remainder: int,
+        session_text: str,
+        coverage_end: int,
+    ) -> int:
+        history_balance = max(0, remainder - len(session_text))
+        if coverage_end <= 0:
+            return history_balance
+        ratio_cap = int(history_balance * self._settings.conversation_history_raw_tail_budget_ratio)
+        return min(
+            history_balance,
+            ratio_cap,
+            self._settings.conversation_history_raw_tail_characters,
+        )
 
-    def _remember_history_window_anchor(self, key: str, anchor: int | None) -> None:
-        if anchor is None:
-            self._history_window_anchors.pop(key, None)
-            return
-        existing = self._history_window_anchors.get(key)
-        # Concurrent turns may finish out of order. Event IDs are monotonic, so
-        # never let an older turn move a conversation's cache anchor backwards.
-        self._history_window_anchors[key] = max(existing or anchor, anchor)
-        self._history_window_anchors.move_to_end(key)
-        while len(self._history_window_anchors) > _HISTORY_WINDOW_STATE_LIMIT:
-            self._history_window_anchors.popitem(last=False)
+    def _near_window_event_limit(self, *, event_limit: int, coverage_end: int) -> int:
+        high = max(0, event_limit - 1)
+        if coverage_end <= 0:
+            return high
+        return min(high, self._settings.conversation_history_raw_tail_events)
 
     def _rollup_enabled(self) -> bool:
         return (
@@ -1112,23 +1099,14 @@ class ContextAssembler:
             rollup_mode=self._frontier_mode(loaded.frontier),
         )
 
-    async def _ensure_coverage_before_shift(
+    def _uncovered_prompt_view(
         self,
-        *,
-        snapshot: _HistoryPromptWindow,
         recent: tuple[EventRecord, ...],
+        *,
         inbound: InboundMessage,
         content: str,
-        remainder: int,
-        event_limit: int,
-        reset: datetime | None,
-        identity: ConversationIdentity,
-        current_event: EventRecord | None = None,
-    ) -> tuple[_HistoryPromptWindow, tuple[EventRecord, ...], str]:
-        session_text = snapshot.session_text
-        coverage = self._history_coverage
-        if not self._rollup_enabled() or snapshot.coverage_end > 0 or coverage is None:
-            return snapshot, recent, session_text
+        current_event: EventRecord | None,
+    ) -> _UncoveredPromptView | None:
         renderer = ChatEventPromptRenderer(
             recent,
             bot_display_name=self._settings.bot_display_name,
@@ -1136,7 +1114,7 @@ class ContextAssembler:
         )
         if current_event is not None:
             history_rows = tuple(row for row in recent if row.id != current_event.id)
-            current_chars = len(renderer.render_reference_event(current_event))
+            current_characters = len(renderer.render_reference_event(current_event))
             record = current_event
             fallback = current_event.id
         else:
@@ -1148,8 +1126,8 @@ class ContextAssembler:
                 None,
             )
             if current_row is None:
-                return snapshot, recent, session_text
-            current_chars = len(
+                return None
+            current_characters = len(
                 renderer.reference_message(
                     current_row,
                     current_message_id=inbound.message_id,
@@ -1160,55 +1138,99 @@ class ContextAssembler:
             record = current_row
             fallback = current_row.id
         rendered = renderer.main_agent_history(history_rows)
-        try:
-            summary = await coverage.ensure_extractive_coverage(
-                record,
-                rendered=rendered,
-                anchor_event_id=self._history_window_anchor(
-                    self._history_window_key(
-                        identity, reset, coverage_end=0, revision=snapshot.revision
-                    )
-                ),
-                high_event_limit=max(0, event_limit - 1),
-                high_character_limit=max(0, remainder - current_chars),
-                fallback_anchor_event_id=fallback,
-            )
-        except (FrontierInvariantError, HistoryJobConflictError) as exc:
-            logger.warning(
-                "conversation_history_coverage_skipped error_category=%s",
-                type(exc).__name__,
-            )
-            return snapshot, recent, session_text
-        if summary is None:
-            return snapshot, recent, session_text
-        reloaded = await self._load_history_snapshot(
-            bot_user_id=inbound.bot_user_id,
-            scope_type=inbound.scope_type,
-            user_id=(
-                current_event.private_peer_user_id or inbound.sender.user_id
-                if current_event is not None
-                else inbound.sender.user_id
-            ),
-            group_id=inbound.group_id,
-            reset=reset,
-            event_limit=event_limit,
+        return _UncoveredPromptView(
+            history_rows=history_rows,
+            rendered=rendered,
+            record=record,
+            fallback_event_id=fallback,
+            current_characters=current_characters,
+            rendered_characters=sum(len(item.content or "") for _, _, item in rendered),
         )
-        return reloaded, reloaded.recent, reloaded.session_text
 
-    @classmethod
+    async def _ensure_uncovered_fits_budget(
+        self,
+        *,
+        snapshot: _HistoryPromptWindow,
+        recent: tuple[EventRecord, ...],
+        inbound: InboundMessage,
+        content: str,
+        remainder: int,
+        event_limit: int,
+        reset: datetime | None,
+        identity: ConversationIdentity,
+        current_event: EventRecord | None = None,
+    ) -> tuple[_HistoryPromptWindow, tuple[EventRecord, ...], str, bool]:
+        del identity
+        coverage_before = snapshot.coverage_end
+        session_text = snapshot.session_text
+        coverage = self._history_coverage
+        if not self._rollup_enabled() or coverage is None:
+            return snapshot, recent, session_text, False
+        max_slices = self._settings.conversation_history_sync_extractive_max_slices
+        for _ in range(max_slices):
+            view = self._uncovered_prompt_view(
+                recent,
+                inbound=inbound,
+                content=content,
+                current_event=current_event,
+            )
+            if view is None:
+                break
+            character_budget = self._near_window_character_budget(
+                remainder=remainder,
+                session_text=session_text,
+                coverage_end=snapshot.coverage_end,
+            )
+            event_high = self._near_window_event_limit(
+                event_limit=event_limit,
+                coverage_end=snapshot.coverage_end,
+            )
+            if len(view.history_rows) <= event_high and view.rendered_characters <= max(
+                0, character_budget - view.current_characters
+            ):
+                break
+            try:
+                summary = await coverage.ensure_extractive_coverage(
+                    view.record,
+                    rendered=view.rendered,
+                    anchor_event_id=view.rendered[0][0] if view.rendered else None,
+                    high_event_limit=event_high,
+                    high_character_limit=max(0, character_budget - view.current_characters),
+                    fallback_anchor_event_id=view.fallback_event_id,
+                )
+            except (FrontierInvariantError, HistoryJobConflictError) as exc:
+                logger.warning(
+                    "conversation_history_coverage_skipped error_category=%s",
+                    type(exc).__name__,
+                )
+                break
+            if summary is None:
+                break
+            snapshot = await self._load_history_snapshot(
+                bot_user_id=inbound.bot_user_id,
+                scope_type=inbound.scope_type,
+                user_id=(
+                    current_event.private_peer_user_id or inbound.sender.user_id
+                    if current_event is not None
+                    else inbound.sender.user_id
+                ),
+                group_id=inbound.group_id,
+                reset=reset,
+                event_limit=event_limit,
+            )
+            recent = snapshot.recent
+            session_text = snapshot.session_text
+        return snapshot, recent, session_text, snapshot.coverage_end > coverage_before
+
+    @staticmethod
     def _bounded_history(
-        cls,
         recent: tuple[EventRecord, ...],
         *,
         inbound: InboundMessage,
         content: str,
-        character_budget: int,
-        event_limit: int,
-        low_watermark_ratio: float,
-        anchor_event_id: int | None,
         bot_display_name: str = "Yuki",
         timezone: str = "Asia/Shanghai",
-        allow_shift: bool = True,
+        raw_history_window_shifted: bool = False,
     ) -> _BoundedMessages:
         renderer = ChatEventPromptRenderer(
             recent,
@@ -1233,96 +1255,19 @@ class ContextAssembler:
         )
         history_rows = tuple(row for row in recent if row.platform_message_id != inbound.message_id)
         rendered = renderer.main_agent_history(history_rows)
-        selection = cls._select_history_window(
-            rendered,
-            anchor_event_id=anchor_event_id,
-            high_event_limit=max(0, event_limit - 1),
-            high_character_limit=max(0, character_budget - len(current_message.content or "")),
-            low_watermark_ratio=low_watermark_ratio,
-            fallback_anchor_event_id=current_row.id if current_row is not None else None,
-            allow_shift=allow_shift,
-        )
+        event_ids = tuple(event_id for _, ids, _ in rendered for event_id in ids)
         return _BoundedMessages(
-            history_messages=selection.messages,
+            history_messages=tuple(item for _, _, item in rendered),
             current_message=current_message,
-            history_anchor_event_id=selection.anchor_event_id,
-            raw_history_window_shifted=selection.shifted,
-            visible_event_ids=frozenset(
-                (*selection.event_ids, *((current_row.id,) if current_row is not None else ()))
+            history_anchor_event_id=(
+                rendered[0][0]
+                if rendered
+                else (current_row.id if current_row is not None else None)
             ),
-        )
-
-    @staticmethod
-    def _select_history_window(
-        rendered: tuple[tuple[int, tuple[int, ...], ChatMessage], ...],
-        *,
-        anchor_event_id: int | None,
-        high_event_limit: int,
-        high_character_limit: int,
-        low_watermark_ratio: float,
-        fallback_anchor_event_id: int | None,
-        allow_shift: bool = True,
-    ) -> _HistoryWindowSelection:
-        """Keep one prefix stable until a high watermark forces a block roll."""
-
-        anchor_index = next(
-            (index for index, item in enumerate(rendered) if item[0] == anchor_event_id),
-            None,
-        )
-        anchor_found = anchor_index is not None
-        candidate = rendered[anchor_index:] if anchor_index is not None else rendered
-        candidate_characters = sum(len(item.content or "") for _, _, item in candidate)
-        must_roll = (
-            not anchor_found
-            or len(candidate) > high_event_limit
-            or candidate_characters > high_character_limit
-        )
-        if not must_roll:
-            return _HistoryWindowSelection(
-                messages=tuple(item for _, _, item in candidate),
-                anchor_event_id=(candidate[0][0] if candidate else fallback_anchor_event_id),
-                shifted=False,
-                event_ids=tuple(
-                    event_id for _, event_ids, _ in candidate for event_id in event_ids
-                ),
-            )
-        if not allow_shift:
-            return _HistoryWindowSelection(
-                messages=tuple(item for _, _, item in candidate),
-                anchor_event_id=(candidate[0][0] if candidate else fallback_anchor_event_id),
-                shifted=False,
-                event_ids=tuple(
-                    event_id for _, event_ids, _ in candidate for event_id in event_ids
-                ),
-            )
-
-        if high_event_limit <= 0 or high_character_limit <= 0:
-            return _HistoryWindowSelection(
-                messages=(),
-                anchor_event_id=fallback_anchor_event_id,
-                shifted=anchor_event_id is not None,
-            )
-
-        low_event_limit = max(1, int(high_event_limit * low_watermark_ratio))
-        low_character_limit = max(1, int(high_character_limit * low_watermark_ratio))
-        selected_reversed: list[tuple[int, tuple[int, ...], ChatMessage]] = []
-        selected_characters = 0
-        for item in reversed(candidate):
-            size = len(item[2].content or "")
-            if len(selected_reversed) >= low_event_limit:
-                break
-            if not selected_reversed and size > high_character_limit:
-                break
-            if selected_reversed and selected_characters + size > low_character_limit:
-                break
-            selected_reversed.append(item)
-            selected_characters += size
-        selected = tuple(reversed(selected_reversed))
-        return _HistoryWindowSelection(
-            messages=tuple(item for _, _, item in selected),
-            anchor_event_id=(selected[0][0] if selected else fallback_anchor_event_id),
-            shifted=anchor_event_id is not None,
-            event_ids=tuple(event_id for _, event_ids, _ in selected for event_id in event_ids),
+            raw_history_window_shifted=raw_history_window_shifted,
+            visible_event_ids=frozenset(
+                (*event_ids, *((current_row.id,) if current_row is not None else ()))
+            ),
         )
 
     def _external_event_context(
@@ -1360,19 +1305,14 @@ class ContextAssembler:
         selected.reverse()
         return tuple(selected)
 
-    @classmethod
+    @staticmethod
     def _bounded_external_history(
-        cls,
         recent: tuple[EventRecord, ...],
         *,
         current_event: EventRecord,
-        character_budget: int,
-        event_limit: int,
-        low_watermark_ratio: float,
-        anchor_event_id: int | None,
         bot_display_name: str = "Yuki",
         timezone: str = "Asia/Shanghai",
-        allow_shift: bool = True,
+        raw_history_window_shifted: bool = False,
     ) -> _BoundedMessages:
         renderer = ChatEventPromptRenderer(
             recent,
@@ -1382,19 +1322,11 @@ class ContextAssembler:
         trigger = renderer.render_reference_event(current_event)
         history_rows = tuple(row for row in recent if row.id != current_event.id)
         rendered = renderer.main_agent_history(history_rows)
-        selection = cls._select_history_window(
-            rendered,
-            anchor_event_id=anchor_event_id,
-            high_event_limit=max(0, event_limit - 1),
-            high_character_limit=max(0, character_budget - len(trigger)),
-            low_watermark_ratio=low_watermark_ratio,
-            fallback_anchor_event_id=current_event.id,
-            allow_shift=allow_shift,
-        )
+        event_ids = tuple(event_id for _, ids, _ in rendered for event_id in ids)
         return _BoundedMessages(
-            history_messages=selection.messages,
+            history_messages=tuple(item for _, _, item in rendered),
             current_message=ChatMessage(role="system", content=trigger),
-            history_anchor_event_id=selection.anchor_event_id,
-            raw_history_window_shifted=selection.shifted,
-            visible_event_ids=frozenset((*selection.event_ids, current_event.id)),
+            history_anchor_event_id=(rendered[0][0] if rendered else current_event.id),
+            raw_history_window_shifted=raw_history_window_shifted,
+            visible_event_ids=frozenset((*event_ids, current_event.id)),
         )
