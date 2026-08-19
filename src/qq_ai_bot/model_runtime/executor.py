@@ -347,10 +347,12 @@ class TaskModelExecutor:
         async with self._background_slot:
             async with self._priority_condition:
                 await self._priority_condition.wait_for(
-                    lambda: self._foreground_active == 0
-                    and self._foreground_waiting == 0
-                    and self._exclusive_active == 0
-                    and self._exclusive_waiting == 0
+                    lambda: (
+                        self._foreground_active == 0
+                        and self._foreground_waiting == 0
+                        and self._exclusive_active == 0
+                        and self._exclusive_waiting == 0
+                    )
                 )
                 provider_task = asyncio.create_task(
                     self._complete_provider(provider, request),
