@@ -126,7 +126,7 @@ Yuki 用近窗渲染体积/条数触发压缩，不另搞关键词「该不该�
 - 在 history 中间插 system。
 - 把 rollup 挂在当前消息前缀（今天不改 `compile()` 就会发生；摘要每轮 uncached，近窗原文一点没少）。
 
-`PromptMetrics.stable_prefix_hash` 继续只哈希 STATIC。SESSION 另计 `session_characters`，不得计入 `dynamic_characters`。Frontier 与 `coverage_end` 不变时 SESSION 与近窗都可以走前缀缓存：近窗左沿冻结、只在末尾追加。仅当 `coverage_end` / Frontier 前进时允许打断 history 缓存，不许动 static。禁止用高低水位滑动把 `input[0]` 每轮改掉。
+`PromptMetrics.stable_prefix_hash` 继续只哈希 STATIC。SESSION 另计 `session_characters`，不得计入 `dynamic_characters`。Frontier 与 `coverage_end` 不变时 SESSION 与近窗都可以走前缀缓存：近窗左沿冻结、只在末尾追加。公开指标 `raw_history_window_shifted` 仅在本 turn `coverage_end` 前进时为真，composer 据此丢弃 input cache；只追加一条新消息不得把它打真。仅当 `coverage_end` / Frontier 前进时允许打断 history 缓存，不许动 static。禁止用高低水位滑动把 `input[0]` 每轮改掉。
 
 ### 6.2 预算：摘要从 history 余额出钱
 
