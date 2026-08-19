@@ -6,7 +6,7 @@
 > 建议开发分支：`feature/3.6.2-frozen-history-tail`  
 > 审阅日期：2026-08-19  
 > 实施方式：**6 个**可独立审阅、持续通过质量检查的 commit。不得合并成一次大提交。  
-> 冻结合同：现有 [conversation-rollup.md](conversation-rollup.md) 仍有效；本任务书修订其中「近窗靠高低水位滑动」的条款。冲突时以本任务书为准，并在 Commit 1 回写合同。
+> 冻结合同：[conversation-rollup.md](conversation-rollup.md) 的 3.6.2 近窗条款以本文为准并已在 Commit 1 回写。
 
 ---
 

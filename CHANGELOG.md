@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 3.6.2
+
+### Conversation History
+
+- 近窗左沿只认落库 `coverage_end`，超预算时同步 extractive，不再按高低水位从尾巴滑动重切。
+  合同见 [conversation-rollup.md](docs/architecture/conversation-rollup.md)；实施见
+  [3.6.2 任务书](docs/architecture/Yuki-3.6.2-Frozen-History-Tail-Taskbook.md)。
+
 ## 3.6.1 - 2026-08-19
 
 ### Conversation History Rollup
