@@ -122,7 +122,7 @@ class Settings(BaseSettings):
     # Keep history meaningfully larger than the old 12K-character window without
     # making a rolling cache miss resend a six-figure token prompt.
     max_context_characters: int = 12_000
-    context_metadata_budget_ratio: float = Field(default=0.55, gt=0, lt=1)
+    context_metadata_budget_ratio: float = Field(default=0.35, gt=0, lt=1)
     history_window_low_watermark_ratio: float = Field(default=0.67, gt=0, lt=1)
 
     global_llm_concurrency: int = 4
@@ -177,13 +177,13 @@ class Settings(BaseSettings):
     memory_self_reflection_tool_receipt_retention_days: int = 7
     memory_max_referenced_targets: int = 5
     memory_lexical_candidate_limit: int = 50
-    memory_context_limit_per_entity: int = 8
-    memory_overview_limit_per_entity: int = 20
-    memory_automatic_recall_per_target_limit: int = Field(default=4, gt=0, le=20)
-    memory_automatic_recall_background_limit: int = Field(default=3, gt=0, le=20)
-    memory_automatic_recall_continuation_limit: int = Field(default=4, gt=0, le=20)
-    memory_automatic_recall_focused_limit: int = Field(default=6, gt=0, le=20)
-    memory_automatic_recall_overview_limit: int = Field(default=8, gt=0, le=20)
+    memory_context_limit_per_entity: int = 4
+    memory_overview_limit_per_entity: int = 10
+    memory_automatic_recall_per_target_limit: int = Field(default=2, gt=0, le=20)
+    memory_automatic_recall_background_limit: int = Field(default=2, gt=0, le=20)
+    memory_automatic_recall_continuation_limit: int = Field(default=2, gt=0, le=20)
+    memory_automatic_recall_focused_limit: int = Field(default=3, gt=0, le=20)
+    memory_automatic_recall_overview_limit: int = Field(default=4, gt=0, le=20)
     memory_always_on_explicit_preference_limit: int = 3
     memory_query_term_limit: int = 12
     memory_short_query_fallback_enabled: bool = True

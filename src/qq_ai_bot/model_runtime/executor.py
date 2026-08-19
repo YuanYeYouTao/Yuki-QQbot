@@ -124,6 +124,9 @@ class TaskModelExecutor:
         self._priority_condition = asyncio.Condition()
         self._foreground_active = 0
         self._foreground_waiting = 0
+        self._exclusive_active = 0
+        self._exclusive_waiting = 0
+        self._exclusive_slot = asyncio.Lock()
         self._background_slot = asyncio.Lock()
         self._background_provider_task: asyncio.Task[ChatResponse] | None = None
 
@@ -268,34 +271,73 @@ class TaskModelExecutor:
     ) -> ChatResponse:
         if priority is ModelExecutionPriority.BEST_EFFORT_BACKGROUND:
             return await self._execute_background_provider(provider, request)
+        if priority is ModelExecutionPriority.EXCLUSIVE:
+            return await self._execute_exclusive_provider(provider, request)
         return await self._execute_foreground_provider(provider, request)
+
+    def _cancel_best_effort_background(self) -> None:
+        background = self._background_provider_task
+        if background is not None and not background.done():
+            background.cancel()
 
     async def _execute_foreground_provider(
         self,
         provider: ModelCompleter,
         request: ChatRequest,
     ) -> ChatResponse:
+        waiting = False
         active = False
         async with self._priority_condition:
             self._foreground_waiting += 1
-            background = self._background_provider_task
-            if background is not None and not background.done():
-                background.cancel()
+            waiting = True
+            self._cancel_best_effort_background()
+            self._priority_condition.notify_all()
+            await self._priority_condition.wait_for(
+                lambda: self._exclusive_active == 0 and self._exclusive_waiting == 0
+            )
+            self._foreground_waiting -= 1
+            waiting = False
+            self._foreground_active += 1
+            active = True
             self._priority_condition.notify_all()
         try:
-            async with self._priority_condition:
-                self._foreground_waiting -= 1
-                self._foreground_active += 1
-                active = True
-                self._priority_condition.notify_all()
             return await self._complete_provider(provider, request)
         finally:
             async with self._priority_condition:
                 if active:
                     self._foreground_active -= 1
-                else:
+                elif waiting:
                     self._foreground_waiting -= 1
                 self._priority_condition.notify_all()
+
+    async def _execute_exclusive_provider(
+        self,
+        provider: ModelCompleter,
+        request: ChatRequest,
+    ) -> ChatResponse:
+        async with self._exclusive_slot:
+            waiting = False
+            active = False
+            async with self._priority_condition:
+                self._exclusive_waiting += 1
+                waiting = True
+                self._cancel_best_effort_background()
+                self._priority_condition.notify_all()
+                await self._priority_condition.wait_for(lambda: self._foreground_active == 0)
+                self._exclusive_waiting -= 1
+                waiting = False
+                self._exclusive_active += 1
+                active = True
+                self._priority_condition.notify_all()
+            try:
+                return await self._complete_provider(provider, request)
+            finally:
+                async with self._priority_condition:
+                    if active:
+                        self._exclusive_active -= 1
+                    elif waiting:
+                        self._exclusive_waiting -= 1
+                    self._priority_condition.notify_all()
 
     async def _execute_background_provider(
         self,
@@ -305,7 +347,10 @@ class TaskModelExecutor:
         async with self._background_slot:
             async with self._priority_condition:
                 await self._priority_condition.wait_for(
-                    lambda: self._foreground_active == 0 and self._foreground_waiting == 0
+                    lambda: self._foreground_active == 0
+                    and self._foreground_waiting == 0
+                    and self._exclusive_active == 0
+                    and self._exclusive_waiting == 0
                 )
                 provider_task = asyncio.create_task(
                     self._complete_provider(provider, request),

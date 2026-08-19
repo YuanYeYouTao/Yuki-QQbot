@@ -237,7 +237,7 @@ class ConversationHistorySummarizer:
             max_output_tokens=COMPACTION_MAX_OUTPUT_TOKENS,
             allow_text_json=True,
             compact_schema=True,
-            priority=ModelExecutionPriority.BEST_EFFORT_BACKGROUND,
+            priority=ModelExecutionPriority.EXCLUSIVE,
         )
         return validate_conversation_summary(
             output,

@@ -48,7 +48,11 @@ class ConversationHistoryJobProcessor(Protocol):
 
 
 class ConversationHistoryWorker:
-    """Claim durable jobs, run them in the background, and never block chat."""
+    """Claim durable jobs and run exclusive compaction until the queue drains.
+
+    Inbound chat is still recorded on the ledger. Later foreground generation waits
+    out an in-flight exclusive job, then replies to the latest admitted message.
+    """
 
     def __init__(
         self,

@@ -157,7 +157,7 @@ async def test_summarizer_accepts_normal_l0_output(caplog: pytest.LogCaptureFixt
         output = await summarizer.summarize_events(snapshot, level=0)
     assert output.narrative.startswith("用户询问行程")
     assert output.open_loops[0].item == "是否前往北京"
-    assert executor.priorities == [ModelExecutionPriority.BEST_EFFORT_BACKGROUND]
+    assert executor.priorities == [ModelExecutionPriority.EXCLUSIVE]
     assert executor.requests[0].thinking_enabled is False
     assert executor.requests[0].tools == ()
     assert _QUESTION not in caplog.text
