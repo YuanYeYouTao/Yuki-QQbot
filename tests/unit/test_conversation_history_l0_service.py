@@ -14,8 +14,10 @@ from qq_ai_bot.conversation.history.models import (
     HistorySummaryMode,
     HistorySummaryStatus,
 )
+from qq_ai_bot.conversation.history.policy import HistoryCompactionPolicy
 from qq_ai_bot.conversation.history.repository import ConversationHistoryRepository
 from qq_ai_bot.conversation.history.service import ConversationHistoryService
+from qq_ai_bot.conversation.history.source import build_source_snapshot
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse
 from qq_ai_bot.model_runtime.models import (
@@ -129,6 +131,18 @@ def _rendered(records: list[EventRecord]) -> tuple[tuple[int, tuple[int, ...], C
     )
 
 
+def _first_protected_event_id(records: list[EventRecord]) -> int:
+    snapshot = build_source_snapshot(
+        state_id=1,
+        reset_at=None,
+        scope_type=ScopeType.PRIVATE,
+        events=tuple(records),
+    )
+    boundary = HistoryCompactionPolicy().hot_tail_boundary(snapshot)
+    assert boundary.first_protected_event_id is not None
+    return boundary.first_protected_event_id
+
+
 def _service(
     database: Database,
     *,
@@ -170,8 +184,7 @@ async def test_prefetch_enqueues_after_32_uncovered_events(database: Database) -
     assert job is not None
     assert job.job_kind is HistoryJobKind.RAW_RANGE
     assert len(range(job.source_start_id, job.source_end_id + 1)) <= 100
-    protected_start = records[-48].id
-    assert job.source_end_id < protected_start
+    assert job.source_end_id < _first_protected_event_id(records)
 
 
 @pytest.mark.asyncio
@@ -180,7 +193,7 @@ async def test_prefetch_enqueues_after_8000_uncovered_characters(database: Datab
     records = [await _append(ledger, index, body="c" * 500) for index in range(1, 69)]
     job = await repository.claim_next_job(lease_owner="t", lease_seconds=5)
     assert job is not None
-    assert job.source_end_id < records[-48].id
+    assert job.source_end_id < _first_protected_event_id(records)
     leftover = await repository.claim_next_job(lease_owner="t2", lease_seconds=5)
     assert leftover is None
 
@@ -210,7 +223,7 @@ async def test_must_roll_writes_extractive_without_model(database: Database) -> 
     assert tuple(member.source_event_id for member in summary.members) == tuple(
         range(summary.start_event_id, summary.end_event_id + 1)
     )
-    assert all(record.id > summary.end_event_id for record in records[-48:])
+    assert summary.end_event_id < _first_protected_event_id(records)
 
 
 @pytest.mark.asyncio
@@ -323,7 +336,7 @@ async def test_restart_can_process_durable_job(database: Database) -> None:
     snapshot = await repository.load_context_snapshot(job.state_id)
     assert snapshot.frontier[0].mode is HistorySummaryMode.MODEL_SUMMARY
     assert snapshot.coverage_end_event_id == job.source_end_id
-    assert snapshot.coverage_end_event_id < records[-48].id
+    assert snapshot.coverage_end_event_id < _first_protected_event_id(records)
 
 
 @pytest.mark.asyncio

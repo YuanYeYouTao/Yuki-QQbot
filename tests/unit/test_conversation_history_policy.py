@@ -12,6 +12,7 @@ from qq_ai_bot.conversation.history.policy import (
 from qq_ai_bot.conversation.history.source import (
     ConversationSourceSnapshot,
     build_source_snapshot,
+    source_event_prompt_characters,
 )
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage
@@ -67,29 +68,71 @@ def _rendered(snapshot: ConversationSourceSnapshot):
     )
 
 
-def test_hot_tail_protects_last_48_events_when_that_range_is_wider() -> None:
-    snapshot = _snapshot(80, body="x" * 100)
-    boundary = HistoryCompactionPolicy().hot_tail_boundary(snapshot)
-    assert boundary.first_protected_event_id == snapshot.events[32].event_id
-    assert boundary.protected_event_ids == tuple(item.event_id for item in snapshot.events[32:])
-    assert len(boundary.protected_event_ids) == 48
+def _hot_tail_starts(
+    snapshot: ConversationSourceSnapshot,
+    policy: HistoryCompactionPolicy,
+) -> tuple[int, int]:
+    events = snapshot.events
+    event_start = events[max(0, len(events) - policy.config.raw_tail_events)].event_id
+    used = 0
+    char_index = len(events)
+    for index in range(len(events) - 1, -1, -1):
+        used += source_event_prompt_characters(events[index])
+        char_index = index
+        if used >= policy.config.raw_tail_characters:
+            break
+    return event_start, events[char_index].event_id
 
 
-def test_hot_tail_protects_last_3600_characters_when_that_range_is_wider() -> None:
-    snapshot = _snapshot(80, body="y" * 50)
-    boundary = HistoryCompactionPolicy().hot_tail_boundary(snapshot)
-    assert boundary.first_protected_event_id == snapshot.events[8].event_id
-    assert len(boundary.protected_event_ids) == 72
-
-
-def test_hot_tail_uses_the_wider_of_event_and_character_protection() -> None:
+def test_hot_tail_keeps_the_tighter_of_event_and_rendered_character_caps() -> None:
     policy = HistoryCompactionPolicy()
-    by_events = policy.hot_tail_boundary(_snapshot(80, body="z" * 100))
-    by_chars = policy.hot_tail_boundary(_snapshot(80, body="z" * 50))
-    assert by_events.first_protected_event_id is not None
-    assert by_chars.first_protected_event_id is not None
-    assert by_chars.first_protected_event_id < by_events.first_protected_event_id
-    assert len(by_chars.protected_event_ids) > len(by_events.protected_event_ids)
+    long_body = _snapshot(80, body="x" * 100)
+    short_body = _snapshot(80, body="y" * 50)
+    long_boundary = policy.hot_tail_boundary(long_body)
+    short_boundary = policy.hot_tail_boundary(short_body)
+    long_event, long_char = _hot_tail_starts(long_body, policy)
+    short_event, short_char = _hot_tail_starts(short_body, policy)
+    assert long_boundary.first_protected_event_id == max(long_event, long_char)
+    assert short_boundary.first_protected_event_id == max(short_event, short_char)
+    assert long_boundary.first_protected_event_id is not None
+    assert short_boundary.first_protected_event_id is not None
+    assert len(long_boundary.protected_event_ids) <= policy.config.raw_tail_events
+    assert len(short_boundary.protected_event_ids) <= policy.config.raw_tail_events
+    assert len(long_boundary.protected_event_ids) <= len(short_boundary.protected_event_ids)
+
+
+def test_hot_tail_does_not_protect_an_entire_short_message_uncovered_range() -> None:
+    snapshot = _snapshot(199, body="hi")
+    policy = HistoryCompactionPolicy()
+    boundary = policy.hot_tail_boundary(snapshot)
+    first_protected = snapshot.events[-policy.config.raw_tail_events].event_id
+    assert boundary.first_protected_event_id == first_protected
+    assert len(boundary.protected_event_ids) == policy.config.raw_tail_events
+    candidate = policy.select_l0_candidate(
+        snapshot,
+        coverage_end_event_id=0,
+        dropped_prefix_ids=(),
+        must_roll=False,
+    )
+    assert candidate is not None
+    assert candidate.event_ids[0] == snapshot.events[0].event_id
+    assert candidate.end_event_id < boundary.first_protected_event_id
+
+
+def test_prefetch_can_slice_after_existing_coverage_on_short_messages() -> None:
+    snapshot = _snapshot(120, body="ok", start=101)
+    policy = HistoryCompactionPolicy()
+    boundary = policy.hot_tail_boundary(snapshot)
+    candidate = policy.select_l0_candidate(
+        snapshot,
+        coverage_end_event_id=100,
+        dropped_prefix_ids=(),
+        must_roll=False,
+    )
+    assert candidate is not None
+    assert candidate.event_ids[0] == snapshot.events[0].event_id
+    assert boundary.first_protected_event_id is not None
+    assert candidate.end_event_id < boundary.first_protected_event_id
 
 
 def test_allow_raw_window_shift_requires_active_coverage() -> None:
@@ -142,12 +185,14 @@ def test_must_roll_selects_extractive_candidate_from_dropped_prefix() -> None:
         dropped_prefix_ids=dropped,
         must_roll=True,
     )
+    boundary = policy.hot_tail_boundary(snapshot)
     assert candidate is not None
     assert candidate.prefetch is False
     assert candidate.extractive_text
     assert candidate.start_event_id == snapshot.events[0].event_id
-    assert candidate.end_event_id < snapshot.events[-48].event_id
-    assert "#1" in candidate.extractive_text
+    assert boundary.first_protected_event_id is not None
+    assert candidate.end_event_id < boundary.first_protected_event_id
+    assert f"#{candidate.end_event_id}" in candidate.extractive_text
 
 
 def test_prefetch_starts_after_uncovered_range_reaches_32_events_or_8000_chars() -> None:

@@ -8,6 +8,7 @@ from qq_ai_bot.conversation.history.source import (
     ConversationSourceSnapshot,
     SourceEventProjection,
     extractive_compact,
+    source_event_prompt_characters,
     source_fingerprint,
 )
 from qq_ai_bot.domain.messages import ChatMessage
@@ -84,12 +85,12 @@ class HistoryCompactionPolicy:
         used = 0
         char_index = len(events)
         for index in range(len(events) - 1, -1, -1):
-            used += len(events[index].content) + len(events[index].visual_summary)
+            used += source_event_prompt_characters(events[index])
             char_index = index
             if used >= self.config.raw_tail_characters:
                 break
         char_start = events[char_index].event_id
-        first_protected = min(event_start, char_start)
+        first_protected = max(event_start, char_start)
         protected = tuple(item.event_id for item in events if item.event_id >= first_protected)
         return HotTailBoundary(
             first_protected_event_id=first_protected,

@@ -116,6 +116,20 @@ def source_fingerprint(snapshot: ConversationSourceSnapshot) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def source_event_prompt_characters(item: SourceEventProjection) -> int:
+    """Count envelope-sized bytes used for hot-tail caps.
+
+    Matches the assembler bubble shape closely enough that short QQ lines
+    hit the character cap; not a byte-identical PromptCompiler dump.
+    """
+
+    envelope = f"[发送者:{item.sender_label}|QQ:{item.sender_user_id}|消息:{item.event_id}] "
+    body = item.content
+    if item.visual_summary:
+        body = f"{body}\n{item.visual_summary}".strip()
+    return len(envelope) + len(body)
+
+
 def parent_source_fingerprint(
     *,
     state_id: int,
