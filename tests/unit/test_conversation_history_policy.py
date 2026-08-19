@@ -17,7 +17,6 @@ from qq_ai_bot.conversation.history.source import (
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.services.context_assembler import ContextAssembler
 
 _NOW = datetime(2026, 8, 19, 4, 0, tzinfo=UTC)
 
@@ -141,31 +140,38 @@ def test_allow_raw_window_shift_requires_active_coverage() -> None:
     assert policy.allow_raw_window_shift(has_active_coverage=True) is True
 
 
-def test_must_roll_prefix_matches_existing_history_window_clock() -> None:
-    snapshot = _snapshot(20, body="n" * 40)
+def test_must_roll_prefix_returns_left_slice_excluding_hot_tail() -> None:
+    snapshot = _snapshot(80, body="n" * 40)
     rendered = _rendered(snapshot)
     policy = HistoryCompactionPolicy()
     dropped = policy.must_roll_prefix(
         rendered,
+        snapshot=snapshot,
         anchor_event_id=snapshot.events[0].event_id,
         high_event_limit=8,
         high_character_limit=10_000,
         fallback_anchor_event_id=None,
     )
-    selection = ContextAssembler._select_history_window(
-        rendered,
-        anchor_event_id=snapshot.events[0].event_id,
-        high_event_limit=8,
-        high_character_limit=10_000,
-        low_watermark_ratio=policy.config.history_window_low_watermark_ratio,
-        fallback_anchor_event_id=None,
-    )
-    kept = set(selection.event_ids)
-    expected = tuple(
-        event_id for _, event_ids, _ in rendered for event_id in event_ids if event_id not in kept
-    )
-    assert dropped == expected
+    boundary = policy.hot_tail_boundary(snapshot)
     assert dropped
+    assert dropped[0] == snapshot.events[0].event_id
+    assert dropped == tuple(range(dropped[0], dropped[-1] + 1))
+    assert boundary.first_protected_event_id is not None
+    assert dropped[-1] < boundary.first_protected_event_id
+    assert len(dropped) <= policy.config.l0_max_events
+
+
+def test_must_roll_prefix_empty_when_uncovered_fits_budget() -> None:
+    snapshot = _snapshot(5, body="hi")
+    dropped = HistoryCompactionPolicy().must_roll_prefix(
+        _rendered(snapshot),
+        snapshot=snapshot,
+        anchor_event_id=snapshot.events[0].event_id,
+        high_event_limit=50,
+        high_character_limit=10_000,
+        fallback_anchor_event_id=None,
+    )
+    assert dropped == ()
 
 
 def test_must_roll_selects_extractive_candidate_from_dropped_prefix() -> None:
@@ -174,6 +180,7 @@ def test_must_roll_selects_extractive_candidate_from_dropped_prefix() -> None:
     rendered = _rendered(snapshot)
     dropped = policy.must_roll_prefix(
         rendered,
+        snapshot=snapshot,
         anchor_event_id=snapshot.events[0].event_id,
         high_event_limit=50,
         high_character_limit=100_000,

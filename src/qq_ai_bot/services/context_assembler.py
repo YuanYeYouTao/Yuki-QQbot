@@ -1263,7 +1263,11 @@ class ContextAssembler:
         fallback_anchor_event_id: int | None,
         allow_shift: bool = True,
     ) -> _HistoryWindowSelection:
-        """Keep one prefix stable until a high watermark forces a block roll."""
+        """Keep one prefix stable until a high watermark forces a block roll.
+
+        Commit 4 stops assemble from sliding via this helper; policy no longer
+        reads it. Keep the function until the assembler rewrite lands.
+        """
 
         anchor_index = next(
             (index for index, item in enumerate(rendered) if item[0] == anchor_event_id),

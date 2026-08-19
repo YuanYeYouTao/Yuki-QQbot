@@ -133,25 +133,17 @@ class ConversationHistoryService:
         high_character_limit: int,
         fallback_anchor_event_id: int | None,
     ) -> ConversationHistorySummary | None:
-        """Sync extractive L0 when the existing window clock must roll. Zero LLM."""
+        """Sync extractive L0 when uncovered history exceeds the near-window budget.
 
+        Zero LLM. Active coverage no longer skips this path; left-edge movement
+        is coverage_end advancing, not assembler sliding.
+        """
+
+        del anchor_event_id
         if not self._settings.conversation_history_rollup_enabled:
             return None
         identity = await self._history_identity(record)
         state = await self._repository.get_or_create_state(identity)
-        if self._policy.allow_raw_window_shift(
-            has_active_coverage=state.active_frontier_end_event_id > 0
-        ):
-            return None
-        dropped = self._policy.must_roll_prefix(
-            rendered,
-            anchor_event_id=anchor_event_id,
-            high_event_limit=high_event_limit,
-            high_character_limit=high_character_limit,
-            fallback_anchor_event_id=fallback_anchor_event_id,
-        )
-        if not dropped:
-            return None
         last_seen = max(
             state.last_seen_event_id,
             max((event_id for _, event_ids, _ in rendered for event_id in event_ids), default=0),
@@ -162,11 +154,27 @@ class ConversationHistoryService:
             coverage_end_event_id=state.active_frontier_end_event_id,
             last_seen_event_id=last_seen,
         )
+        coverage_end = state.active_frontier_end_event_id
+        uncovered = tuple(
+            (display_id, tuple(event_id for event_id in event_ids if event_id > coverage_end), msg)
+            for display_id, event_ids, msg in rendered
+            if any(event_id > coverage_end for event_id in event_ids)
+        )
+        dropped = self._policy.must_roll_prefix(
+            uncovered,
+            snapshot=snapshot,
+            anchor_event_id=uncovered[0][0] if uncovered else None,
+            high_event_limit=high_event_limit,
+            high_character_limit=high_character_limit,
+            fallback_anchor_event_id=fallback_anchor_event_id,
+        )
+        if not dropped:
+            return None
         candidate = await self._extractive_candidate(
             identity,
             snapshot,
             state_id=state.id,
-            coverage_end_event_id=state.active_frontier_end_event_id,
+            coverage_end_event_id=coverage_end,
             dropped=dropped,
         )
         if candidate is None:
@@ -344,7 +352,7 @@ class ConversationHistoryService:
         dropped: tuple[int, ...],
     ) -> RawRangeCandidate | None:
         open_job = await self._repository.get_open_job(state_id, job_kind=HistoryJobKind.RAW_RANGE)
-        if open_job is not None:
+        if open_job is not None and open_job.source_end_id > coverage_end_event_id:
             events = await self._repository.load_source_events(
                 identity,
                 start_event_id=open_job.source_start_id,

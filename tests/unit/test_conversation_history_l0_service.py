@@ -223,7 +223,29 @@ async def test_must_roll_writes_extractive_without_model(database: Database) -> 
     assert tuple(member.source_event_id for member in summary.members) == tuple(
         range(summary.start_event_id, summary.end_event_id + 1)
     )
-    assert summary.end_event_id < _first_protected_event_id(records)
+    protected = _first_protected_event_id(records)
+    assert all(member.source_event_id < protected for member in summary.members)
+    assert records[-1].id not in {member.source_event_id for member in summary.members}
+
+
+@pytest.mark.asyncio
+async def test_second_extractive_advances_coverage_without_a_hole(database: Database) -> None:
+    executor = _SummarizerExecutor(_valid_output())
+    service, ledger, repository = _service(database, models=executor)
+    records = [await _append(ledger, index, body="w" * 500) for index in range(1, 69)]
+    first = await _ensure_extractive(service, records)
+    assert first is not None
+    second = await _ensure_extractive(service, records)
+    assert second is not None
+    assert second.id != first.id
+    assert second.start_event_id == first.end_event_id + 1
+    snapshot = await repository.load_context_snapshot(first.state_id)
+    assert snapshot.coverage_end_event_id == second.end_event_id
+    uncovered = [record for record in records if record.id > first.end_event_id]
+    protected = _first_protected_event_id(uncovered)
+    assert second.end_event_id < protected
+    assert all(member.source_event_id < protected for member in second.members)
+    assert records[-1].id not in {member.source_event_id for member in second.members}
 
 
 @pytest.mark.asyncio
