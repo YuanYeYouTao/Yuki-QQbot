@@ -1,6 +1,7 @@
 # 会话 Rollup：省钱且不砍功能
 
 > 状态：**3.6.1 冻结实施合同**（2026-08-19）。实现步骤见 [Yuki-3.6.1-Conversation-History-Rollup-Taskbook.md](Yuki-3.6.1-Conversation-History-Rollup-Taskbook.md)；本合同与任务书冲突时，以任务书修订稿为准，并回写本文。  
+> **3.6.2 待回写：** 近窗不得再按高低水位从尾巴滑动。左沿只认 `coverage_end`，超预算同步 extractive。见 [Yuki-3.6.2-Frozen-History-Tail-Taskbook.md](Yuki-3.6.2-Frozen-History-Tail-Taskbook.md)；该任务书 Commit 1 必须把 §5 / §6.1–6.3 改成现行条款。  
 > 对应 3.6.0 R4 预留位：`conversation_summary` 在合同未齐前固定为 `None`（见 [04-R4-CONVERSATION-RUNTIME.md](yuki-3.6.0-refactor-plan/04-R4-CONVERSATION-RUNTIME.md) §4.2）。齐了之后也只接受本表 `status=active` 行。  
 > 目标：把闲聊主 Agent 的 **uncached 历史**压下来，同时保留近窗连续性、引用、以及按 `event_id` 回读更早上文的能力。
 
