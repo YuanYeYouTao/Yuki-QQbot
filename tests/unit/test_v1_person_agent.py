@@ -127,6 +127,7 @@ async def test_enabled_untriggered_group_is_observed_but_disabled_group_is_not(
     result = await harness.processor.handle(enabled, MemorySender())
     assert not result.handled and result.reason == "group_observed"
     assert await harness.profiles.get(user_id="1001", group_id="2001") is not None
+    assert await MemoryJobRepository(database).pending_count() == 0
     ledger = EventLedgerRepository(database)
     rows = await ledger.list_scope_recent(
         ConversationScope.group("8000", "2001"),
@@ -143,6 +144,17 @@ async def test_enabled_untriggered_group_is_observed_but_disabled_group_is_not(
         limit=10,
     )
     assert not rows
+
+
+@pytest.mark.asyncio
+async def test_mentioned_group_turn_still_enqueues_memory_v2(database: Database) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    result = await harness.processor.handle(
+        inbound("叫我一声", message_id="mention-1", group_id="2001", mentions_bot=True),
+        MemorySender(),
+    )
+    assert result.handled
+    assert await MemoryJobRepository(database).pending_count() == 1
 
 
 class ToolLoopProvider(LLMProvider):
