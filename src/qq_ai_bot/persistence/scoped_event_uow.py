@@ -17,7 +17,9 @@ from qq_ai_bot.conversation.rollup.db_models import (
 )
 from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
 from qq_ai_bot.conversation.rollup.models import ConversationScopeState, RollupPolicyConfig
-from qq_ai_bot.conversation.rollup.renderer import projection_characters
+from qq_ai_bot.conversation.rollup.prompt_accounting import (
+    prompt_accounting_event_characters,
+)
 from qq_ai_bot.conversation.rollup.repository import (
     _scope_from_row,
     _scope_state,
@@ -223,7 +225,12 @@ class ScopedEventLedgerUnitOfWork:
             )
             scope_row.last_event_id = max(scope_row.last_event_id, row.id)
             scope_row.uncovered_event_count += 1
-            scope_row.uncovered_character_count += projection_characters(event)
+            scope_row.uncovered_character_count += prompt_accounting_event_characters(
+                event,
+                events=(event,),
+                bot_display_name=self._config.bot_display_name,
+                timezone=self._config.timezone,
+            )
             scope_row.updated_at = observed_at
             signalled = await self._signal_if_needed(session, scope_row, force_existing=True)
             state = _scope_state(scope_row)
@@ -321,7 +328,12 @@ class ScopedEventLedgerUnitOfWork:
             scope_row = await get_or_create_scope_row(
                 session, scope, first_event_id=row.id, now=now
             )
-            old_characters = projection_characters(old)
+            old_characters = prompt_accounting_event_characters(
+                old,
+                events=(old,),
+                bot_display_name=self._config.bot_display_name,
+                timezone=self._config.timezone,
+            )
             row.visual_summary = normalized
             await session.flush()
             new = _event_record(row)
@@ -332,9 +344,17 @@ class ScopedEventLedgerUnitOfWork:
                 else scope_row.starts_after_event_id
             )
             if row.id > coverage:
-                scope_row.uncovered_character_count += projection_characters(new) - old_characters
+                scope_row.uncovered_character_count += (
+                    prompt_accounting_event_characters(
+                        new,
+                        events=(new,),
+                        bot_display_name=self._config.bot_display_name,
+                        timezone=self._config.timezone,
+                    )
+                    - old_characters
+                )
                 if scope_row.uncovered_character_count < 0:
-                    await recount_scope_uncovered(session, scope_row)
+                    await recount_scope_uncovered(session, scope_row, self._config)
                     self.metrics.counter_repairs += 1
                     if scope_row.uncovered_character_count < 0:
                         self.metrics.counter_reconcile_failures += 1

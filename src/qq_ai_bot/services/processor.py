@@ -657,7 +657,7 @@ class MessageProcessor:
         # Deterministic native and direct-plugin commands execute their own reviewed
         # mutation path. Feeding command syntax to the extraction Worker would create
         # a second interpretation of the same write and may pollute long-term memory.
-        if created and decision.command is None and direct_match is None:
+        if created and decision.command is None and direct_match is None and direct_turn:
             memory_conversation_key = (
                 ResolvedMemoryScope.for_group(record.group_id).partition_key
                 if record.group_id is not None

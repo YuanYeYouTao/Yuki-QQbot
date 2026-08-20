@@ -249,11 +249,20 @@ def test_autonomous_scorer_ignores_direct_admission_flags() -> None:
 
 
 def test_low_value_group_observation_does_not_participate() -> None:
-    snapshot = LocalAutonomousParticipationPolicy().evaluate(
+    snapshot = LocalAutonomousParticipationPolicy(threshold=80).evaluate(
         AdmissionFeatures(scope_type=ScopeType.GROUP, text="哈哈")
     )
+    assert snapshot.threshold == 80
     assert not snapshot.should_participate
     assert snapshot.score < snapshot.threshold
+
+
+def test_zero_threshold_still_admits_group_base_score() -> None:
+    snapshot = LocalAutonomousParticipationPolicy(threshold=0).evaluate(
+        AdmissionFeatures(scope_type=ScopeType.GROUP, text="继续聊聊")
+    )
+    assert snapshot.score == 10
+    assert snapshot.should_participate
 
 
 def test_fast_conversation_presence_penalty_is_applied() -> None:

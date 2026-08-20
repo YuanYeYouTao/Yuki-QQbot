@@ -54,6 +54,18 @@ raw tail = (effective_coverage, snapshot.last_event_id]
 
 正常聊天不等待后台模型。若未覆盖已超过 `raw_tail + trigger`，前台只同步运行有界的 extractive 批次，一次压到 `raw_tail + stop`，再重新读取一致 snapshot；来源缺口、计数漂移或预算仍未收敛时 fail closed，不拼接旧摘要与最新尾部。默认热尾 256 条 / 20k 字、trigger 1024 条 / 80k 字、stop 0（压回热尾）；前台与后台每轮批次数须能一次吃完 trigger。
 
+## 水位尺子与 256 条 floor
+
+未覆盖计数、job 触发、`protected_tail_start` 和批大小切分使用 Prompt 尺子：`ChatEventPromptRenderer.main_agent_history` 分组后各条 `content` 长度之和，与前台 `_uncovered_prompt_view` 同源。append 可用单条 `render_reference_event` 长度作增量上界，`recount_scope_uncovered` 再用分组值校正。
+
+`rollup_source_projection`（`[ISO时间] 发送者: 正文`）只给压缩模型 / extractive 当输入，不再当水位尺子。
+
+`protected_tail_start` 取 `max(count_index, character_index)`：更晚下标、更短热尾。长消息的 Prompt 字符会先碰到 `raw_tail_characters`，热尾短于 256 条，eligible 前缀可压缩。
+
+256 条是事件 floor，优先于 20480 字符 target。短消息把 256 条 floor 绑死时，热尾 Prompt 可以超过 `raw_tail_characters + stop_characters`（默认 target = 20480）。这是产品张力，不是缺陷：不要为了压回 20480 而拆掉 256 条语义，也不要把 target 改成 fail-closed。
+
+前台滞回：超过 `raw_tail + trigger`（admit）才同步 extractive，一次压向 `raw_tail + stop`（target）。最终检查仍用 **admit 不是 target**。因此 256 条短消息若 Prompt 落在 `(target, admit)`，不抛 `ConversationCoverageError`，也不每轮 extractive。
+
 ## Prompt 顺序与信任边界
 
 Provider 请求顺序固定为：

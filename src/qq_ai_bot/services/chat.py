@@ -1448,6 +1448,7 @@ class ChatService:
         effect_gate: ConversationEffectGate | None = None,
     ) -> None:
         self._settings = settings
+        self._ledger_origin = TurnOrigin.USER_MESSAGE.value
         models = require_model_executor(
             model_executor,
             provider=provider,
@@ -1818,6 +1819,10 @@ class ChatService:
     ) -> int:
         """Run one ordered Agent turn and return the sent message count."""
 
+        self._ledger_origin = (
+            TurnOrigin.AUTONOMOUS_GROUP.value if autonomous else TurnOrigin.USER_MESSAGE.value
+        )
+
         async with self._concurrency.conversation(identity.key):
             runtime_config = runtime_snapshot or await self._runtime_config.snapshot(
                 user_id=inbound.sender.user_id,
@@ -1840,6 +1845,7 @@ class ChatService:
 
             source_display_requested = self._source_policy.requested(content)
             turn_origin = TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
+            self._ledger_origin = turn_origin.value
             memory_session = self._open_memory_session(
                 inbound,
                 identity,
@@ -2907,6 +2913,7 @@ class ChatService:
         untrusted external event rather than a QQ user message.
         """
 
+        self._ledger_origin = TurnOrigin.PLUGIN_BACKGROUND.value
         conversation_key = event.scope.key
         if turn_snapshot.scope_key != conversation_key:
             raise TurnSupersededError("external turn snapshot scope mismatch")
@@ -3065,6 +3072,7 @@ class ChatService:
                 ),
                 reply_to_message_id=message.reply_to_message_id,
                 sender_is_bot=True,
+                origin=self._ledger_origin,
             )
             recorded = True
         except asyncio.CancelledError:

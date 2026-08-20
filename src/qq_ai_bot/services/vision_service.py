@@ -545,6 +545,7 @@ class VisionService:
                     observation = observation.model_copy(update={"partial_failure": True})
                 if not partial_failure:
                     source_reference = prepared_references[0]
+                    expires_at = datetime.now(UTC) + timedelta(days=runtime.analysis_retention_days)
                     await self._analyses.save(
                         source_event_id=source_event_id,
                         segment_index=source_reference.segment_index or 0,
@@ -555,9 +556,17 @@ class VisionService:
                         model=self.model_name,
                         prompt_version=cache_prompt_version,
                         observation_json=observation.model_dump_json(),
-                        expires_at=datetime.now(UTC)
-                        + timedelta(days=runtime.analysis_retention_days),
+                        expires_at=expires_at,
                     )
+                    if len(prepared) == 1:
+                        await self._bridge_turn_vision_to_meme_cache(
+                            source_event_id=source_event_id,
+                            segment_index=source_reference.segment_index or 0,
+                            content_hash=aggregate_hash,
+                            observation=observation,
+                            cache_prompt_version=cache_prompt_version,
+                            expires_at=expires_at,
+                        )
                     await self._save_emoji_descriptions(
                         durable_keys,
                         observation,
@@ -658,6 +667,41 @@ class VisionService:
             model=self.model_name,
             prompt_version=prompt_version,
             observation_json=observation.model_dump_json(),
+        )
+
+    async def _bridge_turn_vision_to_meme_cache(
+        self,
+        *,
+        source_event_id: int | None,
+        segment_index: int,
+        content_hash: str,
+        observation: VisualObservation,
+        cache_prompt_version: str,
+        expires_at: datetime,
+    ) -> None:
+        """Expose one turn-vision observation to the emoji classifier cache."""
+
+        if not observation.items:
+            return
+        suffix = self._emoji_analysis_version or "emoji-v1"
+        prompt_version = (
+            cache_prompt_version
+            if cache_prompt_version.endswith(suffix)
+            else f"turn-vision-meme:{suffix}"
+        )
+        if len(prompt_version) > 64:
+            prompt_version = f"turn-vision-meme:{suffix}"[:64]
+        await self._analyses.save(
+            source_event_id=source_event_id,
+            segment_index=segment_index,
+            content_hash=content_hash,
+            analysis_mode="meme",
+            question_hash="",
+            provider=self.provider_name,
+            model=self.model_name,
+            prompt_version=prompt_version,
+            observation_json=_meme_bridge_observation(observation).model_dump_json(),
+            expires_at=expires_at,
         )
 
     async def close(self) -> None:
@@ -876,6 +920,18 @@ def _cache_prompt_version(
     )
     variant = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
     return f"{base[:30]}:{variant}:{base[-12:]}"
+
+
+def _meme_bridge_observation(observation: VisualObservation) -> VisualObservation:
+    """Fill classifier-required fields without merging the two vision prompts."""
+
+    items = tuple(
+        item
+        if item.is_emoji is not None
+        else item.model_copy(update={"is_emoji": bool(item.meme_intent.strip())})
+        for item in observation.items
+    )
+    return observation.model_copy(update={"items": items})
 
 
 def _cached_observation(payload: str) -> VisualObservation | None:

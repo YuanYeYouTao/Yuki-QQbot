@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from tests.conftest import make_settings
@@ -15,19 +15,27 @@ from qq_ai_bot.conversation.rollup.errors import (
     RollupSourceChangedError,
 )
 from qq_ai_bot.conversation.rollup.models import RollupKind, RollupPolicyConfig
-from qq_ai_bot.conversation.rollup.renderer import rollup_source_projection
+from qq_ai_bot.conversation.rollup.prompt_accounting import prompt_accounting_characters
+from qq_ai_bot.conversation.rollup.renderer import (
+    projection_characters,
+    rollup_source_projection,
+)
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
+    eligible_prefix,
+    protected_tail_start,
+    recount_scope_uncovered,
 )
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.rollup.worker import ConversationRollupWorker
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.services.context_assembler import ContextAssembler
+from qq_ai_bot.services.context_assembler import ContextAssembler, _HistoryPromptWindow
 
 
 def test_rollup_source_projection_renders_stored_utc_in_default_timezone() -> None:
@@ -47,6 +55,145 @@ def test_rollup_source_projection_renders_stored_utc_in_default_timezone() -> No
     )
 
     assert rollup_source_projection(event) == ("[2026-08-20T19:21:42+08:00] 查无此人: 这是什么")
+
+
+def _reply_mention_events() -> tuple[EventRecord, ...]:
+    occurred = datetime(2026, 8, 20, 11, 21, 42, tzinfo=UTC)
+    parent = EventRecord(
+        id=1,
+        bot_user_id="380726517",
+        platform_message_id="msg-parent",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="10001",
+        sender_group_card="Alice",
+        direction="inbound",
+        content="hello there",
+        visual_summary="",
+        segments=(),
+        occurred_at=occurred,
+        group_id="1049765710",
+    )
+    reply = EventRecord(
+        id=2,
+        bot_user_id="380726517",
+        platform_message_id="msg-reply",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="10002",
+        sender_group_card="Bob",
+        direction="inbound",
+        content="got it",
+        visual_summary="",
+        segments=(),
+        occurred_at=occurred + timedelta(seconds=1),
+        group_id="1049765710",
+        reply_to_message_id="msg-parent",
+        mentioned_user_ids=("380726517",),
+        reply_sender_user_id="10001",
+    )
+    return (parent, reply)
+
+
+def test_prompt_accounting_matches_assembler_and_outweighs_projection() -> None:
+    events = _reply_mention_events()
+    prompt_chars = prompt_accounting_characters(events)
+    projection_chars = sum(projection_characters(event) for event in events)
+    assert projection_chars < prompt_chars
+
+    settings = make_settings("sqlite+aiosqlite:///:memory:")
+    assembler = ContextAssembler(
+        settings=settings,
+        ledger=MagicMock(),
+        people=MagicMock(),
+        memory_context=MagicMock(),
+        relationships=MagicMock(),
+        time_service=MagicMock(),
+        rollup_repository=MagicMock(),
+        rollup_service=MagicMock(),
+    )
+    dummy_current = EventRecord(
+        id=99,
+        bot_user_id="380726517",
+        platform_message_id="msg-current",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="10003",
+        direction="inbound",
+        content="now",
+        visual_summary="",
+        segments=(),
+        occurred_at=datetime(2026, 8, 20, 11, 22, tzinfo=UTC),
+        group_id="1049765710",
+    )
+    inbound = InboundMessage(
+        message_id="msg-current",
+        event_type="message",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="10003", group_card="Carol"),
+        text="now",
+        bot_user_id="380726517",
+        group_id="1049765710",
+    )
+    view = assembler._uncovered_prompt_view(
+        events,
+        inbound=inbound,
+        content="now",
+        current_event=dummy_current,
+    )
+    assert view is not None
+    assert view.rendered_characters == prompt_chars
+
+
+async def test_recount_writes_grouped_prompt_characters(database: Database) -> None:
+    policy = _policy()
+    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
+    repository = ConversationRollupRepository(database, policy)
+    scope = ConversationScope.group("bot-prompt", "group-prompt")
+    first = await uow.append(
+        scope=scope,
+        platform_message_id="msg-parent",
+        sender_user_id="10001",
+        sender_group_card="Alice",
+        direction="inbound",
+        content="hello there",
+        occurred_at=datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
+    )
+    await uow.append(
+        scope=scope,
+        platform_message_id="msg-reply",
+        sender_user_id="10002",
+        sender_group_card="Bob",
+        direction="inbound",
+        content="got it",
+        occurred_at=datetime(2026, 8, 20, 0, 1, tzinfo=UTC),
+        reply_to_message_id="msg-parent",
+        segments=(
+            {
+                "type": "yuki_context",
+                "data": {
+                    "mentioned_user_ids": [scope.bot_user_id],
+                    "reply_sender_user_id": "10001",
+                },
+            },
+        ),
+    )
+    snapshot = await repository.load_prompt_snapshot(scope)
+    expected = prompt_accounting_characters(
+        snapshot.raw_events,
+        bot_display_name=policy.bot_display_name,
+        timezone=policy.timezone,
+    )
+    async with database.immediate_session() as session:
+        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
+
+        row = await session.get(ConversationScopeModel, first.scope.id)
+        assert row is not None
+        row.uncovered_character_count = sum(
+            projection_characters(event) for event in snapshot.raw_events
+        )
+        recounted = await recount_scope_uncovered(session, row, policy)
+    assert recounted == (2, expected)
+    state, _rollup, _job = await repository.status(scope)
+    assert state is not None
+    assert state.uncovered_character_count == expected
 
 
 def _policy(*, batch_max_events: int = 100) -> RollupPolicyConfig:
@@ -516,3 +663,267 @@ async def test_foreground_does_not_nibble_between_protected_tail_and_trigger(
     assert compacted.uncovered_event_count <= (
         settings.conversation_rollup_raw_tail_events + settings.conversation_rollup_stop_events
     )
+
+
+async def test_lightweight_backlog_triggers_on_prompt_ruler_not_projection(
+    database: Database,
+) -> None:
+    policy = RollupPolicyConfig(
+        raw_tail_events=2,
+        raw_tail_characters=100_000,
+        trigger_events=32,
+        trigger_characters=100_000,
+        stop_events=0,
+        stop_characters=0,
+        batch_max_events=8,
+        batch_max_characters=100_000,
+        summary_max_characters=2_000,
+    )
+    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
+    repository = ConversationRollupRepository(database, policy)
+    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
+    scope = ConversationScope.group("bot-ruler", "group-ruler")
+    first = None
+    for index in range(1, 7):
+        result = await uow.append(
+            scope=scope,
+            platform_message_id=f"msg-{index}",
+            sender_user_id=f"1000{index % 2}",
+            sender_group_card="Alice" if index % 2 else "Bob",
+            direction="inbound",
+            content="short",
+            occurred_at=datetime(2026, 8, 20, 0, index, tzinfo=UTC),
+            reply_to_message_id=None if index == 1 else f"msg-{index - 1}",
+            segments=(
+                (
+                    {
+                        "type": "yuki_context",
+                        "data": {
+                            "mentioned_user_ids": [scope.bot_user_id],
+                            "reply_sender_user_id": f"1000{(index - 1) % 2}",
+                        },
+                    },
+                )
+                if index > 1
+                else ()
+            ),
+        )
+        first = first or result
+    snapshot = await repository.load_prompt_snapshot(scope)
+    projection = sum(projection_characters(event) for event in snapshot.raw_events)
+    prompt = prompt_accounting_characters(
+        snapshot.raw_events,
+        bot_display_name=policy.bot_display_name,
+        timezone=policy.timezone,
+    )
+    remaining_prompt = prompt_accounting_characters(
+        snapshot.raw_events[-2:],
+        bot_display_name=policy.bot_display_name,
+        timezone=policy.timezone,
+    )
+    admit = (projection + prompt) // 2
+    assert projection < admit <= prompt
+    assert remaining_prompt < admit
+    raw_tail_characters = 1
+    trigger_characters = max(2, admit - raw_tail_characters)
+    settings = make_settings(
+        database.url,
+        local_context_event_limit=64,
+        conversation_rollup_raw_tail_events=2,
+        conversation_rollup_trigger_events=32,
+        conversation_rollup_stop_events=0,
+        conversation_rollup_raw_tail_characters=raw_tail_characters,
+        conversation_rollup_trigger_characters=trigger_characters,
+        conversation_rollup_stop_characters=trigger_characters - 1,
+        conversation_rollup_batch_max_events=8,
+        conversation_rollup_batch_max_characters=100_000,
+        conversation_rollup_summary_max_characters=2_000,
+        conversation_rollup_foreground_max_batches=4,
+    )
+    async with database.immediate_session() as session:
+        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
+
+        row = await session.get(ConversationScopeModel, first.scope.id)
+        assert row is not None
+        row.uncovered_character_count = projection
+        recounted = await recount_scope_uncovered(session, row, policy)
+    assert recounted[1] == prompt
+    assembler = ContextAssembler(
+        settings=settings,
+        ledger=MagicMock(),
+        people=MagicMock(),
+        memory_context=MagicMock(),
+        relationships=MagicMock(),
+        time_service=MagicMock(),
+        rollup_repository=repository,
+        rollup_service=service,
+    )
+    seeded, seeded_rollup, _job = await repository.status(scope)
+    assert seeded is not None
+    assert seeded.uncovered_character_count == prompt
+    assert seeded_rollup is None
+    await assembler._ensure_lightweight_backlog(
+        scope,
+        ConversationTurnSnapshot(
+            scope_id=seeded.id,
+            scope_key=seeded.scope.key,
+            generation=seeded.generation,
+            trigger_event_id=seeded.last_event_id,
+            coordinator_version=1,
+        ),
+        event_limit=settings.local_context_event_limit,
+    )
+    compacted, compacted_rollup, _job = await repository.status(scope)
+    assert compacted is not None and compacted_rollup is not None
+    assert compacted_rollup.revision >= 1
+    assert compacted.uncovered_event_count < 6
+
+
+def _counted_events(count: int, *, body: str) -> tuple[EventRecord, ...]:
+    occurred = datetime(2026, 8, 20, 0, 0, tzinfo=UTC)
+    return tuple(
+        EventRecord(
+            id=index,
+            bot_user_id="bot-floor",
+            platform_message_id=f"msg-{index}",
+            scope_type=ScopeType.GROUP,
+            sender_user_id=f"1000{index % 2}",
+            sender_group_card="Alice" if index % 2 else "Bob",
+            direction="inbound",
+            content=body,
+            visual_summary="",
+            segments=(),
+            occurred_at=occurred + timedelta(seconds=index),
+            group_id="group-floor",
+        )
+        for index in range(1, count + 1)
+    )
+
+
+def test_long_messages_raise_character_index_and_keep_eligible_prefix() -> None:
+    policy = RollupPolicyConfig(
+        raw_tail_events=4,
+        raw_tail_characters=200,
+        trigger_events=8,
+        trigger_characters=100_000,
+        stop_events=0,
+        stop_characters=0,
+        batch_max_events=8,
+        batch_max_characters=100_000,
+        summary_max_characters=2_000,
+    )
+    events = _counted_events(6, body="z" * 500)
+    count_index = max(0, len(events) - policy.raw_tail_events)
+    start = protected_tail_start(events, policy)
+    assert start > count_index
+    eligible = eligible_prefix(events, policy)
+    assert eligible
+    assert eligible[-1].id < events[start].id
+
+
+async def test_event_floor_between_character_target_and_admit_skips_extractive() -> None:
+    settings = make_settings(
+        "sqlite+aiosqlite:///:memory:",
+        local_context_event_limit=2048,
+        conversation_rollup_raw_tail_events=256,
+        conversation_rollup_trigger_events=1024,
+        conversation_rollup_stop_events=0,
+        conversation_rollup_raw_tail_characters=20_480,
+        conversation_rollup_trigger_characters=81_920,
+        conversation_rollup_stop_characters=0,
+    )
+    events = _counted_events(256, body="y" * 80)
+    current = events[-1]
+    history = events
+    prompt = prompt_accounting_characters(history)
+    target = (
+        settings.conversation_rollup_raw_tail_characters
+        + settings.conversation_rollup_stop_characters
+    )
+    admit = (
+        settings.conversation_rollup_raw_tail_characters
+        + settings.conversation_rollup_trigger_characters
+    )
+    assert target < prompt <= admit
+    rollup_service = MagicMock()
+    rollup_service.ensure_extractive_coverage = AsyncMock(
+        side_effect=AssertionError("admit-window turns must not extractive")
+    )
+    assembler = ContextAssembler(
+        settings=settings,
+        ledger=MagicMock(),
+        people=MagicMock(),
+        memory_context=MagicMock(),
+        relationships=MagicMock(),
+        time_service=MagicMock(),
+        rollup_repository=MagicMock(),
+        rollup_service=rollup_service,
+    )
+    inbound = InboundMessage(
+        message_id="msg-current",
+        event_type="message",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="10009", group_card="Carol"),
+        text="now",
+        bot_user_id="bot-floor",
+        group_id="group-floor",
+    )
+    dummy_current = EventRecord(
+        id=10_000,
+        bot_user_id="bot-floor",
+        platform_message_id="msg-current",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="10009",
+        sender_group_card="Carol",
+        direction="inbound",
+        content="now",
+        visual_summary="",
+        segments=(),
+        occurred_at=datetime(2026, 8, 20, 1, 0, tzinfo=UTC),
+        group_id="group-floor",
+    )
+    snapshot = _HistoryPromptWindow(
+        recent=history,
+        rollup_text="seed",
+        coverage_end=1,
+        revision=1,
+        rollup=None,
+        rollup_mode="extractive",
+    )
+    view = assembler._uncovered_prompt_view(
+        history,
+        inbound=inbound,
+        content="now",
+        current_event=dummy_current,
+    )
+    assert view is not None
+    assert view.rendered_characters == prompt
+    character_target = assembler._prompt_character_target(
+        remainder=1_000_000,
+        rollup_text="seed",
+        coverage_end=1,
+    )
+    character_admit = assembler._prompt_character_admit(
+        remainder=1_000_000,
+        rollup_text="seed",
+        coverage_end=1,
+    )
+    assert character_target < view.rendered_characters <= character_admit
+    await assembler._ensure_uncovered_fits_budget(
+        snapshot=snapshot,
+        recent=history,
+        inbound=inbound,
+        content="now",
+        remainder=1_000_000,
+        event_limit=settings.local_context_event_limit,
+        identity=ConversationScope.group("bot-floor", "group-floor"),
+        current_event=dummy_current,
+        turn=ConversationTurnSnapshot(
+            scope_id=1,
+            scope_key="bot:bot-floor:group:group-floor",
+            generation=1,
+            trigger_event_id=current.id,
+            coordinator_version=1,
+        ),
+    )
+    rollup_service.ensure_extractive_coverage.assert_not_called()

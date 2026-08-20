@@ -33,7 +33,10 @@ from qq_ai_bot.conversation.rollup.models import (
     RollupKind,
     RollupPolicyConfig,
 )
-from qq_ai_bot.conversation.rollup.renderer import projection_characters, source_fingerprint
+from qq_ai_bot.conversation.rollup.prompt_accounting import (
+    prompt_accounting_characters,
+)
+from qq_ai_bot.conversation.rollup.renderer import source_fingerprint
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
@@ -114,19 +117,39 @@ def _rollup_state(row: ConversationRollupModel) -> ConversationRollupState:
     )
 
 
+def _prompt_kwargs(config: RollupPolicyConfig) -> dict[str, str]:
+    return {
+        "bot_display_name": config.bot_display_name,
+        "timezone": config.timezone,
+    }
+
+
+def _suffix_prompt_characters(
+    events: tuple[EventRecord, ...],
+    start: int,
+    config: RollupPolicyConfig,
+) -> int:
+    return prompt_accounting_characters(events[start:], **_prompt_kwargs(config))
+
+
 def protected_tail_start(events: tuple[EventRecord, ...], config: RollupPolicyConfig) -> int:
     """Return the first protected event index using the later of both boundaries."""
 
     if not events:
         return 0
     count_index = max(0, len(events) - config.raw_tail_events)
-    characters = 0
-    character_index = len(events) - 1
-    for index in range(len(events) - 1, -1, -1):
-        characters += projection_characters(events[index])
-        character_index = index
-        if characters >= config.raw_tail_characters:
-            break
+    if _suffix_prompt_characters(events, 0, config) < config.raw_tail_characters:
+        character_index = 0
+    else:
+        low = 0
+        high = len(events) - 1
+        while low < high:
+            mid = (low + high + 1) // 2
+            if _suffix_prompt_characters(events, mid, config) >= config.raw_tail_characters:
+                low = mid
+            else:
+                high = mid - 1
+        character_index = low
     return max(count_index, character_index)
 
 
@@ -137,14 +160,14 @@ def eligible_prefix(
 
 
 def exceeds_high_watermark(events: tuple[EventRecord, ...], config: RollupPolicyConfig) -> bool:
-    characters = sum(projection_characters(event) for event in events)
+    characters = prompt_accounting_characters(events, **_prompt_kwargs(config))
     return len(events) >= config.trigger_events or characters >= config.trigger_characters
 
 
 def exceeds_low_watermark(events: tuple[EventRecord, ...], config: RollupPolicyConfig) -> bool:
     if not events:
         return False
-    characters = sum(projection_characters(event) for event in events)
+    characters = prompt_accounting_characters(events, **_prompt_kwargs(config))
     return len(events) > config.stop_events or characters > config.stop_characters
 
 
@@ -152,16 +175,14 @@ def take_batch(
     events: tuple[EventRecord, ...], config: RollupPolicyConfig
 ) -> tuple[EventRecord, ...]:
     selected: list[EventRecord] = []
-    characters = 0
     for event in events:
-        size = projection_characters(event)
+        candidate = (*selected, event)
+        size = prompt_accounting_characters(candidate, **_prompt_kwargs(config))
         if selected and (
-            len(selected) >= config.batch_max_events
-            or characters + size > config.batch_max_characters
+            len(selected) >= config.batch_max_events or size > config.batch_max_characters
         ):
             break
         selected.append(event)
-        characters += size
     return tuple(selected)
 
 
@@ -511,7 +532,7 @@ class ConversationRollupRepository:
             batch = take_batch(eligible_prefix(all_events, self.config), self.config)
             if not batch:
                 return None
-            characters = sum(projection_characters(event) for event in batch)
+            characters = prompt_accounting_characters(batch, **_prompt_kwargs(self.config))
             fingerprint = source_fingerprint(
                 scope_id=claim.scope_id,
                 generation=claim.generation,
@@ -638,14 +659,15 @@ class ConversationRollupRepository:
             )
             remaining = tuple(_event_record(row) for row in remaining_rows)
             expected_events = candidate.event_count + len(remaining)
-            expected_characters = candidate.projection_characters + sum(
-                projection_characters(event) for event in remaining
+            expected_characters = prompt_accounting_characters(
+                (*events, *remaining),
+                **_prompt_kwargs(self.config),
             )
             if (
                 scope_row.uncovered_event_count != expected_events
                 or scope_row.uncovered_character_count != expected_characters
             ):
-                recounted = await recount_scope_uncovered(session, scope_row)
+                recounted = await recount_scope_uncovered(session, scope_row, self.config)
                 self.metrics.counter_repairs += 1
                 if recounted != (expected_events, expected_characters):
                     self.metrics.counter_reconcile_failures += 1
@@ -676,8 +698,11 @@ class ConversationRollupRepository:
                 )
             )
             scope_row.uncovered_event_count -= candidate.event_count
-            scope_row.uncovered_character_count -= candidate.projection_characters
-            remaining_characters = sum(projection_characters(event) for event in remaining)
+            scope_row.uncovered_character_count = prompt_accounting_characters(
+                remaining,
+                **_prompt_kwargs(self.config),
+            )
+            remaining_characters = scope_row.uncovered_character_count
             if (
                 scope_row.uncovered_event_count != len(remaining)
                 or scope_row.uncovered_character_count != remaining_characters
@@ -826,6 +851,7 @@ async def get_or_create_scope_row(
 async def recount_scope_uncovered(
     session: AsyncSession,
     scope_row: ConversationScopeModel,
+    config: RollupPolicyConfig | None = None,
 ) -> tuple[int, int]:
     """Repair exact current-generation counters from the canonical ledger once."""
 
@@ -850,6 +876,10 @@ async def recount_scope_uncovered(
         ).all()
     )
     events = tuple(_event_record(row) for row in rows)
+    policy = config or RollupPolicyConfig()
     scope_row.uncovered_event_count = len(events)
-    scope_row.uncovered_character_count = sum(projection_characters(event) for event in events)
+    scope_row.uncovered_character_count = prompt_accounting_characters(
+        events,
+        **_prompt_kwargs(policy),
+    )
     return scope_row.uncovered_event_count, scope_row.uncovered_character_count

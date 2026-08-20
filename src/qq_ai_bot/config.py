@@ -322,7 +322,7 @@ class Settings(BaseSettings):
 
     conversation_autonomous_enabled: bool = True
     conversation_autonomous_debounce_seconds: float = 3.0
-    conversation_autonomous_admission_threshold: int = 0
+    conversation_autonomous_admission_threshold: int = 80
     conversation_autonomous_batch_limit: int = 8
     conversation_autonomous_presence_window_seconds: int = 300
     conversation_interrupt_autonomous_on_new_message: bool = True
