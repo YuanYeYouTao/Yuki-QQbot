@@ -1252,7 +1252,7 @@ class _ChatAgentBackend(AgentToolBackend):
         return call.function.name, normalized
 
     def _response_control_definitions(self) -> tuple[ChatTool, ...]:
-        if self._runtime.origin not in {
+        if self._prefix_policy_origin() not in {
             TurnOrigin.USER_MESSAGE,
             TurnOrigin.AUTONOMOUS_GROUP,
         }:

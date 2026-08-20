@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Conversation / Prompt cache
+
+- 插件后台对齐会话前缀时也声明 `set_reply_target`，与群聊用户轮次同一份首轮 `tools[]`；
+  真实调用仍关闭，避免 2/3 工具来回打断 DeepSeek 前缀缓存。
+
 ### Conversation Scope / Rollup
 
 - 前台 extractive 只在未覆盖超过受保护热尾加后台 trigger 时才改写检查点，并一次压到 stop；
