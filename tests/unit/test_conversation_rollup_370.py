@@ -415,7 +415,7 @@ def test_prompt_event_caps_use_trigger_and_stop_not_tail_plus_one() -> None:
 
     assert assembler._prompt_event_admit(event_limit=2048, coverage_end=0) == 2047
     assert assembler._prompt_event_admit(event_limit=2048, coverage_end=100) == 1280
-    assert assembler._prompt_event_target(event_limit=2048, coverage_end=100) == 960
+    assert assembler._prompt_event_target(event_limit=2048, coverage_end=100) == 256
     assert assembler._prompt_event_admit(event_limit=1024, coverage_end=100) == 1023
 
 

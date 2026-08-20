@@ -7,6 +7,9 @@
 - 前台 extractive 只在未覆盖超过受保护热尾加后台 trigger 时才改写检查点，并一次压到 stop；
   不再在 `raw_tail + 1` 处每轮啃几条。`LOCAL_CONTEXT_EVENT_LIMIT` 默认 2048，须装得下
   `RAW_TAIL_EVENTS + TRIGGER_EVENTS`。
+- 默认水位改为热尾 256、trigger 1024、stop 0：未覆盖追加到 1280 再一次压回约 256 条原文。
+  前台/后台默认 5 批，须一次吃完 trigger；`MAX_CONTEXT_CHARACTERS` 默认 131072，
+  `CONTEXT_METADATA_BUDGET_RATIO` 默认 0.04，Actor 元数据仍约 5k。
 
 ## 3.7.0 - 2026-08-20
 
