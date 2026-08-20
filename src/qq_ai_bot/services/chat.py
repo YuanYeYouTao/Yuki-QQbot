@@ -2960,9 +2960,7 @@ class ChatService:
             align_conversation_prefix_tools=True,
             turn_token=turn_token,
             turn_snapshot=turn_snapshot,
-            reply_target_control=ReplyTargetControl(
-                visible_event_ids=context.visible_event_ids
-            ),
+            reply_target_control=ReplyTargetControl(visible_event_ids=context.visible_event_ids),
             selection_query=event.content,
             web_route=self._web_router.select("", runtime.web.mode),
             max_model_requests_override=min(2, runtime.agent.max_model_requests),
