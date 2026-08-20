@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Conversation Scope / Rollup
+
+- 前台 extractive 只在未覆盖超过受保护热尾加后台 trigger 时才改写检查点，并一次压到 stop；
+  不再在 `raw_tail + 1` 处每轮啃几条。`LOCAL_CONTEXT_EVENT_LIMIT` 默认 2048，须装得下
+  `RAW_TAIL_EVENTS + TRIGGER_EVENTS`。
+
 ## 3.7.0 - 2026-08-20
 
 ### Conversation Scope / Rollup

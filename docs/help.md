@@ -1292,7 +1292,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 |---|---:|
 | `OBSERVE_ENABLED_GROUPS` | `true` |
 | `RECENT_HISTORY_TOOL_LIMIT` | `20` |
-| `LOCAL_CONTEXT_EVENT_LIMIT` | `1024` |
+| `LOCAL_CONTEXT_EVENT_LIMIT` | `2048` |
 | `MAX_CONTEXT_CHARACTERS` | `81920`（字符，不是 token） |
 | `CONTEXT_METADATA_BUDGET_RATIO` | `0.06`（约 5k 字符 Actor 元数据上限） |
 | `HISTORY_WINDOW_LOW_WATERMARK_RATIO` | `0.67`（保留键；Prompt 选窗不再使用） |
