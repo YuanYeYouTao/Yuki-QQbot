@@ -250,6 +250,48 @@ def test_release_smoke_reads_alembic_version_inside_container(
     assert not (tmp_path / "data/qq_ai_bot.db").exists()
 
 
+def test_release_smoke_writes_pending_inside_container_when_host_cannot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    original_write = Path.write_text
+
+    def blocked_write(self: Path, *args: object, **kwargs: object) -> int:
+        if self.name == "pending.json":
+            raise PermissionError("data owned by container")
+        return original_write(self, *args, **kwargs)
+
+    class FakeCompose:
+        def run(self, *arguments: str, capture: bool = False) -> str:
+            calls.append(arguments)
+            if arguments[:4] == ("exec", "-T", "bot", "python"):
+                if "pending.json" in arguments[-1]:
+                    return ""
+                if "urllib.request" in arguments[-1]:
+                    return (
+                        '{"status":"ok","version":"3.7.0","database":"ok",'
+                        '"plugin_system_enabled":true,"plugin_running_count":0}'
+                    )
+                return "0042"
+            if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
+                return ""
+            if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
+                return ""
+            raise AssertionError(arguments)
+
+    monkeypatch.setattr(Path, "write_text", blocked_write)
+    monkeypatch.setattr("scripts.release_smoke.wait_healthy", lambda *args: "container-id")
+
+    verify_bot(FakeCompose(), tmp_path, VERSION)  # type: ignore[arg-type]
+
+    pending_writes = [
+        call
+        for call in calls
+        if call[:4] == ("exec", "-T", "bot", "python") and "pending.json" in call[-1]
+    ]
+    assert pending_writes
+
+
 def test_release_smoke_applies_builtin_plugin_pending(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
