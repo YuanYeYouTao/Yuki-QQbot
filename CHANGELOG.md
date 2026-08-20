@@ -6,6 +6,8 @@
 
 - 插件后台对齐会话前缀时也声明 `set_reply_target`，与群聊用户轮次同一份首轮 `tools[]`；
   真实调用仍关闭，避免 2/3 工具来回打断 DeepSeek 前缀缓存。
+- 自主轮次不再把 `decline_reply` 钉进首轮，定时意图也不再钉 `automation_create`；
+  两者走 `request_tools`，避免和普通群聊来回改 schema。
 
 ### Conversation Scope / Rollup
 
