@@ -162,6 +162,8 @@ class PersistenceModule:
             batch_max_events=settings.conversation_rollup_batch_max_events,
             batch_max_characters=settings.conversation_rollup_batch_max_characters,
             summary_max_characters=settings.conversation_rollup_summary_max_characters,
+            bot_display_name=settings.bot_display_name,
+            timezone=settings.default_timezone,
         )
         rollup_metrics = ConversationRollupMetrics()
         scoped_events = ScopedEventLedgerUnitOfWork(

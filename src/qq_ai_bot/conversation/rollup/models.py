@@ -31,6 +31,8 @@ class RollupPolicyConfig:
     batch_max_events: int = 256
     batch_max_characters: int = 32_768
     summary_max_characters: int = 1200
+    bot_display_name: str = "Yuki"
+    timezone: str = "Asia/Shanghai"
 
     def __post_init__(self) -> None:
         positive = (

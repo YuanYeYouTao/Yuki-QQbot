@@ -19,7 +19,7 @@ def rollup_source_projection(
     *,
     timezone: str = DEFAULT_ROLLUP_TIMEZONE,
 ) -> str:
-    """Return the single stable character-accounting projection for one event."""
+    """Return the compression-model input projection for one event."""
 
     timestamp = local_datetime(event.occurred_at, timezone).isoformat(timespec="seconds")
     sender = event.sender_display_name
