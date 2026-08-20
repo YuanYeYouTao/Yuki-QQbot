@@ -97,6 +97,23 @@ def test_0042_failpoints_restore_schema_data_and_revision(
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_0042_fresh_upgrade_head_uses_fk_enforced_cutover(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "fresh-head.db"
+    config = _config(path, monkeypatch)
+
+    command.upgrade(config, "head")
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0042",)
+        tables = _tables(connection)
+        assert _NEW_TABLES <= tables
+        assert not (_OLD_ROLLUP_TABLES & tables)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def test_0042_backfills_cutover_boundary_without_rewriting_ledger(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
