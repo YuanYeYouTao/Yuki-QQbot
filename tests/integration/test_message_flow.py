@@ -33,6 +33,22 @@ from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.models import WebMode, WebSearchResponse, WebSearchSource
 
 
+def _latest_capability_payload(request: ChatRequest) -> dict[str, object] | None:
+    for message in reversed(request.messages):
+        if message.role != "tool":
+            continue
+        try:
+            payload = json.loads(message.content or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        data = payload.get("data")
+        if isinstance(data, dict) and data.get("transient_internal_reference") is True:
+            return payload
+    return None
+
+
 def _attach_test_automation(database: Database, harness, settings):
     registry = build_capability_registry()
     registry.register(
@@ -307,8 +323,10 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
         calls += 1
-        if calls == 1:
-            assert "get_my_capabilities" in {tool.name for tool in request.tools}
+        if "get_my_capabilities" not in {tool.name for tool in request.tools}:
+            return _request_tools_response("get_my_capabilities")
+        payload = _latest_capability_payload(request)
+        if payload is None:
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -322,14 +340,6 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
                     ),
                 ),
             )
-        assert "get_my_capabilities" in {tool.name for tool in request.tools}
-        payload = json.loads(
-            next(
-                message.content or "{}"
-                for message in reversed(request.messages)
-                if message.role == "tool"
-            )
-        )
         assert payload["data"]["transient_internal_reference"] is True
         assert payload["data"]["do_not_copy_verbatim_to_user"] is True
         assert payload["data"]["counts"]["self_service_operations"] == 37
@@ -352,7 +362,7 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
     )
 
     assert result.reason == "chat"
-    assert calls == 2
+    assert calls == 3
     rendered = "\n".join(message.text for message in sender.messages)
     assert rendered == "你目前有 37 项本人自助能力，其中 17 项会修改本人数据；不能修改系统配置。"
     assert "transient_internal_reference" not in rendered
@@ -421,7 +431,10 @@ async def test_ordinary_capability_payload_echo_is_neither_sent_nor_persisted(
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
         calls += 1
-        if calls == 1:
+        if "get_my_capabilities" not in {tool.name for tool in request.tools}:
+            return _request_tools_response("get_my_capabilities")
+        payload = _latest_capability_payload(request)
+        if payload is None:
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -435,12 +448,7 @@ async def test_ordinary_capability_payload_echo_is_neither_sent_nor_persisted(
                     ),
                 ),
             )
-        payload = next(
-            message.content or "{}"
-            for message in reversed(request.messages)
-            if message.role == "tool"
-        )
-        return ChatResponse(content=payload, latency_seconds=0)
+        return ChatResponse(content=json.dumps(payload, ensure_ascii=False), latency_seconds=0)
 
     harness = build_harness(
         database,

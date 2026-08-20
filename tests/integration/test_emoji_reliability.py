@@ -45,33 +45,53 @@ class _SendEmojiProvider(LLMProvider):
         self._mode = mode
         self._placement = placement
         self._final_text = final_text
+        self._sent_emoji = False
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
-        if "send_emoji" not in {tool.name for tool in request.tools}:
+        names = {tool.name for tool in request.tools}
+        if "send_emoji" not in names:
+            if "request_tools" in names:
+                return ChatResponse(
+                    content="",
+                    latency_seconds=0,
+                    tool_calls=(
+                        ToolCall(
+                            id="request-send-emoji",
+                            function=ToolFunction(
+                                name="request_tools",
+                                arguments=json.dumps(
+                                    {"query": "send_emoji", "max_results": 2},
+                                    ensure_ascii=False,
+                                ),
+                            ),
+                        ),
+                    ),
+                )
             return ChatResponse(content="send_emoji not exposed", latency_seconds=0)
-        if any(message.role == "tool" for message in request.messages):
-            return ChatResponse(content=self._final_text, latency_seconds=0)
-        return ChatResponse(
-            content="",
-            latency_seconds=0,
-            tool_calls=(
-                ToolCall(
-                    id="emoji-1",
-                    function=ToolFunction(
-                        name="send_emoji",
-                        arguments=json.dumps(
-                            {
-                                "mode": self._mode,
-                                "placement": self._placement,
-                                "goal": "回应表情",
-                            },
-                            ensure_ascii=False,
+        if not self._sent_emoji:
+            self._sent_emoji = True
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="emoji-1",
+                        function=ToolFunction(
+                            name="send_emoji",
+                            arguments=json.dumps(
+                                {
+                                    "mode": self._mode,
+                                    "placement": self._placement,
+                                    "goal": "回应表情",
+                                },
+                                ensure_ascii=False,
+                            ),
                         ),
                     ),
                 ),
-            ),
-        )
+            )
+        return ChatResponse(content=self._final_text, latency_seconds=0)
 
 
 class _EventCollector:
@@ -180,7 +200,7 @@ async def test_group_emoji_fast_path_sends_records_and_marks_usage(
 
     assert result.sent_messages == 1
     assert len(sender.messages) == 1 and sender.messages[0].media
-    assert len(provider.requests) == 2
+    assert len(provider.requests) == 3
     recent = await EventLedgerRepository(database).list_scope_recent(
         ConversationScope.group("9000", "2001"),
         limit=10,
