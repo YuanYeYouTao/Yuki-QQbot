@@ -1127,7 +1127,14 @@ async def test_context_limits_mentioned_member_facts_to_current_group_block(
             scope_type=MemoryScopeType.PERSON_GROUP,
         )
     )
-    harness = build_harness(database, make_settings(database.url, max_context_characters=20_000))
+    harness = build_harness(
+        database,
+        make_settings(
+            database.url,
+            max_context_characters=20_000,
+            context_metadata_budget_ratio=0.25,
+        ),
+    )
     await harness.groups.set_enabled("2001", True)
     await harness.profiles.upsert(
         user_id="1002",
