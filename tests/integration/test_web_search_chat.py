@@ -53,6 +53,27 @@ def event(
     )
 
 
+def _request_missing_tool(request: ChatRequest, name: str) -> ChatResponse | None:
+    if name in {tool.name for tool in request.tools}:
+        return None
+    return ChatResponse(
+        content="",
+        latency_seconds=0,
+        tool_calls=(
+            ToolCall(
+                id=f"request-{name}",
+                function=ToolFunction(
+                    name="request_tools",
+                    arguments=json.dumps(
+                        {"query": name, "max_results": 2},
+                        ensure_ascii=False,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
 def web_response() -> WebSearchResponse:
     return WebSearchResponse(
         query="最新 DeepSeek 更新",
@@ -80,8 +101,11 @@ class WebToolLLM(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
-        if request.messages[-1].role != "tool":
-            assert "web_search" in {tool.name for tool in request.tools}
+        missing = _request_missing_tool(request, "web_search")
+        if missing is not None:
+            return missing
+        last = request.messages[-1]
+        if last.role != "tool" or "loaded_tools" in (last.content or ""):
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -98,7 +122,7 @@ class WebToolLLM(LLMProvider):
                     ),
                 ),
             )
-        result = json.loads(request.messages[-1].content or "{}")
+        result = json.loads(last.content or "{}")
         if not result.get("ok"):
             return ChatResponse(content="联网查询暂时失败，请稍后再试。", latency_seconds=0)
         return ChatResponse(
@@ -132,12 +156,19 @@ class WebThenOneBotLLM(LLMProvider):
     def __init__(self) -> None:
         self.requests: list[ChatRequest] = []
         self._called_onebot = False
+        self._web_called = False
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
         names = {tool.name for tool in request.tools}
         last = request.messages[-1]
         if last.role != "tool":
+            self._web_called = False
+        missing = _request_missing_tool(request, "web_search")
+        if missing is not None:
+            return missing
+        if not self._web_called:
+            self._web_called = True
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -254,7 +285,11 @@ class NativeSourceFailureThenTavilyLLM(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
-        if len(self.requests) == 1:
+        missing = _request_missing_tool(request, "web_search")
+        if missing is not None:
+            return missing
+        last = request.messages[-1]
+        if last.role != "tool" or "loaded_tools" in (last.content or ""):
             assert "web_search" in {tool.name for tool in request.tools}
             assert not request.native_tools
             return ChatResponse(
@@ -283,7 +318,11 @@ class DomainRoutedTavilyLLM(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
-        if len(self.requests) == 1:
+        missing = _request_missing_tool(request, "read_webpage")
+        if missing is not None:
+            return missing
+        last = request.messages[-1]
+        if last.role != "tool" or "loaded_tools" in (last.content or ""):
             assert not request.native_tools
             assert "read_webpage" in {tool.name for tool in request.tools}
             return ChatResponse(
@@ -316,7 +355,11 @@ class TargetMissThenTavilyLLM(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
-        if len(self.requests) == 1:
+        missing = _request_missing_tool(request, "read_webpage")
+        if missing is not None:
+            return missing
+        last = request.messages[-1]
+        if last.role != "tool" or "loaded_tools" in (last.content or ""):
             assert not request.native_tools
             assert "read_webpage" in {tool.name for tool in request.tools}
             return ChatResponse(
@@ -400,7 +443,7 @@ async def test_chat_completions_profile_uses_tavily_fallback_before_request(
     assert result.sent_messages == 1
     assert sender.messages[0].text.startswith("已通过备用搜索核验。\n\n来源：")
     assert "https://example.com/deepseek-update" in sender.messages[0].text
-    assert len(llm.requests) == 2
+    assert len(llm.requests) == 3
 
 
 @pytest.mark.asyncio
@@ -438,7 +481,7 @@ async def test_explicit_domain_rule_routes_directly_to_tavily(
     assert result.reason == "chat"
     assert [message.text for message in sender.messages] == ["这个仓库是 Yuki QQ 机器人项目。"]
     assert web.extract_requests == [(target_url, "这个项目是什么")]
-    assert len(llm.requests) == 2
+    assert len(llm.requests) == 3
     assert "provider=tavily reason=domain_rule matched_domain=github.com" in caplog.text
 
 
@@ -466,9 +509,10 @@ async def test_tavily_keyword_without_verb_routes_directly_to_tavily(
 
     assert result.reason == "chat"
     assert len(web.search_requests) == 1
-    assert len(llm.requests) == 2
+    assert len(llm.requests) == 3
     assert not llm.requests[0].native_tools
-    assert "web_search" in {tool.name for tool in llm.requests[0].tools}
+    assert "web_search" not in {tool.name for tool in llm.requests[0].tools}
+    assert "web_search" in {tool.name for tool in llm.requests[1].tools}
     assert "provider=tavily reason=user_override" in caplog.text
 
 
@@ -504,10 +548,11 @@ async def test_chat_completions_url_read_uses_read_webpage(
     assert result.reason == "chat"
     assert [message.text for message in sender.messages] == ["Tavily 已经读取到指定页面。"]
     assert web.extract_requests == [(target_url, "读取用户指定的网页")]
-    assert len(llm.requests) == 2
+    assert len(llm.requests) == 3
     first_names = {tool.name for tool in llm.requests[0].tools}
-    assert "read_webpage" in first_names
+    assert "read_webpage" not in first_names
     assert "web_search" not in first_names
+    assert "read_webpage" in {tool.name for tool in llm.requests[1].tools}
     assert not llm.requests[0].native_tools
 
 
@@ -710,7 +755,8 @@ async def test_spoken_search_phrase_exposes_web_search_in_native_first_mode(
     assert result.reason == "chat"
     assert llm.requests
     first = llm.requests[0]
-    assert "web_search" in {tool.name for tool in first.tools} or bool(first.native_tools)
+    assert "web_search" not in {tool.name for tool in first.tools}
+    assert not first.native_tools
 
 
 @pytest.mark.asyncio
@@ -735,7 +781,7 @@ async def test_native_first_idle_turn_does_not_pin_web_search(database: Database
 
 
 @pytest.mark.asyncio
-async def test_native_first_public_url_pins_read_webpage_not_search(
+async def test_native_first_public_url_does_not_pin_read_webpage(
     database: Database,
 ) -> None:
     llm = FakeLLMProvider()
@@ -753,6 +799,6 @@ async def test_native_first_public_url_pins_read_webpage_not_search(
     assert llm.requests
     first = llm.requests[0]
     names = {tool.name for tool in first.tools}
-    assert "read_webpage" in names
+    assert "read_webpage" not in names
     assert "web_search" not in names
     assert not first.native_tools

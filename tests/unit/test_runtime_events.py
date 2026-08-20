@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -223,6 +224,18 @@ def test_capability_search_report_exposes_ids_not_query_text() -> None:
             text="search the web for news",
             origin=TurnOrigin.USER_MESSAGE,
             reply_excerpt="SECRET-REPLY-EXCERPT",
+        )
+    )
+    assert reports == []
+    assert "web_search" not in runtime.callable_capability_ids()
+
+    asyncio.run(
+        runtime.search(
+            CapabilityQuery(
+                text="search the web for news",
+                origin=TurnOrigin.USER_MESSAGE,
+                reply_excerpt="SECRET-REPLY-EXCERPT",
+            )
         )
     )
 

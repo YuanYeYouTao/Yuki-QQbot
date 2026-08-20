@@ -165,7 +165,12 @@ class AgentRunner:
             runtime.force_tavily_fallback
             or (web_route is not None and web_route.provider is WebProvider.TAVILY)
         )
-        if tavily_fallback and tools is not None:
+        deployment_tavily = (
+            web_route is not None
+            and web_route.provider is WebProvider.TAVILY
+            and web_route.reason is WebRouteReason.MODE
+        )
+        if (runtime.force_tavily_fallback or deployment_tavily) and tools is not None:
             enable_fallback = getattr(tools, "enable_native_web_fallback", None)
             if callable(enable_fallback):
                 enable_fallback()

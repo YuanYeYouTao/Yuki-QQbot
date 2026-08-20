@@ -155,7 +155,7 @@ from qq_ai_bot.speech.reply_effect import (
 )
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
-from qq_ai_bot.web.models import WebProvider
+from qq_ai_bot.web.models import WebProvider, WebRouteReason
 from qq_ai_bot.web.native_sources import recover_native_web_response
 from qq_ai_bot.web.router import WebProviderRouter
 from yuki_plugin_sdk.events import EventName
@@ -622,22 +622,21 @@ class _ChatAgentBackend(AgentToolBackend):
         )
 
     def _host_priority_capability_ids(self) -> tuple[str, ...]:
-        """Pin tools implied by trusted host facts, not Planner output."""
+        """Pin tools implied by origin or deployment mode, not the current message."""
 
         names: list[str] = []
         if self._runtime.scheduled_automation_intent:
             names.append("automation_create")
         web_route = self._runtime.web_route
         if self._native_web_fallback or (
-            web_route is not None and web_route.provider is WebProvider.TAVILY
+            web_route is not None
+            and web_route.provider is WebProvider.TAVILY
+            and web_route.reason is WebRouteReason.MODE
         ):
-            # Tavily was chosen or native already fell back: the function
-            # search/read pair is the Tavily path. Default native must not pin
-            # search, or idle turns would carry web schemas every round.
+            # Deployment-wide Tavily, or this turn already fell back. Do not pin
+            # from a URL, user override, or domain rule: those change tools[]
+            # per message and punch the DeepSeek prefix from token 0.
             names.extend(("web_search", "read_webpage"))
-        elif web_route is not None and web_route.target_urls:
-            # A public URL in the message is a page to read, not a search.
-            names.append("read_webpage")
         if self._runtime.origin is TurnOrigin.AUTONOMOUS_GROUP:
             names.append("decline_reply")
         return tuple(dict.fromkeys(names))
@@ -1957,7 +1956,9 @@ class ChatService:
                 selection_query=content,
                 scheduled_automation_intent=scheduled_automation_allowed,
                 native_web_fallback=bool(
-                    web_route is not None and web_route.provider is WebProvider.TAVILY
+                    web_route is not None
+                    and web_route.provider is WebProvider.TAVILY
+                    and web_route.reason is WebRouteReason.MODE
                 ),
                 web_route=web_route,
                 memory_turn_id=memory_turn_id,

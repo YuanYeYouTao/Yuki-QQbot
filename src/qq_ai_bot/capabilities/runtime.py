@@ -211,29 +211,25 @@ class TurnCapabilityRuntime:
         return tuple(sorted(unique.values(), key=lambda item: item.name))
 
     def initial_exposure(self, query: CapabilityQuery) -> CapabilityExposureSnapshot:
-        started = time.perf_counter()
-        hits = self._search_local(query, limit=10)
-        self._notify_searched(query, hits, started)
         kernel = (request_tools_definition(),) if not self._policy_context.tools_closed else ()
         self._plan = self._planner.plan_initial(
             catalog=self._authorized.catalog,
             requestable_ids=self._authorized.requestable_ids,
-            hits=hits,
+            hits=(),
             memory_view=self._memory_view,
             kernel_tools=kernel,
-            query=query.text,
+            query="",
             artifact_available=self._policy_context.artifact_available,
             reply_target_available=self._policy_context.reply_target_available,
             priority_ids=query.priority_capability_ids,
         )
         self._apply_plan(self._plan)
-        self._affinity = tuple(dict.fromkeys(hit.namespace_id for hit in hits[:3]))
+        self._affinity = ()
         return self._ledger.snapshot()
 
     async def prepare_initial_exposure(self, query: CapabilityQuery) -> CapabilityExposureSnapshot:
-        """Hydrate lazy MCP servers that the query can discover, then expose."""
+        """Declare the stable first-round set without message-dependent MCP hydration."""
 
-        await self._hydrate_lazy_mcp(query)
         return self.initial_exposure(query)
 
     async def search(self, query: CapabilityQuery) -> tuple[CapabilitySearchHit, ...]:
