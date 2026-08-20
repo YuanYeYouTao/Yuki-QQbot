@@ -39,9 +39,17 @@ class ConversationRollupService:
         self._timeout_seconds = timeout_seconds
         self.metrics = metrics or ConversationRollupMetrics()
 
+    def _candidate_uses_model(self, candidate: RollupCandidate) -> bool:
+        if not candidate.events:
+            return False
+        allowed = self._config.llm_origins
+        return all(event.origin in allowed for event in candidate.events)
+
     async def summarize_candidate(self, candidate: RollupCandidate) -> tuple[str, RollupKind]:
         """Use the model once; every provider/quality failure falls back immediately."""
 
+        if not self._candidate_uses_model(candidate):
+            return self.extractive(candidate)
         try:
             summary = await asyncio.wait_for(
                 self._model_summary(candidate), timeout=self._timeout_seconds

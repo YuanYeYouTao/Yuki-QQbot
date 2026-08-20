@@ -11,6 +11,7 @@ import pytest_asyncio
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+from qq_ai_bot.conversation.rollup.origins import parse_rollup_llm_origins
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
@@ -156,6 +157,7 @@ def build_harness(
         summary_max_characters=settings.conversation_rollup_summary_max_characters,
         bot_display_name=settings.bot_display_name,
         timezone=settings.default_timezone,
+        llm_origins=parse_rollup_llm_origins(settings.conversation_rollup_llm_origins),
     )
     scoped_events = ScopedEventLedgerUnitOfWork(database, config=rollup_config)
     ledger = EventLedgerRepository(database)

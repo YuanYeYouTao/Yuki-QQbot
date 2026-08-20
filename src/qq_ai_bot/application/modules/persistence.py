@@ -9,6 +9,7 @@ from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+from qq_ai_bot.conversation.rollup.origins import parse_rollup_llm_origins
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
@@ -164,6 +165,7 @@ class PersistenceModule:
             summary_max_characters=settings.conversation_rollup_summary_max_characters,
             bot_display_name=settings.bot_display_name,
             timezone=settings.default_timezone,
+            llm_origins=parse_rollup_llm_origins(settings.conversation_rollup_llm_origins),
         )
         rollup_metrics = ConversationRollupMetrics()
         scoped_events = ScopedEventLedgerUnitOfWork(

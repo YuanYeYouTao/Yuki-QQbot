@@ -33,6 +33,7 @@ class RollupPolicyConfig:
     summary_max_characters: int = 1200
     bot_display_name: str = "Yuki"
     timezone: str = "Asia/Shanghai"
+    llm_origins: frozenset[str] = frozenset({"user_message"})
 
     def __post_init__(self) -> None:
         positive = (
@@ -54,6 +55,8 @@ class RollupPolicyConfig:
             raise ValueError("trigger_events must be greater than stop_events")
         if self.trigger_characters <= self.stop_characters:
             raise ValueError("trigger_characters must be greater than stop_characters")
+        if not self.llm_origins:
+            object.__setattr__(self, "llm_origins", frozenset({"user_message"}))
 
 
 @dataclass(frozen=True, slots=True)
