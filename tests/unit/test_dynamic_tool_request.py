@@ -350,6 +350,45 @@ async def test_reply_target_control_survives_tools_closed_and_is_bounded() -> No
 
 
 @pytest.mark.asyncio
+async def test_aligned_plugin_background_declares_same_prefix_tools_as_user() -> None:
+    control = ReplyTargetControl(visible_event_ids=frozenset({42}))
+    user_runtime = replace(_runtime(), reply_target_control=control)
+    plugin_runtime = replace(
+        user_runtime,
+        origin=TurnOrigin.PLUGIN_BACKGROUND,
+        tools_closed=True,
+        read_only=True,
+        align_conversation_prefix_tools=True,
+    )
+    agent_runtime = SimpleNamespace()
+    _, user_backend = _backend(_registry([]), user_runtime)
+    _, plugin_backend = _backend(_registry([]), plugin_runtime)
+
+    user_names = {
+        tool.name for tool in user_backend.definitions(agent_runtime, web_was_used=False)
+    }
+    plugin_names = {
+        tool.name for tool in plugin_backend.definitions(agent_runtime, web_was_used=False)
+    }
+
+    assert user_names == plugin_names
+    assert {"request_tools", "set_reply_target"} <= plugin_names
+
+    arguments = json.dumps({"event_id": 42})
+    call = ToolCall(
+        id="reply-target",
+        function=ToolFunction(name="set_reply_target", arguments=arguments),
+    )
+    plugin_backend.begin_batch((call,), agent_runtime)
+    rejected = json.loads(
+        await plugin_backend.execute("set_reply_target", arguments, agent_runtime)
+    )
+    assert rejected["ok"] is False
+    assert rejected["error"] == "tools_closed"
+    assert control.override_applied is False
+
+
+@pytest.mark.asyncio
 async def test_user_message_can_request_authorized_tools() -> None:
     calls: list[str] = []
     _service, backend = _backend(_registry(calls), _runtime())

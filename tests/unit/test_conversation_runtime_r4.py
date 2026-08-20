@@ -576,7 +576,7 @@ async def test_plugin_background_reply_exposes_no_business_tools(database: Datab
     assert result.text == "该喝水了"
     assert seen
     names = {name for batch in seen for name in batch}
-    assert "request_tools" in names
+    assert {"request_tools", "set_reply_target"} <= names
     assert names.isdisjoint({"send_emoji", "send_voice", "memory_change"})
 
 
