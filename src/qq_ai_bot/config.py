@@ -124,8 +124,8 @@ class Settings(BaseSettings):
     # prefix; a 12k pool forced extractive rewrites of input[0] every few dozen
     # group messages. Keep actor metadata near 5k characters so expanding the
     # pool does not inflate the unavoidable per-turn miss.
-    max_context_characters: int = 81_920
-    context_metadata_budget_ratio: float = Field(default=0.06, gt=0, lt=1)
+    max_context_characters: int = 131_072
+    context_metadata_budget_ratio: float = Field(default=0.04, gt=0, lt=1)
     history_window_low_watermark_ratio: float = Field(default=0.67, gt=0, lt=1)
 
     global_llm_concurrency: int = 4
@@ -331,21 +331,21 @@ class Settings(BaseSettings):
     conversation_rollup_poll_seconds: float = Field(default=1.0, gt=0)
     conversation_rollup_lease_seconds: int = Field(default=180, gt=0)
     conversation_rollup_model_timeout_seconds: float = Field(default=60.0, gt=0)
-    conversation_rollup_raw_tail_events: int = Field(default=768, ge=1)
-    conversation_rollup_raw_tail_characters: int = Field(default=65_536, ge=1)
-    conversation_rollup_trigger_events: int = Field(default=512, ge=2)
-    conversation_rollup_trigger_characters: int = Field(default=49_152, ge=1)
-    conversation_rollup_stop_events: int = Field(default=192, ge=0)
-    conversation_rollup_stop_characters: int = Field(default=16_384, ge=0)
+    conversation_rollup_raw_tail_events: int = Field(default=256, ge=1)
+    conversation_rollup_raw_tail_characters: int = Field(default=20_480, ge=1)
+    conversation_rollup_trigger_events: int = Field(default=1024, ge=2)
+    conversation_rollup_trigger_characters: int = Field(default=81_920, ge=1)
+    conversation_rollup_stop_events: int = Field(default=0, ge=0)
+    conversation_rollup_stop_characters: int = Field(default=0, ge=0)
     conversation_rollup_batch_max_events: int = Field(default=256, ge=1)
     conversation_rollup_batch_max_characters: int = Field(default=32_768, ge=1)
-    conversation_rollup_worker_max_batches_per_claim: int = Field(default=4, ge=1)
+    conversation_rollup_worker_max_batches_per_claim: int = Field(default=5, ge=1)
     conversation_rollup_summary_max_characters: int = Field(default=1200, ge=1)
     conversation_rollup_retry_max_seconds: int = Field(default=960, ge=1)
     conversation_rollup_lease_heartbeat_seconds: float = Field(default=60.0, gt=0)
     conversation_rollup_llm_origins: str = "user_message"
     conversation_rollup_prompt_version: str = "conversation-rollup-v2"
-    conversation_rollup_foreground_max_batches: int = Field(default=3, ge=1)
+    conversation_rollup_foreground_max_batches: int = Field(default=5, ge=1)
     conversation_effect_gate_timeout_seconds: float = Field(default=30.0, gt=0)
     conversation_history_around_before: int = Field(default=6, ge=0)
     conversation_history_around_after: int = Field(default=6, ge=0)
@@ -680,6 +680,42 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CONVERSATION_ROLLUP_RAW_TAIL_EVENTS + CONVERSATION_ROLLUP_TRIGGER_EVENTS "
                 "must not exceed LOCAL_CONTEXT_EVENT_LIMIT"
+            )
+        if (
+            self.conversation_rollup_foreground_max_batches
+            * self.conversation_rollup_batch_max_events
+            < self.conversation_rollup_trigger_events
+        ):
+            raise ValueError(
+                "CONVERSATION_ROLLUP_FOREGROUND_MAX_BATCHES must cover one "
+                "CONVERSATION_ROLLUP_TRIGGER_EVENTS window"
+            )
+        if (
+            self.conversation_rollup_worker_max_batches_per_claim
+            * self.conversation_rollup_batch_max_events
+            < self.conversation_rollup_trigger_events
+        ):
+            raise ValueError(
+                "CONVERSATION_ROLLUP_WORKER_MAX_BATCHES_PER_CLAIM must cover one "
+                "CONVERSATION_ROLLUP_TRIGGER_EVENTS window"
+            )
+        if (
+            self.conversation_rollup_foreground_max_batches
+            * self.conversation_rollup_batch_max_characters
+            < self.conversation_rollup_trigger_characters
+        ):
+            raise ValueError(
+                "CONVERSATION_ROLLUP_FOREGROUND_MAX_BATCHES must cover one "
+                "CONVERSATION_ROLLUP_TRIGGER_CHARACTERS window"
+            )
+        if (
+            self.conversation_rollup_worker_max_batches_per_claim
+            * self.conversation_rollup_batch_max_characters
+            < self.conversation_rollup_trigger_characters
+        ):
+            raise ValueError(
+                "CONVERSATION_ROLLUP_WORKER_MAX_BATCHES_PER_CLAIM must cover one "
+                "CONVERSATION_ROLLUP_TRIGGER_CHARACTERS window"
             )
         if (
             self.conversation_rollup_lease_heartbeat_seconds

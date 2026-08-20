@@ -52,7 +52,7 @@ raw tail = (effective_coverage, snapshot.last_event_id]
 
 模型调用期间不持有数据库事务。claim、heartbeat、commit 和 retry 都以 owner + lease token + expiry 做 CAS。Worker 提交前重算来源 fingerprint；generation、前台新 revision 或 visual summary 补写变化都会拒绝旧结果。
 
-正常聊天不等待后台模型。若 raw tail 已超预算，前台只同步运行有界的 extractive 批次，再重新读取一致 snapshot；来源缺口、计数漂移或预算仍未收敛时 fail closed，不拼接旧摘要与最新尾部。
+正常聊天不等待后台模型。若未覆盖已超过 `raw_tail + trigger`，前台只同步运行有界的 extractive 批次，一次压到 `raw_tail + stop`，再重新读取一致 snapshot；来源缺口、计数漂移或预算仍未收敛时 fail closed，不拼接旧摘要与最新尾部。默认热尾 256 条 / 20k 字、trigger 1024 条 / 80k 字、stop 0（压回热尾）；前台与后台每轮批次数须能一次吃完 trigger。
 
 ## Prompt 顺序与信任边界
 
