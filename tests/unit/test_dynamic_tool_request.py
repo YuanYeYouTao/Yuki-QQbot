@@ -364,9 +364,7 @@ async def test_aligned_plugin_background_declares_same_prefix_tools_as_user() ->
     _, user_backend = _backend(_registry([]), user_runtime)
     _, plugin_backend = _backend(_registry([]), plugin_runtime)
 
-    user_names = {
-        tool.name for tool in user_backend.definitions(agent_runtime, web_was_used=False)
-    }
+    user_names = {tool.name for tool in user_backend.definitions(agent_runtime, web_was_used=False)}
     plugin_names = {
         tool.name for tool in plugin_backend.definitions(agent_runtime, web_was_used=False)
     }
