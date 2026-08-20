@@ -190,15 +190,35 @@ def discover_smoke_plugin_ids(deploy_directory: Path) -> tuple[str, ...]:
     return ids[:1]
 
 
-def write_plugin_pending(deploy_directory: Path) -> tuple[str, ...]:
+def write_plugin_pending(
+    deploy_directory: Path,
+    compose: Compose | None = None,
+) -> tuple[str, ...]:
     selected = discover_smoke_plugin_ids(deploy_directory)
-    pending = deploy_directory / "data/setup/pending.json"
-    pending.parent.mkdir(parents=True, exist_ok=True)
-    pending.write_text(
+    payload = (
         json.dumps({"schema_version": 1, "selected_plugins": list(selected)}, ensure_ascii=False)
-        + "\n",
-        encoding="utf-8",
+        + "\n"
     )
+    pending = deploy_directory / "data/setup/pending.json"
+    try:
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text(payload, encoding="utf-8")
+    except OSError:
+        if compose is None:
+            raise
+        compose.run(
+            "exec",
+            "-T",
+            "bot",
+            "python",
+            "-c",
+            (
+                "from pathlib import Path; "
+                "path = Path('/app/data/setup/pending.json'); "
+                "path.parent.mkdir(parents=True, exist_ok=True); "
+                f"path.write_text({payload!r}, encoding='utf-8')"
+            ),
+        )
     return selected
 
 
@@ -259,7 +279,7 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     if alembic_version != "0042":
         raise SmokeError(f"unexpected Alembic version: {alembic_version!r}")
     compose.run("exec", "-T", "bot", "qq-ai-bot-cli", "plugin", "discover", capture=True)
-    selected = write_plugin_pending(deploy_directory)
+    selected = write_plugin_pending(deploy_directory, compose)
     compose.run(
         "exec",
         "-T",
