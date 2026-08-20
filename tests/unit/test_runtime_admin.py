@@ -265,7 +265,13 @@ async def test_runtime_snapshot_resolves_dynamic_vision_settings(database: Datab
 
 @pytest.mark.asyncio
 async def test_runtime_precedence_delete_and_audit(database: Database) -> None:
-    settings = make_settings(database.url, local_context_event_limit=30)
+    settings = make_settings(
+        database.url,
+        local_context_event_limit=30,
+        conversation_rollup_raw_tail_events=8,
+        conversation_rollup_trigger_events=16,
+        conversation_rollup_stop_events=4,
+    )
     service = RuntimeConfigService(settings=settings, database=database)
     global_change = await service.set_override(
         "context.local_event_limit",
@@ -1574,7 +1580,13 @@ def test_numeric_conversion_rejects_minimum_nan_and_infinity() -> None:
 async def test_delete_last_override_restores_explicit_environment_value(
     database: Database,
 ) -> None:
-    settings = make_settings(database.url, local_context_event_limit=31)
+    settings = make_settings(
+        database.url,
+        local_context_event_limit=31,
+        conversation_rollup_raw_tail_events=8,
+        conversation_rollup_trigger_events=16,
+        conversation_rollup_stop_events=4,
+    )
     service = RuntimeConfigService(settings=settings, database=database)
     await service.set_override(
         "context.local_event_limit",

@@ -164,7 +164,11 @@ class ContextAssembler:
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
 
-        await self._ensure_lightweight_backlog(identity, turn)
+        await self._ensure_lightweight_backlog(
+            identity,
+            turn,
+            event_limit=runtime.context.local_event_limit,
+        )
         current_event = await self._ledger.get_event(turn.trigger_event_id)
         if (
             current_event is None
@@ -455,6 +459,11 @@ class ContextAssembler:
             else ConversationScope.private(
                 event.bot_user_id, event.private_peer_user_id or authorization_user_id
             )
+        )
+        await self._ensure_lightweight_backlog(
+            history_identity,
+            turn,
+            event_limit=runtime.context.local_event_limit,
         )
         snapshot = await self._load_history_snapshot(
             history_identity,
@@ -981,16 +990,81 @@ class ContextAssembler:
         rollup_text: str,
         coverage_end: int,
     ) -> int:
+        return self._prompt_character_admit(
+            remainder=remainder,
+            rollup_text=rollup_text,
+            coverage_end=coverage_end,
+        )
+
+    def _near_window_event_limit(self, *, event_limit: int, coverage_end: int) -> int:
+        return self._prompt_event_admit(event_limit=event_limit, coverage_end=coverage_end)
+
+    def _prompt_event_admit(self, *, event_limit: int, coverage_end: int) -> int:
+        ceiling = max(0, event_limit - 1)
+        if coverage_end <= 0:
+            return ceiling
+        return min(
+            ceiling,
+            self._settings.conversation_rollup_raw_tail_events
+            + self._settings.conversation_rollup_trigger_events,
+        )
+
+    def _prompt_event_target(self, *, event_limit: int, coverage_end: int) -> int:
+        admit = self._prompt_event_admit(event_limit=event_limit, coverage_end=coverage_end)
+        if coverage_end <= 0:
+            return admit
+        return min(
+            admit,
+            self._settings.conversation_rollup_raw_tail_events
+            + self._settings.conversation_rollup_stop_events,
+        )
+
+    def _prompt_character_admit(
+        self,
+        *,
+        remainder: int,
+        rollup_text: str,
+        coverage_end: int,
+    ) -> int:
         history_balance = max(0, remainder - len(rollup_text))
         if coverage_end <= 0:
             return history_balance
-        return min(history_balance, self._settings.conversation_rollup_raw_tail_characters)
+        return min(
+            history_balance,
+            self._settings.conversation_rollup_raw_tail_characters
+            + self._settings.conversation_rollup_trigger_characters,
+        )
 
-    def _near_window_event_limit(self, *, event_limit: int, coverage_end: int) -> int:
-        high = max(0, event_limit - 1)
+    def _prompt_character_target(
+        self,
+        *,
+        remainder: int,
+        rollup_text: str,
+        coverage_end: int,
+    ) -> int:
+        admit = self._prompt_character_admit(
+            remainder=remainder,
+            rollup_text=rollup_text,
+            coverage_end=coverage_end,
+        )
         if coverage_end <= 0:
-            return high
-        return min(high, self._settings.conversation_rollup_raw_tail_events)
+            return admit
+        return min(
+            admit,
+            self._settings.conversation_rollup_raw_tail_characters
+            + self._settings.conversation_rollup_stop_characters,
+        )
+
+    @staticmethod
+    def _uncovered_fits_window(
+        view: _UncoveredPromptView,
+        *,
+        event_limit: int,
+        character_budget: int,
+    ) -> bool:
+        return len(view.history_rows) <= event_limit and view.rendered_characters <= max(
+            0, character_budget - view.current_characters
+        )
 
     async def _load_history_snapshot(
         self,
@@ -1084,6 +1158,7 @@ class ContextAssembler:
         rollup_text = snapshot.rollup_text
         if not self._settings.conversation_rollup_enabled:
             return snapshot, recent, rollup_text, False
+        compact_to_stop = False
         max_batches = self._settings.conversation_rollup_foreground_max_batches
         for _ in range(max_batches):
             view = self._uncovered_prompt_view(
@@ -1094,19 +1169,35 @@ class ContextAssembler:
             )
             if view is None:
                 break
-            character_budget = self._near_window_character_budget(
-                remainder=remainder,
-                rollup_text=rollup_text,
-                coverage_end=snapshot.coverage_end,
+            event_cap = (
+                self._prompt_event_target(
+                    event_limit=event_limit,
+                    coverage_end=snapshot.coverage_end,
+                )
+                if compact_to_stop
+                else self._prompt_event_admit(
+                    event_limit=event_limit,
+                    coverage_end=snapshot.coverage_end,
+                )
             )
-            event_high = self._near_window_event_limit(
-                event_limit=event_limit,
-                coverage_end=snapshot.coverage_end,
+            character_cap = (
+                self._prompt_character_target(
+                    remainder=remainder,
+                    rollup_text=rollup_text,
+                    coverage_end=snapshot.coverage_end,
+                )
+                if compact_to_stop
+                else self._prompt_character_admit(
+                    remainder=remainder,
+                    rollup_text=rollup_text,
+                    coverage_end=snapshot.coverage_end,
+                )
             )
-            if len(view.history_rows) <= event_high and view.rendered_characters <= max(
-                0, character_budget - view.current_characters
+            if self._uncovered_fits_window(
+                view, event_limit=event_cap, character_budget=character_cap
             ):
                 break
+            compact_to_stop = True
             committed = await self._rollup_service.ensure_extractive_coverage(
                 repository=self._rollups,
                 scope=identity,
@@ -1131,18 +1222,19 @@ class ContextAssembler:
             current_event=current_event,
         )
         if final_view is not None:
-            final_character_budget = self._near_window_character_budget(
+            final_event_admit = self._prompt_event_admit(
+                event_limit=event_limit,
+                coverage_end=snapshot.coverage_end,
+            )
+            final_character_admit = self._prompt_character_admit(
                 remainder=remainder,
                 rollup_text=rollup_text,
                 coverage_end=snapshot.coverage_end,
             )
-            final_event_high = self._near_window_event_limit(
-                event_limit=event_limit,
-                coverage_end=snapshot.coverage_end,
-            )
-            if len(final_view.history_rows) > final_event_high or (
-                final_view.rendered_characters
-                > max(0, final_character_budget - final_view.current_characters)
+            if not self._uncovered_fits_window(
+                final_view,
+                event_limit=final_event_admit,
+                character_budget=final_character_admit,
             ):
                 raise ConversationCoverageError(
                     "foreground coverage limit exhausted before prompt became bounded"
@@ -1153,11 +1245,24 @@ class ContextAssembler:
         self,
         scope: ConversationScope,
         turn: ConversationTurnSnapshot,
+        *,
+        event_limit: int,
     ) -> None:
         """Bound raw backlog from counters before loading any event bodies."""
 
         if not self._settings.conversation_rollup_enabled:
             return
+        event_admit = self._prompt_event_admit(event_limit=event_limit, coverage_end=1)
+        event_target = self._prompt_event_target(event_limit=event_limit, coverage_end=1)
+        character_admit = (
+            self._settings.conversation_rollup_raw_tail_characters
+            + self._settings.conversation_rollup_trigger_characters
+        )
+        character_target = (
+            self._settings.conversation_rollup_raw_tail_characters
+            + self._settings.conversation_rollup_stop_characters
+        )
+        compact_to_stop = False
         for _ in range(self._settings.conversation_rollup_foreground_max_batches + 1):
             state, _rollup, _job = await self._rollups.status(scope)
             if state is None:
@@ -1168,14 +1273,14 @@ class ContextAssembler:
                 or state.scope.key != turn.scope_key
             ):
                 raise ConversationCoverageError("turn generation changed before prompt snapshot")
+            event_cap = event_target if compact_to_stop else event_admit
+            character_cap = character_target if compact_to_stop else character_admit
             if (
-                state.uncovered_event_count
-                <= self._settings.conversation_rollup_raw_tail_events + 1
-                and state.uncovered_character_count
-                <= self._settings.conversation_rollup_raw_tail_characters
-                + self._settings.max_input_characters
+                state.uncovered_event_count <= event_cap
+                and state.uncovered_character_count <= character_cap
             ):
                 return
+            compact_to_stop = True
             committed = await self._rollup_service.ensure_extractive_coverage(
                 repository=self._rollups,
                 scope=scope,

@@ -140,9 +140,10 @@ class Settings(BaseSettings):
 
     observe_enabled_groups: bool = True
     recent_history_tool_limit: int = 20
-    # This is a safety ceiling, not the normal window size. The character budget
-    # remains the primary bound and rolls history in stable low/high-watermark blocks.
-    local_context_event_limit: int = 1_024
+    # Safety ceiling for loaded raw events. Must be able to hold the protected
+    # rollup tail plus the background trigger, otherwise foreground extractive
+    # rewrites the checkpoint every turn in the gap below trigger.
+    local_context_event_limit: int = 2_048
     person_memory_max_entries: int = 100
     person_group_memory_max_entries: int = 50
     preference_max_entries: int = 30
@@ -671,6 +672,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CONVERSATION_ROLLUP_TRIGGER_CHARACTERS must exceed "
                 "CONVERSATION_ROLLUP_STOP_CHARACTERS"
+            )
+        if (
+            self.conversation_rollup_raw_tail_events + self.conversation_rollup_trigger_events
+            > self.local_context_event_limit
+        ):
+            raise ValueError(
+                "CONVERSATION_ROLLUP_RAW_TAIL_EVENTS + CONVERSATION_ROLLUP_TRIGGER_EVENTS "
+                "must not exceed LOCAL_CONTEXT_EVENT_LIMIT"
             )
         if (
             self.conversation_rollup_lease_heartbeat_seconds

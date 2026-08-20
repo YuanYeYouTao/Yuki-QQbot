@@ -204,6 +204,16 @@ def test_example_system_prompt_preserves_yuki_persona_and_short_style() -> None:
     assert all(fragment in prompt for fragment in required_fragments)
 
 
+def test_rollup_event_watermarks_must_fit_local_event_limit() -> None:
+    with pytest.raises(ValidationError, match="must not exceed LOCAL_CONTEXT_EVENT_LIMIT"):
+        Settings(
+            _env_file=None,
+            local_context_event_limit=1024,
+            conversation_rollup_raw_tail_events=768,
+            conversation_rollup_trigger_events=512,
+        )
+
+
 def test_daily_chat_delay_range_must_be_ordered() -> None:
     with pytest.raises(
         ValidationError,
@@ -272,7 +282,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.conversation_autonomous_batch_limit == 8
     assert settings.reply_hard_max_messages == 10
     assert settings.max_context_characters == 81_920
-    assert settings.local_context_event_limit == 1_024
+    assert settings.local_context_event_limit == 2_048
     assert settings.history_window_low_watermark_ratio == 0.67
     assert settings.context_metadata_budget_ratio == 0.06
     assert settings.memory_context_limit_per_entity == 4

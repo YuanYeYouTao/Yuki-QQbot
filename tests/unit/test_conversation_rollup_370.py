@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 
 import pytest
+from tests.conftest import make_settings
 
 from qq_ai_bot.conversation.rollup.db_models import ConversationRollupJobModel
 from qq_ai_bot.conversation.rollup.errors import (
@@ -20,10 +22,12 @@ from qq_ai_bot.conversation.rollup.repository import (
 )
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.rollup.worker import ConversationRollupWorker
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from qq_ai_bot.services.context_assembler import ContextAssembler
 
 
 def test_rollup_source_projection_renders_stored_utc_in_default_timezone() -> None:
@@ -395,3 +399,120 @@ async def test_single_protected_event_never_creates_permanent_job(database: Data
 
     _state, _rollup, job = await repository.status(scope)
     assert job is None
+
+
+def test_prompt_event_caps_use_trigger_and_stop_not_tail_plus_one() -> None:
+    assembler = ContextAssembler(
+        settings=make_settings("sqlite+aiosqlite:///:memory:"),
+        ledger=MagicMock(),
+        people=MagicMock(),
+        memory_context=MagicMock(),
+        relationships=MagicMock(),
+        time_service=MagicMock(),
+        rollup_repository=MagicMock(),
+        rollup_service=MagicMock(),
+    )
+
+    assert assembler._prompt_event_admit(event_limit=2048, coverage_end=0) == 2047
+    assert assembler._prompt_event_admit(event_limit=2048, coverage_end=100) == 1280
+    assert assembler._prompt_event_target(event_limit=2048, coverage_end=100) == 960
+    assert assembler._prompt_event_admit(event_limit=1024, coverage_end=100) == 1023
+
+
+async def test_foreground_does_not_nibble_between_protected_tail_and_trigger(
+    database: Database,
+) -> None:
+    settings = make_settings(
+        database.url,
+        local_context_event_limit=16,
+        conversation_rollup_raw_tail_events=8,
+        conversation_rollup_trigger_events=4,
+        conversation_rollup_stop_events=2,
+        conversation_rollup_raw_tail_characters=100_000,
+        conversation_rollup_trigger_characters=100_000,
+        conversation_rollup_stop_characters=10_000,
+        conversation_rollup_batch_max_events=8,
+        conversation_rollup_batch_max_characters=100_000,
+        conversation_rollup_summary_max_characters=2_000,
+        conversation_rollup_foreground_max_batches=4,
+    )
+    policy = RollupPolicyConfig(
+        raw_tail_events=settings.conversation_rollup_raw_tail_events,
+        raw_tail_characters=settings.conversation_rollup_raw_tail_characters,
+        trigger_events=settings.conversation_rollup_trigger_events,
+        trigger_characters=settings.conversation_rollup_trigger_characters,
+        stop_events=settings.conversation_rollup_stop_events,
+        stop_characters=settings.conversation_rollup_stop_characters,
+        batch_max_events=settings.conversation_rollup_batch_max_events,
+        batch_max_characters=settings.conversation_rollup_batch_max_characters,
+        summary_max_characters=settings.conversation_rollup_summary_max_characters,
+    )
+    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
+    repository = ConversationRollupRepository(database, policy)
+    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
+    assembler = ContextAssembler(
+        settings=settings,
+        ledger=MagicMock(),
+        people=MagicMock(),
+        memory_context=MagicMock(),
+        relationships=MagicMock(),
+        time_service=MagicMock(),
+        rollup_repository=repository,
+        rollup_service=service,
+    )
+    scope = ConversationScope.group("bot-hysteresis", "group-hysteresis")
+    await _append(uow, scope, 12)
+    claim = await repository.claim_next_job(lease_owner="seed", lease_seconds=30)
+    assert claim is not None
+    candidate = await repository.candidate_for_claim(claim)
+    assert candidate is not None
+    summary, kind = service.extractive(candidate)
+    await repository.commit_candidate(claim, candidate, summary_text=summary, summary_kind=kind)
+    seeded, seeded_rollup, _job = await repository.status(scope)
+    assert seeded is not None and seeded_rollup is not None
+    assert seeded.uncovered_event_count == 8
+    seeded_revision = seeded_rollup.revision
+    seeded_coverage = seeded_rollup.covered_through_event_id
+
+    await _append(uow, scope, 3, start=13)
+    dead_zone, dead_rollup, _job = await repository.status(scope)
+    assert dead_zone is not None and dead_rollup is not None
+    assert dead_zone.uncovered_event_count == 11
+    await assembler._ensure_lightweight_backlog(
+        scope,
+        ConversationTurnSnapshot(
+            scope_id=dead_zone.id,
+            scope_key=dead_zone.scope.key,
+            generation=dead_zone.generation,
+            trigger_event_id=dead_zone.last_event_id,
+            coordinator_version=1,
+        ),
+        event_limit=settings.local_context_event_limit,
+    )
+    after_dead, after_dead_rollup, _job = await repository.status(scope)
+    assert after_dead is not None and after_dead_rollup is not None
+    assert after_dead.uncovered_event_count == 11
+    assert after_dead_rollup.revision == seeded_revision
+    assert after_dead_rollup.covered_through_event_id == seeded_coverage
+
+    await _append(uow, scope, 2, start=16)
+    over_trigger, _rollup, _job = await repository.status(scope)
+    assert over_trigger is not None
+    assert over_trigger.uncovered_event_count == 13
+    await assembler._ensure_lightweight_backlog(
+        scope,
+        ConversationTurnSnapshot(
+            scope_id=over_trigger.id,
+            scope_key=over_trigger.scope.key,
+            generation=over_trigger.generation,
+            trigger_event_id=over_trigger.last_event_id,
+            coordinator_version=1,
+        ),
+        event_limit=settings.local_context_event_limit,
+    )
+    compacted, compacted_rollup, _job = await repository.status(scope)
+    assert compacted is not None and compacted_rollup is not None
+    assert compacted_rollup.revision > seeded_revision
+    assert compacted.uncovered_event_count <= (
+        settings.conversation_rollup_raw_tail_events + settings.conversation_rollup_stop_events
+    )
