@@ -2,21 +2,24 @@
 
 ## Unreleased
 
-### Conversation / Prompt cache
-
-- 插件后台对齐会话前缀时也声明 `set_reply_target`，与群聊用户轮次同一份首轮 `tools[]`；
-  真实调用仍关闭，避免 2/3 工具来回打断 DeepSeek 前缀缓存。
-- 自主轮次不再把 `decline_reply` 钉进首轮，定时意图也不再钉 `automation_create`；
-  两者走 `request_tools`，避免和普通群聊来回改 schema。
+## 3.7.1 - 2026-08-21
 
 ### Conversation Scope / Rollup
 
-- 前台 extractive 只在未覆盖超过受保护热尾加后台 trigger 时才改写检查点，并一次压到 stop；
-  不再在 `raw_tail + 1` 处每轮啃几条。`LOCAL_CONTEXT_EVENT_LIMIT` 默认 2048，须装得下
-  `RAW_TAIL_EVENTS + TRIGGER_EVENTS`。
-- 默认水位改为热尾 256、trigger 1024、stop 0：未覆盖追加到 1280 再一次压回约 256 条原文。
-  前台/后台默认 5 批，须一次吃完 trigger；`MAX_CONTEXT_CHARACTERS` 默认 131072，
-  `CONTEXT_METADATA_BUDGET_RATIO` 默认 0.04，Actor 元数据仍约 5k。
+- 水位、未覆盖计数和热尾切分改用 Prompt `main_agent_history` 尺子，与前台渲染同源；
+  压缩模型输入仍走 `rollup_source_projection`。
+- 文档写清 256 条热尾 floor 优先于 20480 字符 target；最终前台检查仍用 admit。
+- `CONVERSATION_ROLLUP_LLM_ORIGINS` 真正生效：白名单外或混合 batch 直接 extractive。
+  自主出站打标 `autonomous_group`。
+
+### Memory / Vision
+
+- 群观察轮次不再入队 Memory V2；被 @ / 会回复的轮次仍抽取。
+- Turn Vision 成功后为单图写入 `meme` 缓存别名，表情分类可复用，避免同一张图再打一路。
+
+### Conversation Runtime
+
+- 自主参与门槛默认改为 `80`。`0` 几乎总会插话。
 
 ## 3.7.0 - 2026-08-20
 

@@ -1,5 +1,10 @@
 # Yuki-QQbot
 
+> **3.7.1 正式版：**烧钱扫描剩余缺陷热修。Rollup 水位改用 Prompt 尺子，观察轮次不再入队
+> Memory V2，Turn Vision 结果可复用给表情分类缓存，自主门槛默认 80，并真正执行
+> `CONVERSATION_ROLLUP_LLM_ORIGINS`。Alembic head 仍为 `0042`，Plugin API 仍为 `2.0`。
+> 见 [3.7.1 发布说明](releases/v3.7.1.md)。
+
 > **3.7.0 正式版：**群聊短期会话统一为 Bot + 群，Actor 只影响当前轮。旧分层 History
 > Rollup 替换为每个 Scope 一个连续检查点；摘要作为不可信 input，不进入 Provider
 > instructions。Alembic head 为 `0042`，Plugin API 仍为 `2.0`。这是破坏性升级，请先读
