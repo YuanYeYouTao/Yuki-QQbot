@@ -493,7 +493,7 @@ docker compose up -d --no-deps --force-recreate bot
 ```dotenv
 CONVERSATION_AUTONOMOUS_ENABLED=true
 CONVERSATION_AUTONOMOUS_DEBOUNCE_SECONDS=3
-CONVERSATION_AUTONOMOUS_ADMISSION_THRESHOLD=0
+CONVERSATION_AUTONOMOUS_ADMISSION_THRESHOLD=80
 CONVERSATION_AUTONOMOUS_BATCH_LIMIT=8
 CONVERSATION_AUTONOMOUS_PRESENCE_WINDOW_SECONDS=300
 CONVERSATION_INTERRUPT_AUTONOMOUS_ON_NEW_MESSAGE=true
@@ -505,7 +505,7 @@ REPLY_HARD_MAX_MESSAGES=10
 旧 `PLANNER_*`、`REPLY_PLAN_HARD_MAX_MESSAGES` 与 `SPEECH_PLANNER_ENABLED` 由 `setup migrate-3-6` 备份后改写或删除，运行时不再 dual-read。映射表见 [3.6.0 升级指南](upgrade-3.6.0.md)。
 
 已启用群由 `conversation.autonomous_enabled` 控制是否进入自主评分，并使用
-`conversation.autonomous_debounce_seconds` 聚合连续消息。默认高参与度：普通群消息静默约 3 秒后评分，批次上限 8 条，门槛为 0。真实 `@Yuki`、回复 Yuki 和私聊属于后端强制回复，不会走自主评分；后续普通群消息也不会抢占正在处理的明确触发。禁用群仍只接受超级管理员的启用命令。
+`conversation.autonomous_debounce_seconds` 聚合连续消息。默认：普通群消息静默约 3 秒后评分，批次上限 8 条，门槛为 80。设为 `0` 时群基础分就能过线，几乎总会插话。真实 `@Yuki`、回复 Yuki 和私聊属于后端强制回复，不会走自主评分；后续普通群消息也不会抢占正在处理的明确触发。禁用群仍只接受超级管理员的启用命令。
 
 `reply.hard_max_messages` 是单轮实际发送 QQ 消息数的硬上限，默认 10。非结构化聊天正文中的空行会直接成为两条 QQ 消息的发送边界；代码、表格、步骤和长篇结构化回答不会逐句拆散。超级管理员可直接对 Yuki 说“把单轮发送硬上限改成 15 条”，修改会热生效。
 
@@ -1368,7 +1368,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `AGENT_TOOL_RESULT_MAX_CHARACTERS` | `8000` |
 | `CONVERSATION_AUTONOMOUS_ENABLED` | `true` |
 | `CONVERSATION_AUTONOMOUS_DEBOUNCE_SECONDS` | `3` |
-| `CONVERSATION_AUTONOMOUS_ADMISSION_THRESHOLD` | `0` |
+| `CONVERSATION_AUTONOMOUS_ADMISSION_THRESHOLD` | `80`（`0` 几乎总是插话） |
 | `CONVERSATION_AUTONOMOUS_BATCH_LIMIT` | `8`（热配置范围 `1`～`100`） |
 | `CONVERSATION_AUTONOMOUS_PRESENCE_WINDOW_SECONDS` | `300` |
 | `CONVERSATION_INTERRUPT_AUTONOMOUS_ON_NEW_MESSAGE` | `true` |

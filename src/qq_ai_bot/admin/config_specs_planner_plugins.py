@@ -62,7 +62,7 @@ def planner_plugin_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "conversation.autonomous_admission_threshold",
             "自主参与评分阈值",
-            "未触发群消息进入 Main Agent 的本地评分阈值。",
+            "未触发群消息进入 Main Agent 的本地评分阈值。默认 80；0 几乎总会插话。",
             value_type="integer",
             minimum=0,
             maximum=100,

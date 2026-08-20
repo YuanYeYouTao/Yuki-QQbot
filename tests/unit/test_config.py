@@ -289,7 +289,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.daily_chat_message_delay_min_seconds == 1
     assert settings.daily_chat_message_delay_max_seconds == 2
     assert settings.conversation_autonomous_debounce_seconds == 3
-    assert settings.conversation_autonomous_admission_threshold == 0
+    assert settings.conversation_autonomous_admission_threshold == 80
     assert settings.conversation_autonomous_batch_limit == 8
     assert settings.reply_hard_max_messages == 10
     assert settings.max_context_characters == 131_072
