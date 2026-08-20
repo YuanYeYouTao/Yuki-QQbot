@@ -23,6 +23,7 @@ _MAIN_AGENT_IDENTITY_MARKER = re.compile(
     r"\[[^\]\r\n]{1,128}\|QQ:[1-9]\d{4,19}\][ \t]*(?:\n[ \t]*)?"
 )
 _MAIN_AGENT_EVENT_PREFIX = re.compile(r"(?m)^[ \t]*#\d{1,19}(?:\|[^>\r\n]{1,768})?>[ \t]*")
+_BLOCKQUOTE_PREFIX = re.compile(r"(?m)^[ \t]*>[ \t]+")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
 
 
@@ -40,7 +41,8 @@ def strip_internal_history_markers(text: str) -> str:
     cleaned = _INTERNAL_HISTORY_MARKER.sub("", text)
     cleaned = _EVENT_IDENTITY_MARKER.sub("", cleaned)
     cleaned = _MAIN_AGENT_IDENTITY_MARKER.sub("", cleaned)
-    return _MAIN_AGENT_EVENT_PREFIX.sub("", cleaned)
+    cleaned = _MAIN_AGENT_EVENT_PREFIX.sub("", cleaned)
+    return _BLOCKQUOTE_PREFIX.sub("", cleaned)
 
 
 def clean_model_output(text: str, *, max_characters: int) -> str:

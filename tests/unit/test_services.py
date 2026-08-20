@@ -124,6 +124,24 @@ def test_model_output_keeps_event_like_text_inside_an_ordinary_sentence() -> Non
     assert clean_model_output(text, max_characters=200) == text
 
 
+def test_model_output_strips_echoed_blockquote_prefixes() -> None:
+    text = (
+        "> Diana 这是被你自己的烤肉账撑爆了吗，连网关都502了\n"
+        "> 那这局算我赢啦，趁你宕机我先溜一步，嘿嘿……啊不是，喵！"
+    )
+
+    assert clean_model_output(text, max_characters=200) == (
+        "Diana 这是被你自己的烤肉账撑爆了吗，连网关都502了\n"
+        "那这局算我赢啦，趁你宕机我先溜一步，嘿嘿……啊不是，喵！"
+    )
+
+
+def test_model_output_keeps_comparison_greater_than_in_a_sentence() -> None:
+    text = "分数 > 80 才算过，这不是引用前缀。"
+
+    assert clean_model_output(text, max_characters=200) == text
+
+
 @pytest.mark.asyncio
 async def test_bot_aware_private_scope_isolation(database: Database) -> None:
     repository = EventLedgerRepository(database)

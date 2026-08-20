@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 3.7.0 - 2026-08-20
+
+### Conversation Scope / Rollup
+
+- 群聊短期会话统一为 Bot + 群；单检查点 Rollup 与 Alembic `0042`。详见
+  [3.7.0 发布说明](docs/releases/v3.7.0.md)。
+- Rollup 源投影按默认时区（`Asia/Shanghai`）渲染库存 UTC，避免模型把 11:21Z 读成上午。
+- 模型出口剥掉行首 `>` 引用前缀，避免 QQ 打出引用块标记。
+
 ## 3.6.2
 
 ### Conversation History

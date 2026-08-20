@@ -13,15 +13,36 @@ from qq_ai_bot.conversation.rollup.errors import (
     RollupSourceChangedError,
 )
 from qq_ai_bot.conversation.rollup.models import RollupKind, RollupPolicyConfig
+from qq_ai_bot.conversation.rollup.renderer import rollup_source_projection
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
 )
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.rollup.worker import ConversationRollupWorker
-from qq_ai_bot.domain.conversations import ConversationScope
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+
+
+def test_rollup_source_projection_renders_stored_utc_in_default_timezone() -> None:
+    event = EventRecord(
+        id=32865,
+        bot_user_id="380726517",
+        platform_message_id="nailong-can",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="3135003586",
+        sender_group_card="查无此人",
+        direction="inbound",
+        content="这是什么",
+        visual_summary="",
+        segments=(),
+        occurred_at=datetime(2026, 8, 20, 11, 21, 42, tzinfo=UTC),
+        group_id="1049765710",
+    )
+
+    assert rollup_source_projection(event) == ("[2026-08-20T19:21:42+08:00] 查无此人: 这是什么")
 
 
 def _policy(*, batch_max_events: int = 100) -> RollupPolicyConfig:
