@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureSource
 from qq_ai_bot.memory.enums import MemoryRecallPurpose
@@ -112,7 +112,7 @@ def _open(
     inbound = _inbound(image=image, reply=reply)
     return TurnMemorySession.open(
         inbound=inbound,
-        identity=ConversationIdentity.private("1001"),
+        identity=ConversationScope.private("bot-9", "1001"),
         runtime=_runtime(),
         memory_context=context,  # type: ignore[arg-type]
         origin=origin,

@@ -26,7 +26,7 @@ from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import AutomationRecord, TurnOrigin
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.conversation.reply import ReplyEffect
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.emoji.collector import EmojiCollector
 from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
@@ -249,9 +249,11 @@ class PluginInvocation:
 
     @property
     def conversation_key(self) -> str:
+        if self.inbound is not None:
+            return self.inbound.scope().key
         if self.current_group_id:
-            return f"group:{self.current_group_id}:user:{self.actor_user_id}"
-        return f"private:{self.actor_user_id}"
+            return ConversationScope.group(self.bot_user_id, self.current_group_id).key
+        return ConversationScope.private(self.bot_user_id, self.actor_user_id).key
 
 
 @dataclass(slots=True)
@@ -763,10 +765,13 @@ class _MessageFacade:
         invocation = self._host._require(PluginPermission.MESSAGE_HISTORY_READ)
         assert invocation is not None
         ledger = _require_service(self._host._services.ledger, "message history")
-        rows = await ledger.list_recent(
-            scope_type=(ScopeType.GROUP if invocation.current_group_id else ScopeType.PRIVATE),
-            user_id=invocation.actor_user_id,
-            group_id=invocation.current_group_id,
+        scope = (
+            ConversationScope.group(invocation.bot_user_id, invocation.current_group_id)
+            if invocation.current_group_id is not None
+            else ConversationScope.private(invocation.bot_user_id, invocation.actor_user_id)
+        )
+        rows = await ledger.list_scope_recent(
+            scope,
             limit=_bounded_limit(limit),
         )
         return tuple(_record_message(row) for row in rows)
@@ -3042,7 +3047,6 @@ def _group_record(row: Any) -> dict[str, JsonValue]:
         "name": row.name,
         "enabled": row.enabled,
         "require_mention": row.require_mention,
-        "conversation_mode": row.conversation_mode.value,
         "autonomous_enabled": row.autonomous_enabled,
     }
 

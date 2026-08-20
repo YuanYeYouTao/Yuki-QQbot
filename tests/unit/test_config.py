@@ -18,6 +18,20 @@ def test_deepseek_reasoning_effort_accepts_max() -> None:
     assert settings.model_runtime.llm_reasoning_effort is ReasoningEffort.MAX
 
 
+@pytest.mark.parametrize(
+    "removed_key",
+    [
+        "_".join(("conversation", "history", "rollup", "max", "attempts")),
+        "_".join(("conversation", "history", "rollup", "l0", "min", "events")),
+        "_".join(("conversation", "history", "rollup", "fan", "in")),
+        "_".join(("conversation", "history", "rollup", "max", "level")),
+    ],
+)
+def test_removed_history_configuration_is_explicitly_rejected(removed_key: str) -> None:
+    with pytest.raises(ValidationError, match=r"removed 3\.6 conversation history"):
+        Settings.model_validate({removed_key: 3})
+
+
 def test_memory_dream_hard_compression_ratio_cannot_be_below_target() -> None:
     with pytest.raises(
         ValidationError,
@@ -257,16 +271,24 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.conversation_autonomous_admission_threshold == 0
     assert settings.conversation_autonomous_batch_limit == 8
     assert settings.reply_hard_max_messages == 10
-    assert settings.max_context_characters == 12_000
-    assert settings.local_context_event_limit == 1_000
+    assert settings.max_context_characters == 81_920
+    assert settings.local_context_event_limit == 1_024
     assert settings.history_window_low_watermark_ratio == 0.67
-    assert settings.context_metadata_budget_ratio == 0.35
+    assert settings.context_metadata_budget_ratio == 0.06
     assert settings.memory_context_limit_per_entity == 4
     assert settings.memory_automatic_recall_continuation_limit == 2
-    assert settings.conversation_history_raw_tail_events == 32
-    assert settings.conversation_history_raw_tail_characters == 1600
-    assert settings.conversation_history_raw_tail_budget_ratio == 0.40
-    assert settings.conversation_history_sync_extractive_max_slices == 3
+    assert settings.conversation_rollup_raw_tail_events == 768
+    assert settings.conversation_rollup_raw_tail_characters == 65_536
+    assert settings.conversation_rollup_trigger_events == 512
+    assert settings.conversation_rollup_trigger_characters == 49_152
+    assert settings.conversation_rollup_stop_events == 192
+    assert settings.conversation_rollup_stop_characters == 16_384
+    assert settings.conversation_rollup_batch_max_events == 256
+    assert settings.conversation_rollup_batch_max_characters == 32_768
+    assert settings.conversation_rollup_worker_max_batches_per_claim == 4
+    assert settings.conversation_rollup_summary_max_characters == 1200
+    assert settings.conversation_rollup_retry_max_seconds == 960
+    assert settings.conversation_rollup_lease_heartbeat_seconds == 60
     assert settings.tooling_selected_tool_limit == 32
     assert settings.tooling_schema_token_budget == 12000
     assert settings.mcp_selected_tool_limit == 16

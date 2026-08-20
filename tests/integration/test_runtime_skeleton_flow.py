@@ -15,9 +15,10 @@ from qq_ai_bot.conversation.runtime import (
     ConversationTurnSession,
     PreparedTurn,
 )
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.conversation.session import ConversationSessionLifecycle
 from qq_ai_bot.conversation.state import TurnEffectContext
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
 from qq_ai_bot.memory.enums import MemoryRecallPurpose
 from qq_ai_bot.memory.runtime.capability_view import build_capability_view
@@ -86,8 +87,10 @@ def _make_context(turn_id: str) -> TurnContext:
         ),
         scene=TurnSceneFacts(scope_type=ScopeType.GROUP, group_id="g-1", mentions_bot=True),
         runtime_config=_StubConfig(),  # type: ignore[arg-type]
-        conversation=ConversationIdentity.group("g-1", "u-1"),
-        coordination_key=TurnCoordinationKey.for_group("g-1"),
+        scope=ConversationScope.group("bot-9", "g-1"),
+        actor=inbound.sender,
+        turn_snapshot=ConversationTurnSnapshot(1, "bot:bot-9:group:g-1", 1, 11, 1),
+        coordination_key=TurnCoordinationKey.for_group("bot-9", "g-1"),
         turn_id=turn_id,
         turn_token=None,
         current_time=_StubTime(),  # type: ignore[arg-type]

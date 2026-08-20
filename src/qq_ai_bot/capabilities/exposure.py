@@ -26,17 +26,6 @@ SCHEMA_REVISION_CONFLICT = "capability_schema_revision_conflict"
 NO_LONGER_AUTHORIZED = "capability_no_longer_authorized"
 BUNDLE_EXCEEDS_BUDGET = "bundle_exceeds_schema_budget"
 
-_PERMISSION_QUERY_HINTS = (
-    "权限",
-    "能改什么",
-    "能做什么",
-    "你会什么",
-    "有哪些设置",
-    "能改多少",
-    "capability",
-    "permission",
-)
-
 
 @dataclass(frozen=True, slots=True)
 class DeclaredSchemaRecord:
@@ -178,7 +167,7 @@ class AuthorityFirstExposurePlanner:
                 return
             if entry.descriptor.model_name not in requestable_ids:
                 return
-            if _is_synthetic(entry):
+            if _is_synthetic(entry) or _elevated_capability(entry):
                 return
             selected.append(entry)
             selected_ids.add(entry.descriptor.model_name)
@@ -189,10 +178,13 @@ class AuthorityFirstExposurePlanner:
                 if entry.descriptor.namespace_id in eager:
                     add(entry)
 
-        permission_query = _looks_like_permission_query(query)
+        # First-round schemas are part of the DeepSeek prefix from token 0.
+        # Do not vary them with the current message, permission phrasing, or
+        # lexical hits; request_tools remains the growth path.
+        del query, hits
         for name in CONDITIONAL_KERNEL_TOOLS:
             candidate = by_id.get(name)
-            if name == "get_my_capabilities" and not permission_query:
+            if name == "get_my_capabilities":
                 continue
             if name == "read_tool_artifact" and not artifact_available:
                 continue
@@ -202,19 +194,6 @@ class AuthorityFirstExposurePlanner:
 
         for name in priority_ids:
             add(by_id.get(name))
-
-        non_resident = 0
-        for hit in hits[: self._lexical_limit]:
-            if non_resident >= self._non_resident_limit:
-                break
-            if hit.capability_id in selected_ids:
-                continue
-            add(by_id.get(hit.capability_id))
-            if (
-                hit.capability_id in selected_ids
-                and hit.capability_id not in CONDITIONAL_KERNEL_TOOLS
-            ):
-                non_resident += 1
 
         reason = "ready"
         selected, selected_ids, rejected = _expand_selected_bundles(
@@ -335,9 +314,13 @@ def _is_synthetic(entry: UnifiedToolCatalogEntry) -> bool:
     return bool((entry.descriptor.provider_metadata or {}).get("synthetic"))
 
 
-def _looks_like_permission_query(query: str) -> bool:
-    folded = query.casefold()
-    return any(hint.casefold() in folded for hint in _PERMISSION_QUERY_HINTS)
+def _elevated_capability(entry: UnifiedToolCatalogEntry) -> bool:
+    """Privileged tools stay requestable, but they are not first-round schemas."""
+
+    descriptor = entry.descriptor
+    return bool(descriptor.required_permissions) or (
+        descriptor.trust_source is CapabilityTrustSource.ADMIN
+    )
 
 
 def _expand_selected_bundles(

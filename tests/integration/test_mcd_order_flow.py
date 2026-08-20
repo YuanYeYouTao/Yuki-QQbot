@@ -184,9 +184,35 @@ async def test_bundled_mcd_order_flow_commits_once_and_preserves_payment_url(
             latest = latest_tool_payload(request)
             if latest.get("tool_name") == "create-order" and latest.get("ok"):
                 committed_seen = latest.get("mutation_committed") is True
-        index = len(requests) - 1
         visible_names = {tool.name for tool in request.tools}
         expected_bundle = {f"mcp__mcd__{name}" for name in dict.fromkeys(_REMOTE_SEQUENCE)}
+        if visible_names and not expected_bundle.issubset(visible_names):
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="request-mcd-bundle",
+                        function=ToolFunction(
+                            name="request_tools",
+                            arguments=json.dumps(
+                                {
+                                    "query": "mcd create-order",
+                                    "max_results": 8,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        flow_requests = [
+            item
+            for item in requests
+            if (not {tool.name for tool in item.tools})
+            or expected_bundle.issubset({tool.name for tool in item.tools})
+        ]
+        index = len(flow_requests) - 1
         if visible_names:
             assert expected_bundle.issubset(visible_names)
             assert "read_tool_artifact" in visible_names
@@ -380,7 +406,7 @@ async def test_bundled_mcd_order_flow_commits_once_and_preserves_payment_url(
     assert "31 元" in final_text
     assert "订单号 001" in final_text
     assert "pending_payment" not in final_text
-    assert len(requests) == 8
+    assert len(requests) == 9
     assert all("plugin" not in tool.name for request in requests for tool in request.tools)
     serialized_requests = json.dumps(
         [

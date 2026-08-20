@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.domain.conversations import ConversationIdentity
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage
 from qq_ai_bot.memory.attribution import (
     MemoryAttributionJob,
@@ -116,7 +116,7 @@ class TurnMemorySession:
         decision: MemoryAccessDecision,
         scope: ResolvedMemoryScope,
         inbound: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         runtime: RuntimeConfigSnapshot,
         memory_context: MemoryContextService,
         origin: TurnOrigin,
@@ -149,7 +149,7 @@ class TurnMemorySession:
         cls,
         *,
         inbound: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         runtime: RuntimeConfigSnapshot,
         memory_context: MemoryContextService,
         origin: TurnOrigin,

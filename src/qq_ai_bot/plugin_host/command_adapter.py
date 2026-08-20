@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.conversations import ConversationIdentity
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.plugin_host.direct_command_router import (
     DirectCommandMatch,
@@ -46,7 +46,7 @@ class PluginCommandAdapter:
         self,
         *,
         message: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         argument: str,
         runtime: RuntimeConfigSnapshot,
     ) -> str:
@@ -113,7 +113,7 @@ class PluginCommandAdapter:
         self,
         *,
         message: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         match: DirectCommandMatch,
         runtime: RuntimeConfigSnapshot,
     ) -> str:
@@ -134,7 +134,7 @@ class PluginCommandAdapter:
     async def _run_command(
         self,
         message: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         remainder: str,
         runtime: RuntimeConfigSnapshot,
     ) -> str:
@@ -157,7 +157,7 @@ class PluginCommandAdapter:
         self,
         *,
         message: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         plugin_id: str,
         command_name: str,
         raw_arguments: str,

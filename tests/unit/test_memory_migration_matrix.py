@@ -57,6 +57,7 @@ def _schema(path: Path) -> set[tuple[str, str]]:
 
 def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) -> None:
     fresh = tmp_path / "fresh.db"
+    _upgrade(fresh, "0041")
     _upgrade(fresh, "head")
     expected_names = {name for name, _ in _schema(fresh)}
     assert "memory_facts" in expected_names
@@ -78,27 +79,28 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
     assert "memory_recall_receipts" in expected_names
     assert "memory_recall_items" in expected_names
     assert "reply_effect_events" in expected_names
-    assert "conversation_history_states" in expected_names
-    assert "conversation_history_summaries" in expected_names
-    assert "conversation_history_summary_members" in expected_names
-    assert "conversation_history_rollup_jobs" in expected_names
+    assert "conversation_scopes" in expected_names
+    assert "conversation_rollups" in expected_names
+    assert "conversation_rollup_jobs" in expected_names
+    assert "conversation_history_states" not in expected_names
     assert "planner_runs" not in expected_names
     with sqlite3.connect(fresh) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0041",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0042",)
 
     for label, revision in MATRIX.items():
         database = tmp_path / f"{label}.db"
         _upgrade(database, revision)
+        _upgrade(database, "0041")
         _upgrade(database, "head")
         names = {name for name, _ in _schema(database)}
         assert names == expected_names, label
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0041",
+                "0042",
             )
             assert connection.execute("SELECT COUNT(*) FROM memory_rebuild_runs").fetchone() == (0,)
 
 
-def test_conversation_history_rollup_is_the_current_production_migration() -> None:
+def test_conversation_scope_rollup_is_the_current_production_migration() -> None:
     versions = sorted((ROOT / "migrations/versions").glob("*.py"))
-    assert versions[-1].name == "0041_conversation_history_rollup.py"
+    assert versions[-1].name == "0042_replace_conversation_runtime.py"

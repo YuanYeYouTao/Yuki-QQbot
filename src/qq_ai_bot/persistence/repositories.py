@@ -2,7 +2,6 @@
 
 from qq_ai_bot.persistence.event_repository import (
     AgentActionRepository,
-    ConversationRepository,
     EventLedgerRepository,
     ProcessedEventRepository,
 )
@@ -33,7 +32,6 @@ from qq_ai_bot.persistence.web_repository import WebSearchSourceRepository
 
 __all__ = [
     "AgentActionRepository",
-    "ConversationRepository",
     "EmojiDescriptionRecord",
     "EmojiDescriptionRepository",
     "EventLedgerRepository",

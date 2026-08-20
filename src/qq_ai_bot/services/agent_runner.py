@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
 from typing import Protocol, cast
@@ -25,6 +26,7 @@ from qq_ai_bot.domain.messages import (
     ModelResponseStatus,
     NativeToolDefinition,
     NativeToolEvent,
+    PromptRequestDiagnostics,
     ProviderContinuation,
     ResponseCitation,
     ToolCall,
@@ -68,6 +70,8 @@ class AgentRuntime:
     allowed_capabilities: frozenset[str]
     max_tool_calls: int
     max_model_requests: int
+    prompt_diagnostics: PromptRequestDiagnostics | None = None
+    before_model_request: Callable[[], Awaitable[None]] | None = None
     force_tavily_fallback: bool = False
     web_route: WebRouteDecision | None = None
 
@@ -161,7 +165,12 @@ class AgentRunner:
             runtime.force_tavily_fallback
             or (web_route is not None and web_route.provider is WebProvider.TAVILY)
         )
-        if tavily_fallback and tools is not None:
+        deployment_tavily = (
+            web_route is not None
+            and web_route.provider is WebProvider.TAVILY
+            and web_route.reason is WebRouteReason.MODE
+        )
+        if (runtime.force_tavily_fallback or deployment_tavily) and tools is not None:
             enable_fallback = getattr(tools, "enable_native_web_fallback", None)
             if callable(enable_fallback):
                 enable_fallback()
@@ -259,6 +268,9 @@ class AgentRunner:
                 if callable(confirm_exposure):
                     await confirm_exposure()
             try:
+                if runtime.before_model_request is not None:
+                    await runtime.before_model_request()
+                diagnostics = runtime.prompt_diagnostics
                 response = await self._concurrency.run_llm(
                     runtime.conversation_key,
                     partial(
@@ -279,6 +291,15 @@ class AgentRunner:
                             native_tools=native_definitions,
                             continuation=continuation,
                             function_outputs=pending_function_outputs,
+                            conversation_prefix_hash=(
+                                diagnostics.conversation_prefix_hash if diagnostics else ""
+                            ),
+                            prompt_snapshot_fingerprint=(
+                                diagnostics.prompt_snapshot_fingerprint if diagnostics else ""
+                            ),
+                            static_prompt_revision=(
+                                diagnostics.static_prompt_revision if diagnostics else ""
+                            ),
                         ),
                     ),
                 )

@@ -421,8 +421,9 @@ class MemoryRebuildService:
                 await self.repository.defer_item(item_id, category="run_not_extracting")
                 return "deferred"
             try:
-                context = await self.ledger.list_before(
-                    source_event,
+                context = await self.ledger.list_scope_before(
+                    source_event.scope,
+                    before_event_id=source_event.id,
                     limit=self.settings.memory_rebuild_context_event_limit,
                 )
                 task = asyncio.current_task()

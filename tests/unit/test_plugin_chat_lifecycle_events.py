@@ -58,13 +58,14 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
 
     assert result.reason == "chat"
     assert sender.messages
-    assert [event.name for event in events] == [
+    event_names = [event.name for event in events]
+    assert event_names[:3] == [
         EventName.MESSAGE_NORMALIZED,
         EventName.MESSAGE_TRIGGERED,
         EventName.TURN_ADMITTED,
-        EventName.REPLY_SENT,
-        EventName.TURN_CLOSED,
     ]
+    assert event_names[3:-1] == [EventName.REPLY_SENT] * len(sender.messages)
+    assert event_names[-1] is EventName.TURN_CLOSED
     assert set(events[0].payload) == {
         "message_id",
         "scope_type",
@@ -96,7 +97,7 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
         "delivered",
         "recorded",
     }
-    assert set(events[4].payload) == {
+    assert set(events[-1].payload) == {
         "origin",
         "scope_type",
         "conversation_key_hash",
@@ -107,8 +108,8 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
     }
     assert events[2].payload["origin"] == "user_message"
     assert events[2].payload["reason"] == "private_allowed"
-    assert events[4].payload["outcome"] == "chat"
-    assert events[4].payload["handled"] is True
+    assert events[-1].payload["outcome"] == "chat"
+    assert events[-1].payload["handled"] is True
     serialized = json.dumps(
         [event.model_dump(mode="json") for event in events],
         ensure_ascii=False,
@@ -139,4 +140,5 @@ async def test_publisher_exception_does_not_affect_chat(database: Database) -> N
     )
 
     assert result.reason == "chat"
-    assert len(sender.messages) == 1
+    assert sender.messages
+    assert any("still works" in message.text for message in sender.messages)

@@ -7,8 +7,9 @@ import json
 import logging
 import random
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypeVar, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -46,9 +47,15 @@ from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.cadence import ReplyEffectRepository
 from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
-from qq_ai_bot.conversation.history.repository import ConversationHistoryRepository
 from qq_ai_bot.conversation.reply import ReplyEffect
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
+from qq_ai_bot.conversation.rollup.repository import (
+    ConversationRollupRepository,
+    ConversationScopeRepository,
+)
+from qq_ai_bot.conversation.rollup.service import ConversationRollupService
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
     ChatMessage,
@@ -57,6 +64,7 @@ from qq_ai_bot.domain.messages import (
     OutboundMedia,
     OutboundMessage,
     OutboundSendReceipt,
+    PromptRequestDiagnostics,
     SenderIdentity,
     ToolCall,
     ToolFunction,
@@ -113,7 +121,12 @@ from qq_ai_bot.services.agent_runner import (
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.services.context_assembler import ContextAssembler, ConversationHistoryCoverage
+from qq_ai_bot.services.context_assembler import ContextAssembler
+from qq_ai_bot.services.effect_gate import (
+    ConversationEffectGate,
+    EffectGateTimeoutError,
+    EffectPermitRejectedError,
+)
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     publish_notification,
@@ -128,7 +141,11 @@ from qq_ai_bot.services.reply_sequence import (
 from qq_ai_bot.services.reply_target import ReplyTargetControl, ReplyTargetResolver
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
-from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator, TurnToken
+from qq_ai_bot.services.turn_coordinator import (
+    ConversationTurnCoordinator,
+    TurnSupersededError,
+    TurnToken,
+)
 from qq_ai_bot.speech.models import VoiceMode, VoicePreferenceMode
 from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.speech.reply_effect import (
@@ -138,12 +155,14 @@ from qq_ai_bot.speech.reply_effect import (
 )
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
-from qq_ai_bot.web.models import WebProvider
+from qq_ai_bot.web.models import WebProvider, WebRouteReason
 from qq_ai_bot.web.native_sources import recover_native_web_response
 from qq_ai_bot.web.router import WebProviderRouter
 from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
+
+_EffectResult = TypeVar("_EffectResult")
 
 _ARTIFACT_PROVIDER_ID = "artifacts"
 _ARTIFACT_READER_NAME = "read_tool_artifact"
@@ -174,7 +193,13 @@ def _with_memory_mutation_contract(
 ) -> tuple[ChatMessage, ...]:
     if not exclusive_write:
         return messages
-    return (*messages, ChatMessage(role="system", content=_MEMORY_MUTATION_EXECUTION_CONTRACT))
+    if not messages:
+        return (ChatMessage(role="system", content=_MEMORY_MUTATION_EXECUTION_CONTRACT),)
+    return (
+        *messages[:-1],
+        ChatMessage(role="system", content=_MEMORY_MUTATION_EXECUTION_CONTRACT),
+        messages[-1],
+    )
 
 
 _ADMIN_RETRYABLE_ERRORS = frozenset(
@@ -597,22 +622,21 @@ class _ChatAgentBackend(AgentToolBackend):
         )
 
     def _host_priority_capability_ids(self) -> tuple[str, ...]:
-        """Pin tools implied by trusted host facts, not Planner output."""
+        """Pin tools implied by origin or deployment mode, not the current message."""
 
         names: list[str] = []
         if self._runtime.scheduled_automation_intent:
             names.append("automation_create")
         web_route = self._runtime.web_route
         if self._native_web_fallback or (
-            web_route is not None and web_route.provider is WebProvider.TAVILY
+            web_route is not None
+            and web_route.provider is WebProvider.TAVILY
+            and web_route.reason is WebRouteReason.MODE
         ):
-            # Tavily was chosen or native already fell back: the function
-            # search/read pair is the Tavily path. Default native must not pin
-            # search, or idle turns would carry web schemas every round.
+            # Deployment-wide Tavily, or this turn already fell back. Do not pin
+            # from a URL, user override, or domain rule: those change tools[]
+            # per message and punch the DeepSeek prefix from token 0.
             names.extend(("web_search", "read_webpage"))
-        elif web_route is not None and web_route.target_urls:
-            # A public URL in the message is a page to read, not a search.
-            names.append("read_webpage")
         if self._runtime.origin is TurnOrigin.AUTONOMOUS_GROUP:
             names.append("decline_reply")
         return tuple(dict.fromkeys(names))
@@ -777,6 +801,7 @@ class _ChatAgentBackend(AgentToolBackend):
         descriptor = entry.descriptor if entry is not None else None
         if descriptor is None or descriptor.binding is None:
             return json.dumps({"ok": False, "error": "unknown_capability"})
+        binding = descriptor.binding
         if not self._first_real_tool_recorded:
             first_round_hit = not self._request_tools_called
             self._service._tool_metrics.record_first_round_tool_hit(hit=first_round_hit)
@@ -854,22 +879,29 @@ class _ChatAgentBackend(AgentToolBackend):
             else:
                 started = time.perf_counter()
                 try:
-                    outcome = await descriptor.binding.invoke(
-                        {str(key): value for key, value in parsed.items()},
-                        ToolInvocationContext(
-                            runtime=execution_runtime,
-                            call_id=call.id,
-                            conversation_key=execution_runtime.conversation_key,
-                            actor_user_id=execution_runtime.actor_user_id,
-                            trigger_message_id=execution_runtime.trigger_message_id,
-                            provider_metadata={
-                                "contains_images": bool(
-                                    self._runtime.inbound.attachments
-                                    or self._runtime.inbound.reply_attachments
-                                ),
-                                "web_was_used": self._web_was_used,
-                            },
-                        ),
+
+                    async def invoke_binding() -> ToolExecutionResult:
+                        return await binding.invoke(
+                            {str(key): value for key, value in parsed.items()},
+                            ToolInvocationContext(
+                                runtime=execution_runtime,
+                                call_id=call.id,
+                                conversation_key=execution_runtime.conversation_key,
+                                actor_user_id=execution_runtime.actor_user_id,
+                                trigger_message_id=execution_runtime.trigger_message_id,
+                                provider_metadata={
+                                    "contains_images": bool(
+                                        self._runtime.inbound.attachments
+                                        or self._runtime.inbound.reply_attachments
+                                    ),
+                                    "web_was_used": self._web_was_used,
+                                },
+                            ),
+                        )
+
+                    outcome = await self._service._run_effect(
+                        execution_runtime.turn_snapshot,
+                        invoke_binding,
                     )
                 except asyncio.CancelledError:
                     raise
@@ -1397,8 +1429,10 @@ class ChatService:
         event_publisher: LifecycleEventPublisher | None = None,
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_invocations: ToolInvocationRecorder | None = None,
-        history_repository: ConversationHistoryRepository | None = None,
-        history_coverage: ConversationHistoryCoverage | None = None,
+        rollup_repository: ConversationRollupRepository | None = None,
+        rollup_service: ConversationRollupService | None = None,
+        conversation_scopes: ConversationScopeRepository | None = None,
+        effect_gate: ConversationEffectGate | None = None,
     ) -> None:
         self._settings = settings
         models = require_model_executor(
@@ -1409,6 +1443,10 @@ class ChatService:
         self._models = models
         self._concurrency = concurrency
         self._ledger = ledger
+        self._conversation_scopes = conversation_scopes or ConversationScopeRepository(
+            ledger._database
+        )
+        self._effect_gate = effect_gate or ConversationEffectGate()
         self._people = people
         self._memories = memories
         self._relationships = relationships
@@ -1445,16 +1483,21 @@ class ChatService:
             )
         self._memory_context = memory_context
         self._memory_attribution = memory_attribution
-        self._context_assembler = context_assembler or ContextAssembler(
-            settings=settings,
-            ledger=self._ledger,
-            people=self._people,
-            memory_context=memory_context,
-            relationships=self._relationships,
-            time_service=self._time,
-            history_repository=history_repository,
-            history_coverage=history_coverage,
-        )
+        if context_assembler is not None:
+            self._context_assembler = context_assembler
+        else:
+            if rollup_repository is None or rollup_service is None:
+                raise TypeError("rollup_repository and rollup_service are required")
+            self._context_assembler = ContextAssembler(
+                settings=settings,
+                ledger=self._ledger,
+                people=self._people,
+                memory_context=memory_context,
+                relationships=self._relationships,
+                time_service=self._time,
+                rollup_repository=rollup_repository,
+                rollup_service=rollup_service,
+            )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
         self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
             cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
@@ -1746,7 +1789,7 @@ class ChatService:
     async def respond(
         self,
         inbound: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         profile: UserProfileSnapshot,
         content: str,
         sender: OutboundSender,
@@ -1757,6 +1800,7 @@ class ChatService:
         visual_input_present: bool = False,
         visual_failure: bool = False,
         turn_token: TurnToken | None = None,
+        turn_snapshot: ConversationTurnSnapshot | None = None,
         structured_memory_command: MemoryStructuredCommand = MemoryStructuredCommand.NONE,
     ) -> int:
         """Run one ordered Agent turn and return the sent message count."""
@@ -1773,8 +1817,12 @@ class ChatService:
                     maximum=runtime_config.web.extract_max_results,
                 )
                 reply = source_text or "当前对话中没有可提供的联网来源。"
-                result = await sender.send(OutboundMessage(text=reply))
-                await self._record_outbound(inbound, reply, result)
+                await self._deliver_and_record(
+                    inbound,
+                    sender,
+                    OutboundMessage(text=reply),
+                    turn_snapshot,
+                )
                 return 1
 
             source_display_requested = self._source_policy.requested(content)
@@ -1788,23 +1836,36 @@ class ChatService:
                 visual_input_present=visual_input_present,
                 structured_command=structured_memory_command,
             )
+
+            async def build_messages() -> tuple[
+                tuple[ChatMessage, ...],
+                frozenset[int],
+                str,
+                tuple[MemoryExposure, ...],
+                MemoryQueryIntent | None,
+                PromptRequestDiagnostics,
+            ]:
+                return await self._build_messages(
+                    inbound,
+                    identity,
+                    profile,
+                    content,
+                    runtime_config,
+                    visual_observation=visual_observation,
+                    visual_failure=visual_failure,
+                    turn_origin=turn_origin,
+                    memory_session=memory_session,
+                    turn_snapshot=turn_snapshot,
+                )
+
             (
                 messages,
                 visible_event_ids,
                 memory_turn_id,
                 automatic_memory_exposures,
                 memory_intent,
-            ) = await self._build_messages(
-                inbound,
-                identity,
-                profile,
-                content,
-                runtime_config,
-                visual_observation=visual_observation,
-                visual_failure=visual_failure,
-                turn_origin=turn_origin,
-                memory_session=memory_session,
-            )
+                prompt_diagnostics,
+            ) = await self._run_effect(turn_snapshot, build_messages)
             exclusive_write = memory_session is not None and memory_session.exclusive_write
             scheduled_automation_intent = bool(
                 not autonomous
@@ -1819,7 +1880,7 @@ class ChatService:
             scheduled_automation_allowed = bool(scheduled_automation_intent and not exclusive_write)
             if scheduled_automation_allowed:
                 messages = (
-                    *messages,
+                    *messages[:-1],
                     ChatMessage(
                         role="system",
                         content=(
@@ -1830,6 +1891,7 @@ class ChatService:
                             "automation_id 后，才能声称任务已经创建。"
                         ),
                     ),
+                    messages[-1],
                 )
             messages = _with_memory_mutation_contract(messages, exclusive_write)
             gateway = (
@@ -1886,6 +1948,7 @@ class ChatService:
                 origin=turn_origin,
                 read_only=autonomous,
                 turn_token=turn_token,
+                turn_snapshot=turn_snapshot,
                 reply_effects=reply_effects,
                 reply_target_control=reply_target_control,
                 reply_control=reply_control,
@@ -1893,13 +1956,16 @@ class ChatService:
                 selection_query=content,
                 scheduled_automation_intent=scheduled_automation_allowed,
                 native_web_fallback=bool(
-                    web_route is not None and web_route.provider is WebProvider.TAVILY
+                    web_route is not None
+                    and web_route.provider is WebProvider.TAVILY
+                    and web_route.reason is WebRouteReason.MODE
                 ),
                 web_route=web_route,
                 memory_turn_id=memory_turn_id,
                 memory_exposures=automatic_memory_exposures,
                 memory_intent=memory_intent,
                 memory_session=memory_session,
+                prompt_diagnostics=prompt_diagnostics,
             )
             if turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
@@ -1908,13 +1974,17 @@ class ChatService:
                 completed_agent = await self._run_agent(identity.key, messages, runtime)
             agent_result = completed_agent.result
             if agent_result.suppress_delivery:
-                await self._finish_memory_turn(
-                    memory_session,
-                    run_id=inbound.message_id,
-                    delivered_text="",
-                    delivered=False,
-                    cancelled=False,
-                )
+
+                async def finish_suppressed() -> None:
+                    await self._finish_memory_turn(
+                        memory_session,
+                        run_id=inbound.message_id,
+                        delivered_text="",
+                        delivered=False,
+                        cancelled=False,
+                    )
+
+                await self._run_effect(turn_snapshot, finish_suppressed)
                 return 0
             response_text = agent_result.text
             if agent_result.native_tool_events:
@@ -1923,13 +1993,17 @@ class ChatService:
                     citations=agent_result.citations,
                     answer_text=agent_result.text,
                 )
-                await self._web_sources.save_response(
-                    conversation_key=identity.key,
-                    trigger_message_id=inbound.message_id,
-                    provider="deepseek_native",
-                    response=native_response,
-                    max_runs=runtime_config.web.source_max_runs_per_conversation,
-                )
+
+                async def save_native_response() -> None:
+                    await self._web_sources.save_response(
+                        conversation_key=identity.key,
+                        trigger_message_id=inbound.message_id,
+                        provider="deepseek_native",
+                        response=native_response,
+                        max_runs=runtime_config.web.source_max_runs_per_conversation,
+                    )
+
+                await self._run_effect(turn_snapshot, save_native_response)
                 if not native_response.sources:
                     logger.warning(
                         "native_web_source_parse_failed conversation_hash=%s action_count=%d",
@@ -2000,11 +2074,22 @@ class ChatService:
             if self._emoji_effects is not None:
                 for effect in emoji_effects[: runtime_config.emoji.max_effects_per_reply]:
                     try:
-                        preparation = await self._emoji_effects.prepare(
-                            effect,
-                            inbound=inbound,
-                            response_text=rendered,
-                            runtime=runtime_config,
+
+                        async def prepare_emoji(
+                            pending_effect: PendingReplyEffect = effect,
+                            rendered_text: str = rendered,
+                        ) -> EmojiPreparationResult:
+                            assert self._emoji_effects is not None
+                            return await self._emoji_effects.prepare(
+                                pending_effect,
+                                inbound=inbound,
+                                response_text=rendered_text,
+                                runtime=runtime_config,
+                            )
+
+                        preparation = await self._run_effect(
+                            turn_snapshot,
+                            prepare_emoji,
                         )
                     except asyncio.CancelledError:
                         raise
@@ -2037,16 +2122,21 @@ class ChatService:
                 and turn_token is not None
                 and self._speech_effects is not None
             ):
-                prepared_voice = await self._speech_effects.prepare(
-                    inbound=inbound,
-                    response_text=rendered,
-                    runtime=runtime_config,
-                    token=turn_token,
-                    mode=queued_voice.mode,
-                    style_hint=queued_voice.style_hint,
-                    language_hint=queued_voice.language_hint,
-                    profile_id=queued_voice.profile_id,
-                )
+
+                async def prepare_voice() -> PreparedVoiceReply | None:
+                    assert self._speech_effects is not None
+                    return await self._speech_effects.prepare(
+                        inbound=inbound,
+                        response_text=rendered,
+                        runtime=runtime_config,
+                        token=turn_token,
+                        mode=queued_voice.mode,
+                        style_hint=queued_voice.style_hint,
+                        language_hint=queued_voice.language_hint,
+                        profile_id=queued_voice.profile_id,
+                    )
+
+                prepared_voice = await self._run_effect(turn_snapshot, prepare_voice)
             if (
                 not rendered
                 and not prepared_effects
@@ -2127,13 +2217,16 @@ class ChatService:
                         )
 
                 async def record_failure(message: OutboundMessage, _error: Exception) -> None:
-                    if message.media and self._emoji_effects is not None:
-                        await self._emoji_effects.record_failure(
-                            message,
-                            source="reply_effect",
-                        )
-                    if message.media and self._speech_effects is not None:
-                        await self._speech_effects.record_failure(message)
+                    async def record() -> None:
+                        if message.media and self._emoji_effects is not None:
+                            await self._emoji_effects.record_failure(
+                                message,
+                                source="reply_effect",
+                            )
+                        if message.media and self._speech_effects is not None:
+                            await self._speech_effects.record_failure(message)
+
+                    await self._run_effect(turn_snapshot, record)
 
                 effect_by_emoji_id = {
                     media.emoji_id: effect
@@ -2179,6 +2272,17 @@ class ChatService:
                         replacement_messages=(fallback,),
                     )
 
+                async def deliver_chunk(message: OutboundMessage) -> OutboundSendReceipt:
+                    async def deliver() -> OutboundSendReceipt:
+                        await before_send(message)
+                        receipt = await sender.send(message)
+                        if not isinstance(receipt, OutboundSendReceipt):
+                            raise TypeError("outbound sender returned no delivery receipt")
+                        await record_chunk(message, receipt)
+                        return receipt
+
+                    return await self._run_effect(turn_snapshot, deliver)
+
                 before = tuple(
                     message
                     for effect, message in prepared_effects
@@ -2203,18 +2307,13 @@ class ChatService:
                             reply_to_message_id=reply_to_message_id,
                         )
                     try:
-                        await before_send(voice_message)
-                        receipt = await sender.send(voice_message)
-                        if not isinstance(receipt, OutboundSendReceipt):
-                            raise TypeError("outbound sender returned no delivery receipt")
+                        receipt = await deliver_chunk(voice_message)
                     except Exception as exc:
                         retried = False
                         if voice_message.reply_to_message_id is not None:
                             voice_message = replace(voice_message, reply_to_message_id=None)
                             try:
-                                receipt = await sender.send(voice_message)
-                                if not isinstance(receipt, OutboundSendReceipt):
-                                    raise TypeError("outbound sender returned no delivery receipt")
+                                receipt = await deliver_chunk(voice_message)
                             except Exception as retry_exc:
                                 await record_failure(prepared_voice.message, retry_exc)
                             else:
@@ -2223,11 +2322,9 @@ class ChatService:
                             await record_failure(prepared_voice.message, exc)
                             prepared_voice = None
                         else:
-                            await record_chunk(voice_message, receipt)
                             voice_only_confirmed = True
                             prepared_voice = None
                     else:
-                        await record_chunk(voice_message, receipt)
                         voice_only_confirmed = True
                         prepared_voice = None
                 elif prepared_voice is not None:
@@ -2247,27 +2344,31 @@ class ChatService:
                     sender=sender,
                     record_outbound=record_chunk,
                     record_failure=record_failure,
-                    before_send=before_send,
+                    deliver_outbound=deliver_chunk,
                     recover_failure=recover_failure,
                     before_messages=before,
                     after_messages=after,
                     suppress_text=suppress_text,
                     reply_to_message_id=reply_to_message_id,
                 )
-                await self._record_reply_effects(
-                    conversation_key=identity.key,
-                    source_event_id=inbound.message_id,
-                    user_id=inbound.sender.user_id,
-                    control=reply_control,
-                    cancelled=sequence.cancelled,
-                )
-                await self._finish_memory_turn(
-                    memory_session,
-                    run_id=inbound.message_id,
-                    delivered_text=attribution_response_text,
-                    delivered=agent_body_delivered,
-                    cancelled=sequence.cancelled,
-                )
+
+                async def finish_delivery() -> None:
+                    await self._record_reply_effects(
+                        conversation_key=identity.key,
+                        source_event_id=inbound.message_id,
+                        user_id=inbound.sender.user_id,
+                        control=reply_control,
+                        cancelled=sequence.cancelled,
+                    )
+                    await self._finish_memory_turn(
+                        memory_session,
+                        run_id=inbound.message_id,
+                        delivered_text=attribution_response_text,
+                        delivered=agent_body_delivered,
+                        cancelled=sequence.cancelled,
+                    )
+
+                await self._run_effect(turn_snapshot, finish_delivery)
                 return sequence.sent_messages
             chunks = self._render_chunks(rendered, runtime_config) if rendered else ()
             legacy_messages = [
@@ -2316,7 +2417,7 @@ class ChatService:
                             outbound,
                             source="reply_effect",
                         )
-                    receipt = await sender.send(outbound)
+                    receipt = await self._send_with_fence(sender, outbound, turn_snapshot)
                     if not isinstance(receipt, OutboundSendReceipt):
                         raise TypeError("outbound sender returned no delivery receipt")
                 except Exception as exc:
@@ -2329,7 +2430,7 @@ class ChatService:
                             type(exc).__name__,
                         )
                         try:
-                            receipt = await sender.send(outbound)
+                            receipt = await self._send_with_fence(sender, outbound, turn_snapshot)
                             if not isinstance(receipt, OutboundSendReceipt):
                                 raise TypeError("outbound sender returned no delivery receipt")
                         except Exception as retry_exc:
@@ -2369,7 +2470,9 @@ class ChatService:
                                 else "表情没发出去，先用文字回你。"
                             )
                         )
-                        fallback_receipt = await sender.send(fallback)
+                        fallback_receipt = await self._send_with_fence(
+                            sender, fallback, turn_snapshot
+                        )
                         if not isinstance(fallback_receipt, OutboundSendReceipt):
                             raise TypeError("outbound sender returned no delivery receipt") from exc
                         sent_count += 1
@@ -2406,7 +2509,11 @@ class ChatService:
                     maximum=runtime_config.web.extract_max_results,
                 )
                 if source_text:
-                    receipt = await sender.send(OutboundMessage(text=source_text))
+                    receipt = await self._send_with_fence(
+                        sender,
+                        OutboundMessage(text=source_text),
+                        turn_snapshot,
+                    )
                     await self._record_outbound(inbound, source_text, receipt)
                     sent_count += 1
             await self._finish_memory_turn(
@@ -2421,7 +2528,7 @@ class ChatService:
     def _open_memory_session(
         self,
         inbound: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         content: str,
         runtime: RuntimeConfigSnapshot,
         *,
@@ -2533,7 +2640,7 @@ class ChatService:
     async def handle_turn(
         self,
         inbound: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         profile: UserProfileSnapshot,
         content: str,
         sender: OutboundSender,
@@ -2546,7 +2653,7 @@ class ChatService:
     async def _build_messages(
         self,
         inbound: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         profile: UserProfileSnapshot,
         content: str,
         runtime: RuntimeConfigSnapshot,
@@ -2555,12 +2662,14 @@ class ChatService:
         visual_failure: bool = False,
         turn_origin: TurnOrigin = TurnOrigin.USER_MESSAGE,
         memory_session: TurnMemorySession | None = None,
+        turn_snapshot: ConversationTurnSnapshot | None = None,
     ) -> tuple[
         tuple[ChatMessage, ...],
         frozenset[int],
         str,
         tuple[MemoryExposure, ...],
         MemoryQueryIntent | None,
+        PromptRequestDiagnostics,
     ]:
         retrieval = None
         persist_exposure = True
@@ -2574,10 +2683,13 @@ class ChatService:
             memory_intent = memory_session.prefetch_intent
             if memory_intent is not None:
                 memory_mode = memory_intent.mode
+        if turn_snapshot is None:
+            raise ConversationCoverageError("chat turn requires a conversation snapshot")
         context = await self._context_assembler.assemble(
             inbound=inbound,
             identity=identity,
             profile=profile,
+            turn=turn_snapshot,
             content=content,
             runtime=runtime,
             memory_mode=memory_mode,
@@ -2592,18 +2704,24 @@ class ChatService:
                 context.injected_memory_ids,
                 context.memory_exposures,
             )
+        composition = self._prompt_composer.compose(
+            inbound=inbound,
+            context=context,
+            runtime=runtime,
+            visual_observation=visual_observation,
+            visual_failure=visual_failure,
+        )
         return (
-            self._prompt_composer.compose(
-                inbound=inbound,
-                context=context,
-                runtime=runtime,
-                visual_observation=visual_observation,
-                visual_failure=visual_failure,
-            ),
+            composition.messages,
             context.visible_event_ids,
             context.memory_turn_id,
             context.memory_exposures,
             context.memory_intent,
+            PromptRequestDiagnostics(
+                conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
+                prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
+                static_prompt_revision=composition.metrics.stable_prefix_hash,
+            ),
         )
 
     async def _resolve_reply_target(
@@ -2654,6 +2772,16 @@ class ChatService:
         runtime = await self._prepare_tool_candidates(runtime)
         current_time = await self._time.current(runtime.inbound.sender.user_id)
         backend = _ChatAgentBackend(self, runtime)
+        if runtime.turn_snapshot is not None and not await self._validate_turn_snapshot(
+            runtime.turn_snapshot
+        ):
+            raise TurnSupersededError("turn generation changed before model invocation")
+
+        async def before_model_request() -> None:
+            snapshot = runtime.turn_snapshot
+            if snapshot is not None and not await self._validate_turn_snapshot(snapshot):
+                raise TurnSupersededError("turn generation changed before model invocation")
+
         result = await self._agent_runner.run(
             initial_messages,
             AgentRuntime(
@@ -2681,6 +2809,8 @@ class ChatService:
                     if runtime.max_model_requests_override is not None
                     else config.agent.max_model_requests
                 ),
+                prompt_diagnostics=runtime.prompt_diagnostics,
+                before_model_request=before_model_request,
                 force_tavily_fallback=runtime.native_web_fallback,
                 web_route=runtime.web_route,
             ),
@@ -2691,15 +2821,71 @@ class ChatService:
             memory_exposures=exposure_registry.snapshot(),
         )
 
+    async def _validate_turn_snapshot(self, snapshot: ConversationTurnSnapshot) -> bool:
+        return self._turn_coordinator.version_matches(
+            snapshot.scope_key,
+            snapshot.coordinator_version,
+        ) and await self._conversation_scopes.generation_matches(
+            snapshot.scope_id,
+            snapshot.generation,
+        )
+
+    async def _run_effect(
+        self,
+        snapshot: ConversationTurnSnapshot | None,
+        effect: Callable[[], Awaitable[_EffectResult]],
+    ) -> _EffectResult:
+        if snapshot is None:
+            return await effect()
+        try:
+            async with self._effect_gate.permit(
+                snapshot,
+                validate=self._validate_turn_snapshot,
+                timeout_seconds=self._settings.conversation_effect_gate_timeout_seconds,
+            ):
+                return await effect()
+        except (EffectGateTimeoutError, EffectPermitRejectedError) as exc:
+            raise TurnSupersededError("turn effect permit was rejected") from exc
+
+    async def _send_with_fence(
+        self,
+        sender: OutboundSender,
+        message: OutboundMessage,
+        snapshot: ConversationTurnSnapshot | None,
+    ) -> OutboundSendReceipt:
+        async def send() -> OutboundSendReceipt:
+            receipt = await sender.send(message)
+            if not isinstance(receipt, OutboundSendReceipt):
+                raise TypeError("outbound sender returned no delivery receipt")
+            return receipt
+
+        return await self._run_effect(snapshot, send)
+
+    async def _deliver_and_record(
+        self,
+        inbound: InboundMessage,
+        sender: OutboundSender,
+        message: OutboundMessage,
+        snapshot: ConversationTurnSnapshot | None,
+    ) -> OutboundSendReceipt:
+        async def deliver() -> OutboundSendReceipt:
+            receipt = await sender.send(message)
+            if not isinstance(receipt, OutboundSendReceipt):
+                raise TypeError("outbound sender returned no delivery receipt")
+            await self._record_outbound_message(inbound, message, receipt)
+            return receipt
+
+        return await self._run_effect(snapshot, deliver)
+
     async def generate_external_reply(
         self,
         *,
         event: EventRecord,
         authorization_user_id: str,
-        conversation_key: str,
         runtime: RuntimeConfigSnapshot,
         agent_intent: str,
         turn_token: TurnToken,
+        turn_snapshot: ConversationTurnSnapshot,
     ) -> AgentRunResult:
         """Generate one tool-free reply for a persisted external event.
 
@@ -2708,13 +2894,17 @@ class ChatService:
         untrusted external event rather than a QQ user message.
         """
 
+        conversation_key = event.scope.key
+        if turn_snapshot.scope_key != conversation_key:
+            raise TurnSupersededError("external turn snapshot scope mismatch")
         context = await self._context_assembler.assemble_external(
             event=event,
+            turn=turn_snapshot,
             authorization_user_id=authorization_user_id,
             runtime=runtime,
             agent_intent=agent_intent,
         )
-        messages = self._prompt_composer.compose_external(
+        composition = self._prompt_composer.compose_external(
             context=context,
             runtime=runtime,
             source_plugin_id=event.source_plugin_id or "",
@@ -2748,10 +2938,16 @@ class ChatService:
             tools_closed=True,
             read_only=True,
             turn_token=turn_token,
+            turn_snapshot=turn_snapshot,
             selection_query=event.content,
             max_model_requests_override=min(2, runtime.agent.max_model_requests),
+            prompt_diagnostics=PromptRequestDiagnostics(
+                conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
+                prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
+                static_prompt_revision=composition.metrics.stable_prefix_hash,
+            ),
         )
-        completed = await self._run_agent(conversation_key, messages, tool_runtime)
+        completed = await self._run_agent(conversation_key, composition.messages, tool_runtime)
         result = completed.result
         try:
             rendered = clean_model_output(

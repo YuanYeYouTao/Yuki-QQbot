@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from qq_ai_bot.domain.conversations import ConversationMode, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import sanitize_display_name
 
 
@@ -17,7 +17,6 @@ class GroupSetting:
     group_id: str
     enabled: bool
     require_mention: bool
-    conversation_mode: ConversationMode
     autonomous_enabled: bool = True
     name: str = ""
 
@@ -60,6 +59,17 @@ class EventRecord:
     external_event_key: str | None = None
     external_event_type: str | None = None
     external_payload: dict[str, Any] | None = None
+
+    @property
+    def scope(self) -> ConversationScope:
+        """Reconstruct the exact bot-aware conversation identity."""
+
+        if self.scope_type is ScopeType.GROUP:
+            return ConversationScope.group(self.bot_user_id, self.group_id or "")
+        return ConversationScope.private(
+            self.bot_user_id,
+            self.private_peer_user_id or self.sender_user_id,
+        )
 
     @property
     def sender_display_name(self) -> str:

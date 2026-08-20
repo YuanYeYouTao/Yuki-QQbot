@@ -412,6 +412,34 @@ async def test_empty_final_answer_after_voice_tool_is_retried() -> None:
 
 
 @pytest.mark.asyncio
+async def test_generation_fence_runs_before_every_model_request() -> None:
+    provider = EmptyAfterToolProvider()
+    fence_calls = 0
+
+    async def before_model_request() -> None:
+        nonlocal fence_calls
+        fence_calls += 1
+        if fence_calls == 2:
+            raise RuntimeError("synthetic generation change")
+
+    runtime = replace(
+        _agent_runtime(),
+        before_model_request=before_model_request,
+    )
+    backend = VoiceEffectBackend()
+    with pytest.raises(RuntimeError, match="generation change"):
+        await AgentRunner(provider, ConcurrencyManager(1)).run(
+            (ChatMessage(role="user", content="test"),),
+            runtime,
+            backend,
+        )
+
+    assert fence_calls == 2
+    assert len(provider.requests) == 1
+    assert backend.effects == ["send_voice"]
+
+
+@pytest.mark.asyncio
 async def test_empty_model_response_is_valid_when_planner_has_visible_media() -> None:
     provider = FakeLLMProvider(lambda _request: "   ")
 

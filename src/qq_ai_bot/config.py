@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from functools import cached_property
@@ -119,10 +120,12 @@ class Settings(BaseSettings):
     processed_event_ttl_seconds: int = 86400
     processed_event_cleanup_seconds: int = 3600
     # PromptCompiler uses the repository-wide characters / 4 token estimate.
-    # Keep history meaningfully larger than the old 12K-character window without
-    # making a rolling cache miss resend a six-figure token prompt.
-    max_context_characters: int = 12_000
-    context_metadata_budget_ratio: float = Field(default=0.35, gt=0, lt=1)
+    # History must stay append-only long enough that DeepSeek can persist the
+    # prefix; a 12k pool forced extractive rewrites of input[0] every few dozen
+    # group messages. Keep actor metadata near 5k characters so expanding the
+    # pool does not inflate the unavoidable per-turn miss.
+    max_context_characters: int = 81_920
+    context_metadata_budget_ratio: float = Field(default=0.06, gt=0, lt=1)
     history_window_low_watermark_ratio: float = Field(default=0.67, gt=0, lt=1)
 
     global_llm_concurrency: int = 4
@@ -139,7 +142,7 @@ class Settings(BaseSettings):
     recent_history_tool_limit: int = 20
     # This is a safety ceiling, not the normal window size. The character budget
     # remains the primary bound and rolls history in stable low/high-watermark blocks.
-    local_context_event_limit: int = 1_000
+    local_context_event_limit: int = 1_024
     person_memory_max_entries: int = 100
     person_group_memory_max_entries: int = 50
     preference_max_entries: int = 30
@@ -322,27 +325,27 @@ class Settings(BaseSettings):
     conversation_autonomous_batch_limit: int = 8
     conversation_autonomous_presence_window_seconds: int = 300
     conversation_interrupt_autonomous_on_new_message: bool = True
-    conversation_history_rollup_enabled: bool = True
-    conversation_history_rollup_worker_concurrency: int = Field(default=1, ge=1, le=2)
-    conversation_history_rollup_poll_seconds: float = Field(default=1.0, gt=0)
-    conversation_history_rollup_lease_seconds: int = Field(default=180, gt=0)
-    conversation_history_rollup_timeout_seconds: float = Field(default=60.0, gt=0)
-    conversation_history_rollup_max_attempts: int = Field(default=7, ge=1)
-    conversation_history_rollup_retry_seconds: str = "15,30,60,120,240,480,960"
-    conversation_history_raw_tail_events: int = Field(default=32, ge=1)
-    conversation_history_raw_tail_characters: int = Field(default=1600, ge=1)
-    conversation_history_rollup_l0_min_events: int = Field(default=32, ge=1)
-    conversation_history_rollup_l0_min_characters: int = Field(default=8000, ge=1)
-    conversation_history_rollup_l0_max_events: int = Field(default=100, ge=1)
-    conversation_history_rollup_l0_max_characters: int = Field(default=16_000, ge=1)
-    conversation_history_extractive_max_characters: int = Field(default=1200, ge=1)
-    conversation_history_rollup_fan_in: int = Field(default=8, ge=2)
-    conversation_history_rollup_fan_in_characters: int = Field(default=4800, ge=1)
-    conversation_history_rollup_max_level: int = Field(default=16, ge=1)
-    conversation_history_llm_origins: str = "user_message"
-    conversation_history_rollup_prompt_version: str = "conversation-rollup-v1"
-    conversation_history_raw_tail_budget_ratio: float = Field(default=0.40, gt=0, le=1)
-    conversation_history_sync_extractive_max_slices: int = Field(default=3, ge=1)
+    conversation_rollup_enabled: bool = True
+    conversation_rollup_worker_concurrency: int = Field(default=1, ge=1, le=2)
+    conversation_rollup_poll_seconds: float = Field(default=1.0, gt=0)
+    conversation_rollup_lease_seconds: int = Field(default=180, gt=0)
+    conversation_rollup_model_timeout_seconds: float = Field(default=60.0, gt=0)
+    conversation_rollup_raw_tail_events: int = Field(default=768, ge=1)
+    conversation_rollup_raw_tail_characters: int = Field(default=65_536, ge=1)
+    conversation_rollup_trigger_events: int = Field(default=512, ge=2)
+    conversation_rollup_trigger_characters: int = Field(default=49_152, ge=1)
+    conversation_rollup_stop_events: int = Field(default=192, ge=0)
+    conversation_rollup_stop_characters: int = Field(default=16_384, ge=0)
+    conversation_rollup_batch_max_events: int = Field(default=256, ge=1)
+    conversation_rollup_batch_max_characters: int = Field(default=32_768, ge=1)
+    conversation_rollup_worker_max_batches_per_claim: int = Field(default=4, ge=1)
+    conversation_rollup_summary_max_characters: int = Field(default=1200, ge=1)
+    conversation_rollup_retry_max_seconds: int = Field(default=960, ge=1)
+    conversation_rollup_lease_heartbeat_seconds: float = Field(default=60.0, gt=0)
+    conversation_rollup_llm_origins: str = "user_message"
+    conversation_rollup_prompt_version: str = "conversation-rollup-v2"
+    conversation_rollup_foreground_max_batches: int = Field(default=3, ge=1)
+    conversation_effect_gate_timeout_seconds: float = Field(default=30.0, gt=0)
     conversation_history_around_before: int = Field(default=6, ge=0)
     conversation_history_around_after: int = Field(default=6, ge=0)
     conversation_history_around_limit: int = Field(default=24, ge=1)
@@ -622,6 +625,62 @@ class Settings(BaseSettings):
     @classmethod
     def _valid_direct_command_bindings(cls, value: dict[str, str]) -> dict[str, str]:
         return validate_direct_command_bindings(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_conversation_history_settings(cls, value: object) -> object:
+        removed = {
+            "conversation_history_rollup_enabled",
+            "conversation_history_rollup_worker_concurrency",
+            "conversation_history_rollup_poll_seconds",
+            "conversation_history_rollup_lease_seconds",
+            "conversation_history_rollup_timeout_seconds",
+            "conversation_history_rollup_retry_seconds",
+            "conversation_history_raw_tail_events",
+            "conversation_history_raw_tail_characters",
+            "conversation_history_extractive_max_characters",
+            "conversation_history_llm_origins",
+            "conversation_history_rollup_prompt_version",
+            "conversation_history_raw_tail_budget_ratio",
+            "conversation_history_sync_extractive_max_slices",
+        }
+        supplied = {str(key).casefold() for key in value} if isinstance(value, dict) else set()
+        supplied.update(key.casefold() for key in os.environ)
+        removed_family = re.compile(
+            r"^conversation_history_rollup_(?:"
+            r"max_(?:attempts|level)|"
+            r"l0_(?:min|max)_(?:events|characters)|"
+            r"fan_(?:in|in_characters)"
+            r")$"
+        )
+        found = sorted(
+            (removed & supplied) | {key for key in supplied if removed_family.fullmatch(key)}
+        )
+        if found:
+            names = ", ".join(name.upper() for name in found)
+            raise ValueError(f"removed 3.6 conversation history settings are not accepted: {names}")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_conversation_rollup_settings(self) -> Self:
+        if self.conversation_rollup_trigger_events <= self.conversation_rollup_stop_events:
+            raise ValueError(
+                "CONVERSATION_ROLLUP_TRIGGER_EVENTS must exceed CONVERSATION_ROLLUP_STOP_EVENTS"
+            )
+        if self.conversation_rollup_trigger_characters <= self.conversation_rollup_stop_characters:
+            raise ValueError(
+                "CONVERSATION_ROLLUP_TRIGGER_CHARACTERS must exceed "
+                "CONVERSATION_ROLLUP_STOP_CHARACTERS"
+            )
+        if (
+            self.conversation_rollup_lease_heartbeat_seconds
+            > self.conversation_rollup_lease_seconds / 3
+        ):
+            raise ValueError(
+                "CONVERSATION_ROLLUP_LEASE_HEARTBEAT_SECONDS must not exceed one third "
+                "of CONVERSATION_ROLLUP_LEASE_SECONDS"
+            )
+        return self
 
     @model_validator(mode="after")
     def _direct_bindings_do_not_shadow_ai_prefix(self) -> Self:

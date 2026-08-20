@@ -336,7 +336,11 @@ def test_schema_conflict_rebuilds_only_without_side_effects() -> None:
     first = _entry(_descriptor("web_search", namespace="web.search", revision="1"))
     runtime = _runtime(first, append_only=True)
     runtime.initial_exposure(
-        CapabilityQuery(text="search the public web", origin=RuntimeTurnOrigin.USER_MESSAGE)
+        CapabilityQuery(
+            text="search the public web",
+            origin=RuntimeTurnOrigin.USER_MESSAGE,
+            priority_capability_ids=("web_search",),
+        )
     )
     second = _entry(_descriptor("web_search", namespace="web.search", revision="2"))
     runtime._plan = runtime._planner.plan_initial(
@@ -357,7 +361,11 @@ def test_schema_conflict_rebuilds_only_without_side_effects() -> None:
 
     clean = _runtime(first, append_only=True)
     clean.initial_exposure(
-        CapabilityQuery(text="search the public web", origin=RuntimeTurnOrigin.USER_MESSAGE)
+        CapabilityQuery(
+            text="search the public web",
+            origin=RuntimeTurnOrigin.USER_MESSAGE,
+            priority_capability_ids=("web_search",),
+        )
     )
     clean._plan = runtime._plan
     assert clean._apply_plan(clean._plan) == SCHEMA_REVISION_CONFLICT

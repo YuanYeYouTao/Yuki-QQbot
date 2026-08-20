@@ -20,7 +20,9 @@ from qq_ai_bot.runtime.trigger import MessageTurnTrigger, TurnTrigger
 
 if TYPE_CHECKING:
     from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-    from qq_ai_bot.domain.conversations import ConversationIdentity
+    from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.domain.messages import SenderIdentity
     from qq_ai_bot.services.turn_coordinator import TurnToken
     from qq_ai_bot.time.models import TimeContext
     from qq_ai_bot.vision.models import VisualObservation
@@ -74,7 +76,9 @@ class TurnContext:
     authority: TurnAuthority
     scene: TurnSceneFacts
     runtime_config: RuntimeConfigSnapshot
-    conversation: ConversationIdentity | None
+    scope: ConversationScope | None
+    actor: SenderIdentity | None
+    turn_snapshot: ConversationTurnSnapshot | None
     coordination_key: TurnCoordinationKey | None
     turn_id: str
     turn_token: TurnToken | None
@@ -91,10 +95,12 @@ class TurnContext:
                 f"authority origin {self.authority.origin}"
             )
         if isinstance(self.trigger, MessageTurnTrigger):
-            if self.conversation is None:
-                raise InvalidTurnContextError("message turns require a conversation identity")
+            if self.scope is None:
+                raise InvalidTurnContextError("message turns require a conversation scope")
             if self.coordination_key is None:
                 raise InvalidTurnContextError("message turns require a coordination key")
+            if self.actor is None:
+                raise InvalidTurnContextError("message turns require an actor")
 
 
 @dataclass(slots=True)

@@ -27,7 +27,7 @@ from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.origin import TurnOrigin
 
 if TYPE_CHECKING:
-    from qq_ai_bot.domain.conversations import ConversationIdentity
+    from qq_ai_bot.domain.conversations import ConversationScope
 
 _WRITE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE})
 _MESSAGE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
@@ -41,7 +41,7 @@ class MemoryScopeResolver(Protocol):
         *,
         authority: TurnAuthority,
         scene: TurnSceneFacts,
-        conversation: ConversationIdentity | None,
+        conversation: ConversationScope | None,
     ) -> ResolvedMemoryScope: ...
 
 

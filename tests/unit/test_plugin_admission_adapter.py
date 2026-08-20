@@ -105,7 +105,7 @@ async def test_contextual_provider_receives_real_message_origin_and_scope() -> N
     assert scope_calls == [("com.example.context", message, TurnOrigin.AUTONOMOUS_GROUP, runtime)]
     assert len(received_contexts) == 1
     context = received_contexts[0]
-    assert context.conversation_key == "group:20002"
+    assert context.conversation_key == message.scope().key
     assert context.origin is SdkTurnOrigin.AUTONOMOUS_GROUP
     assert context.text_is_untrusted is True
     assert context.current.message_id == "message-42"

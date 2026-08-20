@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 RecordOutbound = Callable[[OutboundMessage, OutboundSendReceipt], Awaitable[None]]
 RecordFailure = Callable[[OutboundMessage, Exception], Awaitable[None]]
 BeforeSend = Callable[[OutboundMessage], Awaitable[None]]
+DeliverOutbound = Callable[[OutboundMessage], Awaitable[OutboundSendReceipt]]
 _FENCED_BLOCK = re.compile(r"(```[^\n]*\n.*?\n```|~~~[^\n]*\n.*?\n~~~)", re.DOTALL)
 _CHAT_LINE_BREAK = re.compile(r"\n+")
 _STRUCTURED_CHAT_OUTPUT = re.compile(
@@ -140,6 +141,7 @@ class ReplySequenceManager:
         record_outbound: RecordOutbound,
         record_failure: RecordFailure | None = None,
         before_send: BeforeSend | None = None,
+        deliver_outbound: DeliverOutbound | None = None,
         recover_failure: RecoverDeliveryFailure | None = None,
         before_messages: tuple[OutboundMessage, ...] = (),
         after_messages: tuple[OutboundMessage, ...] = (),
@@ -171,9 +173,13 @@ class ReplySequenceManager:
                         if delay > 0:
                             await asyncio.sleep(delay)
                     try:
-                        if before_send is not None:
+                        if before_send is not None and deliver_outbound is None:
                             await before_send(outbound)
-                        receipt = await sender.send(outbound)
+                        receipt = (
+                            await deliver_outbound(outbound)
+                            if deliver_outbound is not None
+                            else await sender.send(outbound)
+                        )
                         if not isinstance(receipt, OutboundSendReceipt):
                             raise TypeError("outbound sender returned no delivery receipt")
                     except Exception as exc:
@@ -187,18 +193,23 @@ class ReplySequenceManager:
                                 type(exc).__name__,
                             )
                             try:
-                                receipt = await sender.send(failure_message)
+                                receipt = (
+                                    await deliver_outbound(failure_message)
+                                    if deliver_outbound is not None
+                                    else await sender.send(failure_message)
+                                )
                                 if not isinstance(receipt, OutboundSendReceipt):
                                     raise TypeError("outbound sender returned no delivery receipt")
                             except Exception as retry_exc:
                                 failure = retry_exc
                             else:
                                 sent += 1
-                                await self._record_after_acceptance(
-                                    failure_message,
-                                    receipt,
-                                    record_outbound,
-                                )
+                                if deliver_outbound is None:
+                                    await self._record_after_acceptance(
+                                        failure_message,
+                                        receipt,
+                                        record_outbound,
+                                    )
                                 continue
                         if record_failure is not None:
                             await record_failure(failure_message, failure)
@@ -212,20 +223,26 @@ class ReplySequenceManager:
                                 raise
                             raise failure from exc
                         for replacement in recovery.replacement_messages:
-                            replacement_receipt = await sender.send(replacement)
+                            replacement_receipt = (
+                                await deliver_outbound(replacement)
+                                if deliver_outbound is not None
+                                else await sender.send(replacement)
+                            )
                             if not isinstance(replacement_receipt, OutboundSendReceipt):
                                 raise TypeError(
                                     "outbound sender returned no delivery receipt"
                                 ) from exc
                             sent += 1
-                            await self._record_after_acceptance(
-                                replacement,
-                                replacement_receipt,
-                                record_outbound,
-                            )
+                            if deliver_outbound is None:
+                                await self._record_after_acceptance(
+                                    replacement,
+                                    replacement_receipt,
+                                    record_outbound,
+                                )
                         continue
                     sent += 1
-                    await self._record_after_acceptance(outbound, receipt, record_outbound)
+                    if deliver_outbound is None:
+                        await self._record_after_acceptance(outbound, receipt, record_outbound)
         except ReplySequenceCancelled:
             return ReplySequenceResult(len(outbound_messages), sent, True)
         return ReplySequenceResult(len(outbound_messages), sent, False)

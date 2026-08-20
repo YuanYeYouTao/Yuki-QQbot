@@ -23,7 +23,7 @@ from qq_ai_bot.automation.registry import (
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.tools import AutomationToolService
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
@@ -31,6 +31,22 @@ from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.models import WebMode, WebSearchResponse, WebSearchSource
+
+
+def _latest_capability_payload(request: ChatRequest) -> dict[str, object] | None:
+    for message in reversed(request.messages):
+        if message.role != "tool":
+            continue
+        try:
+            payload = json.loads(message.content or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        data = payload.get("data")
+        if isinstance(data, dict) and data.get("transient_internal_reference") is True:
+            return payload
+    return None
 
 
 def _attach_test_automation(database: Database, harness, settings):
@@ -282,12 +298,20 @@ async def test_private_and_group_mention_end_to_end(database: Database) -> None:
     group_result = await harness.processor.handle(group, group_sender)
 
     assert private_result.reason == "chat" and group_result.reason == "chat"
-    assert private_sender.messages[0].text.endswith("private question")
-    assert group_sender.messages[0].text.endswith("group question")
-    assert await harness.conversations.count_messages(ConversationIdentity.private("1001")) == 2
-    assert (
-        await harness.conversations.count_messages(ConversationIdentity.group("2001", "1001")) == 2
-    )
+    assert private_sender.messages[0].text.startswith("FakeLLM:")
+    assert group_sender.messages[0].text.startswith("FakeLLM:")
+    assert "private question" in (provider.requests[0].messages[-1].content or "")
+    assert "group question" in (provider.requests[1].messages[-1].content or "")
+    private_scope = ConversationScope.private(private.bot_user_id, "1001")
+    group_scope = ConversationScope.group(group.bot_user_id, "2001")
+    private_events = (
+        await harness.conversation_rollups.load_prompt_snapshot(private_scope)
+    ).raw_events
+    group_events = (await harness.conversation_rollups.load_prompt_snapshot(group_scope)).raw_events
+    assert private_events[0].direction == "inbound"
+    assert all(event.direction == "outbound" for event in private_events[1:])
+    assert group_events[0].direction == "inbound"
+    assert all(event.direction == "outbound" for event in group_events[1:])
 
 
 @pytest.mark.asyncio
@@ -299,8 +323,10 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
         calls += 1
-        if calls == 1:
-            assert "get_my_capabilities" in {tool.name for tool in request.tools}
+        if "get_my_capabilities" not in {tool.name for tool in request.tools}:
+            return _request_tools_response("get_my_capabilities")
+        payload = _latest_capability_payload(request)
+        if payload is None:
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -314,14 +340,6 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
                     ),
                 ),
             )
-        assert "get_my_capabilities" in {tool.name for tool in request.tools}
-        payload = json.loads(
-            next(
-                message.content or "{}"
-                for message in reversed(request.messages)
-                if message.role == "tool"
-            )
-        )
         assert payload["data"]["transient_internal_reference"] is True
         assert payload["data"]["do_not_copy_verbatim_to_user"] is True
         assert payload["data"]["counts"]["self_service_operations"] == 37
@@ -344,14 +362,12 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
     )
 
     assert result.reason == "chat"
-    assert calls == 2
+    assert calls == 3
     rendered = "\n".join(message.text for message in sender.messages)
     assert rendered == "你目前有 37 项本人自助能力，其中 17 项会修改本人数据；不能修改系统配置。"
     assert "transient_internal_reference" not in rendered
-    events = await EventLedgerRepository(database).list_recent(
-        scope_type=ScopeType.PRIVATE,
-        user_id="1001",
-        group_id=None,
+    events = await EventLedgerRepository(database).list_scope_recent(
+        ConversationScope.private("9999", "1001"),
         limit=10,
     )
     persisted = "\n".join(event.content for event in events)
@@ -415,7 +431,10 @@ async def test_ordinary_capability_payload_echo_is_neither_sent_nor_persisted(
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
         calls += 1
-        if calls == 1:
+        if "get_my_capabilities" not in {tool.name for tool in request.tools}:
+            return _request_tools_response("get_my_capabilities")
+        payload = _latest_capability_payload(request)
+        if payload is None:
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -429,12 +448,7 @@ async def test_ordinary_capability_payload_echo_is_neither_sent_nor_persisted(
                     ),
                 ),
             )
-        payload = next(
-            message.content or "{}"
-            for message in reversed(request.messages)
-            if message.role == "tool"
-        )
-        return ChatResponse(content=payload, latency_seconds=0)
+        return ChatResponse(content=json.dumps(payload, ensure_ascii=False), latency_seconds=0)
 
     harness = build_harness(
         database,
@@ -452,10 +466,8 @@ async def test_ordinary_capability_payload_echo_is_neither_sent_nor_persisted(
     assert "内部读取" in rendered
     assert "transient_internal_reference" not in rendered
     assert "do_not_copy_verbatim_to_user" not in rendered
-    events = await EventLedgerRepository(database).list_recent(
-        scope_type=ScopeType.PRIVATE,
-        user_id="1001",
-        group_id=None,
+    events = await EventLedgerRepository(database).list_scope_recent(
+        ConversationScope.private("9999", "1001"),
         limit=10,
     )
     persisted = "\n".join(event.content for event in events)
@@ -478,12 +490,10 @@ async def test_short_plain_chat_without_line_break_stays_one_message(
     assert result.reason == "chat"
     assert result.sent_messages == 1
     assert [message.text for message in sender.messages] == ["第一句。第二句！"]
-    history = await harness.conversations.list_context(
-        ConversationIdentity.private("1001"),
-        max_messages=10,
-        max_characters=1000,
+    history = await harness.conversation_rollups.load_prompt_snapshot(
+        ConversationScope.private(event.bot_user_id, "1001")
     )
-    assert [item.content for item in history[-1:]] == ["第一句。第二句！"]
+    assert [item.content for item in history.raw_events[-1:]] == ["第一句。第二句！"]
 
 
 @pytest.mark.asyncio
@@ -511,14 +521,23 @@ async def test_ten_concurrent_conversations_do_not_cross_context(database: Datab
 
     assert len(provider.requests) == 10
     for index in range(10):
-        identity = ConversationIdentity.private(str(1001 + index))
-        history = await harness.conversations.list_context(
-            identity, max_messages=10, max_characters=1000
-        )
-        contents = [item.content for item in history]
+        identity = ConversationScope.private(messages[index].bot_user_id, str(1001 + index))
+        history = await harness.conversation_rollups.load_prompt_snapshot(identity)
+        contents = [item.content for item in history.raw_events]
         assert contents[0] == f"unique-{index}"
-        assert contents[1] == f"FakeLLM: unique-{index}"
-        assert senders[index].messages[0].text == contents[1]
+        outbound = contents[1:]
+        assert outbound == [message.text for message in senders[index].messages]
+        matching = [
+            request
+            for request in provider.requests
+            if f"unique-{index}" in (request.messages[-1].content or "")
+        ]
+        assert len(matching) == 1
+        assert all(
+            f"unique-{other}" not in (matching[0].messages[-1].content or "")
+            for other in range(10)
+            if other != index
+        )
 
 
 @pytest.mark.asyncio

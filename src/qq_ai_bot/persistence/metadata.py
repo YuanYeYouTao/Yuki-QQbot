@@ -8,7 +8,7 @@ of them without turning :mod:`qq_ai_bot.persistence.models` into a monolith.
 # These imports are intentionally side-effectful: defining each mapped class
 # registers its table on ``Base.metadata``.
 from qq_ai_bot.conversation import db_models as _conversation_db_models  # noqa: F401
-from qq_ai_bot.conversation.history import db_models as _history_db_models  # noqa: F401
+from qq_ai_bot.conversation.rollup import db_models as _rollup_db_models  # noqa: F401
 from qq_ai_bot.emoji import db_models as _emoji_db_models  # noqa: F401
 from qq_ai_bot.memory.dream import db_models as _memory_dream_db_models  # noqa: F401
 from qq_ai_bot.model_runtime import db_models as _model_runtime_db_models  # noqa: F401

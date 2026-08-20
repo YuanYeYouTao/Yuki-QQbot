@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import replace
 from typing import Protocol
 
@@ -21,6 +24,43 @@ from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.model_runtime.routes import ModelRouter
 
 logger = logging.getLogger(__name__)
+
+
+def request_shape_hash(
+    request: ChatRequest,
+    *,
+    provider: str,
+    model: str,
+    profile_id: str,
+    protocol: str,
+) -> str:
+    """Hash the actual cache-relevant request shape without message content."""
+
+    payload = {
+        "provider": provider,
+        "model": model,
+        "profile_id": profile_id,
+        "protocol": protocol,
+        "static_prompt_revision": request.static_prompt_revision,
+        "tools": [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }
+            for tool in request.tools
+        ],
+        "native_tools": [tool.type.value for tool in request.native_tools],
+        "response_format": request.response_format,
+        "structured_output": request.structured_output,
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 class BackgroundModelPreempted(RuntimeError):
@@ -68,7 +108,17 @@ class LegacyTaskModelExecutor:
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
     ) -> ChatResponse:
         del task, priority
-        return await self._provider.complete(request)
+        normalized = replace(
+            request,
+            request_shape_hash=request_shape_hash(
+                request,
+                provider="fake",
+                model=self._model,
+                profile_id="legacy",
+                protocol=ModelProtocol.CHAT_COMPLETIONS.value,
+            ),
+        )
+        return await self._provider.complete(normalized)
 
     def model_name(self, task: ModelTask) -> str:
         del task
@@ -129,6 +179,9 @@ class TaskModelExecutor:
         self._exclusive_slot = asyncio.Lock()
         self._background_slot = asyncio.Lock()
         self._background_provider_task: asyncio.Task[ChatResponse] | None = None
+        self._prompt_shapes: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._prefix_shape_match_total = 0
+        self._prefix_shape_split_total = 0
 
     @property
     def router(self) -> ModelRouter:
@@ -187,7 +240,27 @@ class TaskModelExecutor:
             native_tools=request.native_tools,
             continuation=request.continuation,
             function_outputs=request.function_outputs,
+            conversation_prefix_hash=request.conversation_prefix_hash,
+            request_shape_hash=request_shape_hash(
+                request,
+                provider=profile.provider,
+                model=profile.model,
+                profile_id=profile.id,
+                protocol=profile.protocol.value,
+            ),
+            prompt_snapshot_fingerprint=request.prompt_snapshot_fingerprint,
+            static_prompt_revision=request.static_prompt_revision,
         )
+        if normalized.conversation_prefix_hash:
+            self._observe_prompt_shape(normalized)
+            logger.info(
+                "prompt_request_diagnostics task=%s conversation_prefix_hash=%s "
+                "request_shape_hash=%s prompt_snapshot_fingerprint=%s",
+                task.value,
+                normalized.conversation_prefix_hash,
+                normalized.request_shape_hash,
+                normalized.prompt_snapshot_fingerprint,
+            )
         if profile.protocol is ModelProtocol.RESPONSES:
             logger.info(
                 "responses_request_routed task=%s profile_id=%s provider=%s protocol=%s "
@@ -201,6 +274,7 @@ class TaskModelExecutor:
                 len(normalized.tools),
                 bool(normalized.native_tools),
             )
+
         started = time.perf_counter()
         try:
             response = await self._execute_provider(
@@ -261,6 +335,29 @@ class TaskModelExecutor:
                 error_category=None,
             )
         return response
+
+    def prompt_shape_metrics(self) -> dict[str, int]:
+        return {
+            "conversation_prefix_shape_match_total": self._prefix_shape_match_total,
+            "conversation_prefix_shape_split_total": self._prefix_shape_split_total,
+        }
+
+    def _observe_prompt_shape(self, request: ChatRequest) -> None:
+        fingerprint = request.prompt_snapshot_fingerprint
+        if not fingerprint:
+            return
+        observed = (request.conversation_prefix_hash, request.request_shape_hash)
+        previous = self._prompt_shapes.get(fingerprint)
+        if previous is not None:
+            if previous == observed:
+                self._prefix_shape_match_total += 1
+            elif previous[0] == observed[0]:
+                self._prefix_shape_split_total += 1
+            self._prompt_shapes.move_to_end(fingerprint)
+            return
+        self._prompt_shapes[fingerprint] = observed
+        if len(self._prompt_shapes) > 1024:
+            self._prompt_shapes.popitem(last=False)
 
     async def _execute_provider(
         self,

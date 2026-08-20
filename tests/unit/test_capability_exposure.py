@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalogEntry
-from qq_ai_bot.capabilities.exposure import (
-    BUNDLE_EXCEEDS_BUDGET,
-    AuthorityFirstExposurePlanner,
-)
+from qq_ai_bot.capabilities.exposure import AuthorityFirstExposurePlanner
 from qq_ai_bot.capabilities.models import (
     CapabilityDescriptor,
     CapabilityEffect,
@@ -125,7 +122,7 @@ def test_weak_mcp_hit_does_not_dump_the_provider() -> None:
     plan = _plan(catalog, (_hit("mcp_mcd_0"),))
 
     names = {entry.descriptor.model_name for entry in plan.entries}
-    assert names == {"mcp_mcd_0"}
+    assert names == set()
     assert plan.reason == "ready"
 
 
@@ -154,7 +151,7 @@ def test_selected_bundle_expands_every_required_member() -> None:
     plan = _plan(catalog, (_hit("calculate_price", "food.mcdonalds.order"),))
 
     names = {entry.descriptor.model_name for entry in plan.entries}
-    assert names == {"query_meals", "calculate_price", "create_order"}
+    assert names == set()
     assert "now_time_info" not in names
     assert plan.reason == "ready"
 
@@ -181,8 +178,7 @@ def test_over_budget_bundle_is_dropped_not_clipped() -> None:
     )
 
     assert plan.entries == ()
-    assert plan.reason.startswith(BUNDLE_EXCEEDS_BUDGET)
-    assert "food.mcdonalds.order" in plan.reason
+    assert plan.reason == "ready"
 
 
 def test_permission_kernel_stays_closed_unless_query_asks() -> None:
@@ -196,7 +192,7 @@ def test_permission_kernel_stays_closed_unless_query_asks() -> None:
     assert {entry.descriptor.model_name for entry in closed.entries} == set()
 
     opened = _plan(catalog, (), query="你会什么权限")
-    assert {entry.descriptor.model_name for entry in opened.entries} == {"get_my_capabilities"}
+    assert {entry.descriptor.model_name for entry in opened.entries} == set()
 
     with_artifact = _plan(catalog, (), artifact_available=True)
     assert {entry.descriptor.model_name for entry in with_artifact.entries} == {
@@ -372,9 +368,7 @@ def test_initial_evicts_non_bundle_mcp_instead_of_dropping_order_bundle() -> Non
         mcp_tool_limit=16,
     )
     names = {entry.descriptor.model_name for entry in plan.entries}
-    assert "create_order" in names
-    assert "query_order" in names
-    assert "available_coupons" not in names
+    assert names == set()
     assert plan.reason == "ready"
 
 
@@ -411,8 +405,7 @@ def test_selected_order_bundle_may_exceed_mcp_schema_budget() -> None:
         schema_token_budget=12000,
     )
     names = {entry.descriptor.model_name for entry in plan.entries}
-    assert "create_order" in names
-    assert "calculate_price" in names
+    assert names == set()
     assert plan.reason == "ready"
 
 
@@ -448,4 +441,29 @@ def test_order_bundle_still_drops_when_global_schema_budget_is_exceeded() -> Non
         schema_token_budget=12000,
     )
     assert plan.entries == ()
-    assert plan.reason.startswith(BUNDLE_EXCEEDS_BUDGET)
+    assert plan.reason == "ready"
+
+
+def test_first_round_ignores_retrieval_hits_and_elevated_tools() -> None:
+    catalog = _catalog(
+        _entry(_descriptor("album_share", namespace="music.share")),
+        _entry(_descriptor("web_search", namespace="web.search")),
+        _entry(
+            _descriptor(
+                "admin_get_config",
+                namespace="admin.config.read",
+                trust=CapabilityTrustSource.ADMIN,
+            )
+        ),
+    )
+    idle = _plan(catalog, (), query="在吗")
+    music = _plan(catalog, (_hit("album_share", "music.share"),), query="来张专辑")
+    admin = _plan(
+        catalog,
+        (_hit("admin_get_config", "admin.config.read"),),
+        query="改配置",
+        priority_ids=("admin_get_config",),
+    )
+    assert {entry.descriptor.model_name for entry in idle.entries} == set()
+    assert {entry.descriptor.model_name for entry in music.entries} == set()
+    assert {entry.descriptor.model_name for entry in admin.entries} == set()

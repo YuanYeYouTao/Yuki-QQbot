@@ -12,7 +12,7 @@ import pytest
 from tests.conftest import make_settings
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
@@ -290,7 +290,7 @@ async def test_session_attribution_requires_an_eligible_delivered_turn(database:
     ) -> TurnMemorySession:
         return TurnMemorySession.open(
             inbound=inbound,
-            identity=ConversationIdentity.private("1001"),
+            identity=ConversationScope.private("bot-9", "1001"),
             runtime=config,
             memory_context=_Context(),  # type: ignore[arg-type]
             origin=origin,

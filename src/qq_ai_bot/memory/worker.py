@@ -189,7 +189,12 @@ class MemoryWorker:
         if not jobs:
             return 0
         try:
-            context = await self._ledger.list_before(jobs[0].event, limit=8)
+            first_event = jobs[0].event
+            context = await self._ledger.list_scope_before(
+                first_event.scope,
+                before_event_id=first_event.id,
+                limit=8,
+            )
             extracted = await self.extractor.extract_batch(
                 tuple(job.event for job in jobs),
                 context=context,

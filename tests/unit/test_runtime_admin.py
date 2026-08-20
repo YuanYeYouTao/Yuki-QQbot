@@ -661,8 +661,11 @@ async def test_single_chat_agent_executes_relationship_admin_tool(
 ) -> None:
     calls = 0
 
-    def responder(_request: object) -> ChatResponse:
+    def responder(request: object) -> ChatResponse:
         nonlocal calls
+        tool_names = {tool.name for tool in getattr(request, "tools", ())}
+        if "admin_execute_action" not in tool_names:
+            return _request_tools_response("admin_execute_action")
         calls += 1
         if calls == 1:
             return ChatResponse(
@@ -699,7 +702,7 @@ async def test_single_chat_agent_executes_relationship_admin_tool(
     assert result.reason == "chat"
     assert sender.messages[0].text == "已按真实结果调整。"
     assert (await harness.relationships.get("9000")).affection_score == 100  # type: ignore[union-attr]
-    assert len(provider.requests) == 2
+    assert len(provider.requests) == 3
 
 
 @pytest.mark.asyncio
@@ -935,6 +938,8 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
         tool_names = {tool.name for tool in request.tools}
         if "admin_set_config" not in tool_names:
             return _request_tools_response("admin_set_config")
+        if "get_my_capabilities" not in tool_names:
+            return _request_tools_response("get_my_capabilities", call_id="request-capabilities")
         calls += 1
         if calls == 1:
             assert "get_my_capabilities" in tool_names
@@ -1358,6 +1363,8 @@ async def test_successful_automation_cancel_survives_final_model_failure(
 
     def responder(_request: ChatRequest) -> ChatResponse:
         nonlocal calls
+        if "automation_cancel" not in {tool.name for tool in _request.tools}:
+            return _request_tools_response("automation_cancel")
         calls += 1
         if calls == 1:
             return ChatResponse(

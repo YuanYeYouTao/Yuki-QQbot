@@ -6,6 +6,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from qq_ai_bot import __version__
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -15,7 +16,8 @@ from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.admin import EmojiAdminService
@@ -24,7 +26,6 @@ from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.persistence.repositories import (
-    ConversationRepository,
     PeopleRepository,
 )
 from qq_ai_bot.plugin_host.command_adapter import PluginCommandAdapter
@@ -48,13 +49,19 @@ from qq_ai_bot.speech.admin import SpeechAdminService
 _NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
 
 
+def _job_age_seconds(value: object) -> int:
+    if not isinstance(value, datetime):
+        return 0
+    created_at = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return max(0, int((datetime.now(UTC) - created_at).total_seconds()))
+
+
 @dataclass(frozen=True, slots=True)
 class CommandExecution:
     """Text and lifecycle effects produced by one deterministic command."""
 
     text: str
     record_reply: bool = True
-    reset_after_reply: bool = False
     outbound: OutboundMessage | None = None
 
 
@@ -65,7 +72,7 @@ class CommandService:
         self,
         *,
         settings: Settings,
-        conversations: ConversationRepository,
+        rollups: ConversationRollupRepository,
         people: PeopleRepository,
         memories: MemoryFactService,
         concurrency: ConcurrencyManager,
@@ -91,7 +98,7 @@ class CommandService:
         memory_rebuild: MemoryRebuildService | None = None,
     ) -> None:
         self._settings = settings
-        self._conversations = conversations
+        self._rollups = rollups
         self._people = people
         self._concurrency = concurrency
         self._onebot_connected = onebot_connected
@@ -129,7 +136,7 @@ class CommandService:
     async def execute_direct_plugin(
         self,
         message: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         match: DirectCommandMatch,
     ) -> CommandExecution:
         if self._plugin_commands is None:
@@ -187,7 +194,7 @@ class CommandService:
         self,
         command: CommandName,
         message: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         profile: UserProfileSnapshot,
         argument: str,
         started: float,
@@ -205,16 +212,24 @@ class CommandService:
             bot_user_id=message.bot_user_id,
         )
         record_reply = command is not CommandName.FORGETME
-        reset_after_reply = False
         if command_requires_superuser(command) and not is_superuser:
             text = "权限不足：该命令仅限超级管理员。"
         elif command is CommandName.HELP:
             text = self._help_text()
+        elif (
+            command is CommandName.NEW
+            and message.scope_type is ScopeType.GROUP
+            and not is_superuser
+        ):
+            text = "权限不足：群聊新会话仅限超级管理员。"
         elif command is CommandName.NEW:
-            text = "已开始新的当前场景上下文；永久聊天账本和人物记忆仍然保留。"
-            reset_after_reply = True
+            text = (
+                "已为当前群开始新的会话；永久聊天账本和长期记忆仍然保留。"
+                if message.scope_type is ScopeType.GROUP
+                else "已开始新的私聊会话；永久聊天账本和长期记忆仍然保留。"
+            )
         elif command is CommandName.STATUS:
-            count = await self._conversations.count_messages(identity)
+            scope_state, rollup, job = await self._rollups.status(identity)
             pending_restart = await self._runtime_config.pending_restart_count()
             vision_busy = self._vision is not None and self._vision.busy
             vision_queue_depth = self._vision.queue_depth if self._vision is not None else 0
@@ -262,6 +277,18 @@ class CommandService:
                 if mcp_health is not None and mcp_health.last_error_category is not None
                 else "无"
             )
+            job_age = _job_age_seconds(job.get("created_at") if job else None)
+            job_age_text = f"{job_age} 秒" if job else "无"
+            rollup_coverage = (
+                rollup.covered_through_event_id
+                if rollup is not None
+                else (scope_state.starts_after_event_id if scope_state is not None else 0)
+            )
+            last_rollup_error = (
+                job["last_error_category"]
+                if job is not None and job["last_error_category"]
+                else "无"
+            )
             text = (
                 f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
                 f"模型：{self._settings.llm_model or '未配置'}\n"
@@ -275,7 +302,21 @@ class CommandService:
                 f"{emoji_counts.get('candidate', 0)}/"
                 f"{emoji_counts.get('adopted', 0)}/"
                 f"{emoji_counts.get('jobs_pending', 0)}\n"
-                f"当前切点后的事件数：{count}\n"
+                f"Scope key：{identity.key}\n"
+                f"Scope generation：{scope_state.generation if scope_state else '未建立'}\n"
+                f"当前 generation 起始事件边界："
+                f"{scope_state.starts_after_event_id if scope_state else 0}\n"
+                f"最后事件 ID：{scope_state.last_event_id if scope_state else 0}\n"
+                f"Rollup coverage：{rollup_coverage}\n"
+                f"未覆盖事件数：{scope_state.uncovered_event_count if scope_state else 0}\n"
+                f"未覆盖字符数：{scope_state.uncovered_character_count if scope_state else 0}\n"
+                f"Rollup kind：{rollup.summary_kind.value if rollup else '无'}\n"
+                f"Rollup revision：{rollup.revision if rollup else 0}\n"
+                f"Job 状态：{job['status'] if job else '无'}\n"
+                f"Job signal revision：{job['signal_revision'] if job else 0}\n"
+                f"Job failure count：{job['failure_count'] if job else 0}\n"
+                f"Job age：{job_age_text}\n"
+                f"最近错误类别：{last_rollup_error}\n"
                 f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
                 f"待重启配置数：{pending_restart}\n"
                 f"自动化：{'已启用' if self._settings.automation_enabled else '未启用'}\n"
@@ -355,8 +396,6 @@ class CommandService:
             if argument:
                 text = "该命令不接受参数，只能删除发送者本人数据。"
             else:
-                if self._memory_rebuild is not None:
-                    await self._memory_rebuild.forget_person(message.sender.user_id)
                 deleted = await self._people.delete_person(message.sender.user_id)
                 text = (
                     "已彻底删除与你 QQ 号关联的人物、关系分数、记忆、成员关系和可归属聊天事件。"
@@ -431,7 +470,6 @@ class CommandService:
                     return CommandExecution(
                         text=speech_result.text,
                         record_reply=record_reply,
-                        reset_after_reply=reset_after_reply,
                         outbound=speech_result.outbound,
                     )
         elif command is CommandName.MODEL:
@@ -487,7 +525,6 @@ class CommandService:
         return CommandExecution(
             text=text,
             record_reply=record_reply,
-            reset_after_reply=reset_after_reply,
         )
 
     @staticmethod

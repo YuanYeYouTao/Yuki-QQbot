@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.domain.conversations import ConversationIdentity
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.runtime.turn import TurnContext
@@ -29,7 +29,7 @@ class HostConversationRuntime:
     async def handle_turn(
         self,
         inbound: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         profile: UserProfileSnapshot,
         content: str,
         sender: OutboundSender,

@@ -449,7 +449,7 @@ def test_first_round_wait_query_does_not_expose_mcdonalds_bundle() -> None:
         reply_target_available=False,
     )
     names = {entry.descriptor.model_name for entry in selected.entries}
-    assert "create_order" in names
+    assert names == set()
     assert "now_time_info" not in names
 
 

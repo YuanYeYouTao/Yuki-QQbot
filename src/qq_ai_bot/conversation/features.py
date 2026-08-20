@@ -54,10 +54,8 @@ class AdmissionFeatureBuilder:
 
         del runtime
         current_time = now or datetime.now(UTC)
-        recent = await self._ledger.list_recent(
-            scope_type=inbound.scope_type,
-            user_id=inbound.sender.user_id,
-            group_id=inbound.group_id,
+        recent = await self._ledger.list_scope_recent(
+            inbound.scope(),
             limit=_HISTORY_LIMIT + 1,
         )
         relationship = await self._relationships.get(inbound.sender.user_id)

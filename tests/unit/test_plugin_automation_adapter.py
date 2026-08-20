@@ -18,7 +18,6 @@ from qq_ai_bot.automation.registry import (
     AutomationCapabilityRegistry,
     CapabilityExecutionContext,
 )
-from qq_ai_bot.domain.conversations import ConversationMode
 from qq_ai_bot.persistence.repository_records import GroupSetting
 from qq_ai_bot.plugin_host.automation_adapter import PluginAutomationAdapter
 from qq_ai_bot.plugin_host.extension_registry import ExtensionRegistry
@@ -59,7 +58,6 @@ class FakeGroups:
             name="Scheduled group",
             enabled=True,
             require_mention=False,
-            conversation_mode=ConversationMode.SHARED,
         )
 
 

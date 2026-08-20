@@ -15,7 +15,7 @@ from tests.conftest import make_settings
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
     InboundMessage,
@@ -445,10 +445,8 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
         await context.onebot.send_private("10001", "onebot-private-body-secret")
         await context.onebot.send_group("20001", "onebot-group-body-secret")
 
-    group_events = await ledger.list_recent(
-        scope_type=ScopeType.GROUP,
-        user_id="10001",
-        group_id="20001",
+    group_events = await ledger.list_scope_recent(
+        ConversationScope.group("99999", "20001"),
         limit=20,
     )
     assert [row.content for row in group_events] == [
@@ -481,10 +479,8 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
         },
     )
 
-    private_events = await ledger.list_recent(
-        scope_type=ScopeType.PRIVATE,
-        user_id="10001",
-        group_id=None,
+    private_events = await ledger.list_scope_recent(
+        ConversationScope.private("99999", "10001"),
         limit=20,
     )
     assert [row.content for row in private_events] == [
@@ -634,10 +630,8 @@ async def test_failed_plugin_send_is_audited_without_fabricating_ledger_event(
     assert result.error_code == "onebot.call_failed"
     assert result.detail == "RuntimeError"
     assert (
-        await ledger.list_recent(
-            scope_type=ScopeType.PRIVATE,
-            user_id="10001",
-            group_id=None,
+        await ledger.list_scope_recent(
+            ConversationScope.private("99999", "10001"),
             limit=20,
         )
         == ()

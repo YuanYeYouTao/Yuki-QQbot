@@ -6,6 +6,7 @@ import hashlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -24,7 +25,12 @@ from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
+from qq_ai_bot.conversation.rollup.repository import (
+    ConversationRollupRepository,
+    ConversationScopeRepository,
+)
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage, OutboundSendReceipt
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.collector import EmojiCollector
@@ -34,7 +40,6 @@ from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepositor
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.persistence.repositories import (
-    ConversationRepository,
     EventLedgerRepository,
     GroupSettingsRepository,
     PeopleRepository,
@@ -42,7 +47,9 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipJobRepository,
     RelationshipRepository,
 )
+from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
+from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
     TurnObservationRecorder,
@@ -62,6 +69,11 @@ from qq_ai_bot.services.chat import ChatService, OutboundSender
 from qq_ai_bot.services.command_service import CommandExecution, CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
 from qq_ai_bot.services.deduplication import DeduplicationService, build_event_key
+from qq_ai_bot.services.effect_gate import (
+    ConversationEffectGate,
+    EffectGateTimeoutError,
+    EffectPermitRejectedError,
+)
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
@@ -230,7 +242,11 @@ class MessageProcessor:
         self,
         *,
         settings: Settings,
-        conversations: ConversationRepository,
+        ledger: EventLedgerRepository,
+        scoped_events: ScopedEventLedgerUnitOfWork,
+        conversation_scopes: ConversationScopeRepository,
+        conversation_rollups: ConversationRollupRepository,
+        effect_gate: ConversationEffectGate,
         groups: GroupSettingsRepository,
         private_users: PrivateUserSettingsRepository,
         user_profiles: UserProfileService,
@@ -239,7 +255,6 @@ class MessageProcessor:
         rate_limiter: SlidingWindowRateLimiter,
         concurrency: ConcurrencyManager,
         onebot_connected: Callable[[], bool],
-        ledger: EventLedgerRepository | None = None,
         people: PeopleRepository | None = None,
         memories: MemoryFactService | None = None,
         memory_worker: MemoryWorker | None = None,
@@ -268,10 +283,13 @@ class MessageProcessor:
         voice_preferences: VoicePreferenceService | None = None,
         turn_observations: TurnObservationRecorder | None = None,
     ) -> None:
-        database = conversations._database
+        database = ledger._database
         self._turn_observations = turn_observations
         self._settings = settings
-        self._conversations = conversations
+        self._scoped_events = scoped_events
+        self._conversation_scopes = conversation_scopes
+        self._conversation_rollups = conversation_rollups
+        self._effect_gate = effect_gate
         self._groups = groups
         self._private_users = private_users
         self._user_profiles = user_profiles
@@ -280,7 +298,7 @@ class MessageProcessor:
         self._rate_limiter = rate_limiter
         self._concurrency = concurrency
         self._onebot_connected = onebot_connected
-        self._ledger = ledger or EventLedgerRepository(database)
+        self._ledger = ledger
         self._people = people or PeopleRepository(database)
         self._memories = memories or MemoryFactService(MemoryFactRepository(database))
         self._memory_worker = memory_worker or MemoryWorker(
@@ -361,7 +379,7 @@ class MessageProcessor:
         self._automation_worker = automation_worker
         self._commands = command_service or CommandService(
             settings=settings,
-            conversations=conversations,
+            rollups=conversation_rollups,
             people=self._people,
             memories=self._memories,
             concurrency=concurrency,
@@ -498,19 +516,23 @@ class MessageProcessor:
             await self._publish_turn_rejected(message, decision.reason)
             return ProcessResult(False, reason=decision.reason)
 
-        identity = (
-            ConversationIdentity.private(message.sender.user_id)
-            if message.scope_type is ScopeType.PRIVATE
-            else ConversationIdentity.group(
-                message.group_id or "",
-                message.sender.user_id,
-                ConversationMode.SHARED,
-            )
-        )
+        identity = message.scope()
         event_key = build_event_key(message, identity.key)
+        repairing_dedup_gap = False
         if not await self._deduplication.claim(event_key):
-            await self._publish_turn_rejected(message, "duplicate")
-            return ProcessResult(False, reason="duplicate")
+            existing = await self._ledger.find_by_platform_message(
+                bot_user_id=identity.bot_user_id,
+                platform_message_id=message.message_id,
+            )
+            if existing is not None:
+                await self._publish_turn_rejected(message, "duplicate")
+                return ProcessResult(False, reason="duplicate")
+            logger.warning(
+                "processed_event_without_chat_event_repair scope_key=%s message_id=%s",
+                identity.key,
+                message.message_id,
+            )
+            repairing_dedup_gap = True
 
         runtime_snapshot = await self._runtime_config.snapshot(
             user_id=message.sender.user_id,
@@ -577,8 +599,7 @@ class MessageProcessor:
         # forgetme is deliberately neither re-observed nor re-written to the ledger.
         if decision.command is CommandName.FORGETME and not image_blocks_command:
             profile = self._event_profile(message)
-            return await self._handle_command(
-                decision.command,
+            return await self._handle_privacy_command(
                 message,
                 identity,
                 profile,
@@ -594,15 +615,55 @@ class MessageProcessor:
             profile_resolver,
         )
         profile = await self._user_profiles.capture(message, profile_resolver)
-        record, created = await self._ledger.append_inbound(
-            message, bot_user_id=message.bot_user_id or "unknown-bot"
+        is_authorized_new = bool(
+            decision.command is CommandName.NEW
+            and (message.scope_type is ScopeType.PRIVATE or is_superuser)
+        )
+        if is_authorized_new:
+            await self._turn_coordinator.cancel_running_before_boundary(identity.key)
+            try:
+                async with self._effect_gate.hold(
+                    identity.key,
+                    timeout_seconds=self._settings.conversation_effect_gate_timeout_seconds,
+                ):
+                    switched = await self._scoped_events.append_new_generation_command(
+                        scope=identity,
+                        inbound=message,
+                    )
+            except EffectGateTimeoutError:
+                sent = await self._send_text(
+                    message,
+                    sender,
+                    "当前会话正在完成上一项操作，请稍后再试。",
+                )
+                return ProcessResult(True, int(sent), "new_effect_gate_timeout")
+            record = switched.event
+            created = switched.generation_changed
+            scope_state = switched.scope
+        else:
+            appended = await self._scoped_events.append_inbound(message)
+            record = appended.event
+            created = appended.created
+            scope_state = appended.scope
+            if repairing_dedup_gap and created:
+                self._scoped_events.metrics.scoped_append_repairs += 1
+        turn_snapshot = ConversationTurnSnapshot(
+            scope_id=scope_state.id,
+            scope_key=identity.key,
+            generation=scope_state.generation,
+            trigger_event_id=record.id,
+            coordinator_version=turn_token.version,
         )
         # Deterministic native and direct-plugin commands execute their own reviewed
         # mutation path. Feeding command syntax to the extraction Worker would create
         # a second interpretation of the same write and may pollute long-term memory.
         if created and decision.command is None and direct_match is None:
             memory_conversation_key = (
-                f"group:{record.group_id}" if record.group_id is not None else identity.key
+                ResolvedMemoryScope.for_group(record.group_id).partition_key
+                if record.group_id is not None
+                else ResolvedMemoryScope.for_private(
+                    record.private_peer_user_id or record.sender_user_id
+                ).partition_key
             )
             await self._memory_worker.enqueue(
                 record.id,
@@ -650,7 +711,12 @@ class MessageProcessor:
             category=category,
         )
         if not rate.allowed:
-            sent = await self._send_text(message, sender, RATE_LIMIT_MESSAGE)
+            sent = await self._send_text(
+                message,
+                sender,
+                RATE_LIMIT_MESSAGE,
+                turn_snapshot=turn_snapshot,
+            )
             return ProcessResult(True, int(sent), f"{rate.scope}_rate_limited")
 
         if direct_match is not None:
@@ -659,16 +725,21 @@ class MessageProcessor:
                     message,
                     sender,
                     IMAGE_WRITE_ISOLATION_MESSAGE,
+                    turn_snapshot=turn_snapshot,
                 )
                 return ProcessResult(True, int(sent), "image_write_isolated")
-            return await self._handle_direct_plugin_command(
-                direct_match,
-                message,
-                identity,
-                sender,
-                event_key,
-                started,
-            )
+            try:
+                return await self._handle_direct_plugin_command(
+                    direct_match,
+                    message,
+                    identity,
+                    sender,
+                    event_key,
+                    started,
+                    turn_snapshot,
+                )
+            except (TurnInterruptedError, TurnSupersededError):
+                return ProcessResult(True, reason="turn_interrupted")
 
         if decision.command is not None:
             if image_blocks_command:
@@ -676,18 +747,23 @@ class MessageProcessor:
                     message,
                     sender,
                     IMAGE_WRITE_ISOLATION_MESSAGE,
+                    turn_snapshot=turn_snapshot,
                 )
                 return ProcessResult(True, int(sent), "image_write_isolated")
-            return await self._handle_command(
-                decision.command,
-                message,
-                identity,
-                profile,
-                decision.content,
-                sender,
-                event_key,
-                started,
-            )
+            try:
+                return await self._handle_command(
+                    decision.command,
+                    message,
+                    identity,
+                    profile,
+                    decision.content,
+                    sender,
+                    event_key,
+                    started,
+                    turn_snapshot,
+                )
+            except (TurnInterruptedError, TurnSupersededError):
+                return ProcessResult(True, reason="turn_interrupted")
 
         visual_question = sanitize_input(decision.content or message.text)
         content = sanitize_input(decision.content or (message.text if admin_candidate else ""))
@@ -722,18 +798,29 @@ class MessageProcessor:
                     visual.error_code,
                     reply_only=bool(message.reply_attachments and not message.attachments),
                 )
-                sent = await self._send_text(message, sender, text)
+                sent = await self._send_text(
+                    message,
+                    sender,
+                    text,
+                    turn_snapshot=turn_snapshot,
+                )
                 return ProcessResult(True, int(sent), f"vision_{visual.error_code or 'failed'}")
             else:
                 content = _attachment_only_context(message)
                 if not content:
-                    sent = await self._send_text(message, sender, "请输入要发送给 AI 的内容。")
+                    sent = await self._send_text(
+                        message,
+                        sender,
+                        "请输入要发送给 AI 的内容。",
+                        turn_snapshot=turn_snapshot,
+                    )
                     return ProcessResult(True, int(sent), "empty")
         if len(content) > self._settings.max_input_characters:
             sent = await self._send_text(
                 message,
                 sender,
                 f"消息过长，请控制在 {self._settings.max_input_characters} 个字符以内。",
+                turn_snapshot=turn_snapshot,
             )
             return ProcessResult(True, int(sent), "input_too_long")
 
@@ -760,20 +847,36 @@ class MessageProcessor:
                 visual_input_present=has_visual_input,
                 visual_failure=visual.failed,
                 turn_token=turn_token,
+                turn_snapshot=turn_snapshot,
             )
         except (TurnInterruptedError, TurnSupersededError):
             result = ProcessResult(True, reason="turn_interrupted")
         except RequestCancelledError:
             result = ProcessResult(True, reason="cancelled")
         except LLMConfigurationError:
-            sent = await self._send_text(message, sender, "AI 服务尚未配置，请联系管理员。")
+            sent = await self._send_text(
+                message,
+                sender,
+                "AI 服务尚未配置，请联系管理员。",
+                turn_snapshot=turn_snapshot,
+            )
             result = ProcessResult(True, int(sent), "llm_not_configured")
         except LLMEmptyResponseError:
-            sent = await self._send_text(message, sender, "AI 返回了空内容，请稍后重试。")
+            sent = await self._send_text(
+                message,
+                sender,
+                "AI 返回了空内容，请稍后重试。",
+                turn_snapshot=turn_snapshot,
+            )
             result = ProcessResult(True, int(sent), "empty_llm_response")
         except LLMError as exc:
             logger.warning("llm_failure exception_category=%s", type(exc).__name__)
-            sent = await self._send_text(message, sender, "AI 服务暂时不可用，请稍后重试。")
+            sent = await self._send_text(
+                message,
+                sender,
+                "AI 服务暂时不可用，请稍后重试。",
+                turn_snapshot=turn_snapshot,
+            )
             result = ProcessResult(True, int(sent), "llm_failure")
         except ValidationError as exc:
             logger.error(
@@ -781,7 +884,12 @@ class MessageProcessor:
                 type(exc).__name__,
                 exc_info=exc,
             )
-            sent = await self._send_text(message, sender, "AI 服务暂时不可用，请稍后重试。")
+            sent = await self._send_text(
+                message,
+                sender,
+                "AI 服务暂时不可用，请稍后重试。",
+                turn_snapshot=turn_snapshot,
+            )
             result = ProcessResult(True, int(sent), "validation_failure")
         except (OSError, RuntimeError, TypeError) as exc:
             logger.error("message_send_or_storage_failure", exc_info=exc)
@@ -792,7 +900,12 @@ class MessageProcessor:
                 type(exc).__name__,
                 exc_info=exc,
             )
-            sent = await self._send_text(message, sender, "AI 服务暂时不可用，请稍后重试。")
+            sent = await self._send_text(
+                message,
+                sender,
+                "AI 服务暂时不可用，请稍后重试。",
+                turn_snapshot=turn_snapshot,
+            )
             result = ProcessResult(True, int(sent), "internal_failure")
         else:
             if created and sent_count > 0:
@@ -930,7 +1043,6 @@ class MessageProcessor:
         return EffectiveGroupPolicy(
             enabled=setting.enabled,
             require_mention=setting.require_mention,
-            conversation_mode=ConversationMode.SHARED,
             autonomous_enabled=setting.autonomous_enabled,
         )
 
@@ -946,26 +1058,103 @@ class MessageProcessor:
         self,
         command: CommandName,
         message: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
+        profile: UserProfileSnapshot,
+        argument: str,
+        sender: OutboundSender,
+        event_key: str,
+        started: float,
+        turn_snapshot: ConversationTurnSnapshot | None = None,
+    ) -> ProcessResult:
+        async def execute() -> CommandExecution:
+            return await self._commands.execute(
+                command,
+                message,
+                identity,
+                profile,
+                argument,
+                started,
+                gateway=(
+                    cast(OneBotMediaGateway, sender)
+                    if callable(getattr(sender, "call_api", None))
+                    else None
+                ),
+            )
+
+        if turn_snapshot is None:
+            execution = await execute()
+            return await self._deliver_command_execution(
+                execution=execution,
+                message=message,
+                identity=identity,
+                sender=sender,
+                event_key=event_key,
+                started=started,
+                handler=f"command_{command.value}",
+                turn_snapshot=None,
+            )
+        try:
+            async with self._effect_gate.permit(
+                turn_snapshot,
+                validate=self._validate_turn_snapshot,
+                timeout_seconds=self._settings.conversation_effect_gate_timeout_seconds,
+            ):
+                execution = await execute()
+                # A single issued permit linearizes the command mutation and its
+                # confirmation. `/ai stop` intentionally advances coordinator
+                # version while this already-issued permit remains valid.
+                return await self._deliver_command_execution(
+                    execution=execution,
+                    message=message,
+                    identity=identity,
+                    sender=sender,
+                    event_key=event_key,
+                    started=started,
+                    handler=f"command_{command.value}",
+                    turn_snapshot=None,
+                )
+        except (EffectGateTimeoutError, EffectPermitRejectedError) as exc:
+            raise TurnSupersededError("command effect permit was rejected") from exc
+
+    async def _handle_privacy_command(
+        self,
+        message: InboundMessage,
+        identity: ConversationScope,
         profile: UserProfileSnapshot,
         argument: str,
         sender: OutboundSender,
         event_key: str,
         started: float,
     ) -> ProcessResult:
-        execution = await self._commands.execute(
-            command,
-            message,
-            identity,
-            profile,
-            argument,
-            started,
-            gateway=(
-                cast(OneBotMediaGateway, sender)
-                if callable(getattr(sender, "call_api", None))
-                else None
-            ),
-        )
+        """Cancel old work, acquire sorted scope gates, then delete in one DB transaction."""
+
+        scopes = await self._people.affected_conversation_scopes(message.sender.user_id)
+        for scope in scopes:
+            await self._turn_coordinator.cancel_interruptible(scope.key)
+        try:
+            async with AsyncExitStack() as stack:
+                for scope in scopes:
+                    await stack.enter_async_context(
+                        self._effect_gate.hold(
+                            scope.key,
+                            timeout_seconds=(
+                                self._settings.conversation_effect_gate_timeout_seconds
+                            ),
+                        )
+                    )
+                execution = await self._commands.execute(
+                    CommandName.FORGETME,
+                    message,
+                    identity,
+                    profile,
+                    argument,
+                    started,
+                )
+        except EffectGateTimeoutError:
+            execution = CommandExecution(
+                "隐私删除暂时无法安全取得全部会话边界，请稍后重试。",
+                record_reply=False,
+            )
         return await self._deliver_command_execution(
             execution=execution,
             message=message,
@@ -973,54 +1162,81 @@ class MessageProcessor:
             sender=sender,
             event_key=event_key,
             started=started,
-            handler=f"command_{command.value}",
+            handler="command_forgetme",
+            turn_snapshot=None,
         )
 
     async def _handle_direct_plugin_command(
         self,
         match: DirectCommandMatch,
         message: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         sender: OutboundSender,
         event_key: str,
         started: float,
+        turn_snapshot: ConversationTurnSnapshot,
     ) -> ProcessResult:
-        execution = await self._commands.execute_direct_plugin(message, identity, match)
-        return await self._deliver_command_execution(
-            execution=execution,
-            message=message,
-            identity=identity,
-            sender=sender,
-            event_key=event_key,
-            started=started,
-            handler="command_plugin_direct",
-        )
+        try:
+            async with self._effect_gate.permit(
+                turn_snapshot,
+                validate=self._validate_turn_snapshot,
+                timeout_seconds=self._settings.conversation_effect_gate_timeout_seconds,
+            ):
+                execution = await self._commands.execute_direct_plugin(message, identity, match)
+                return await self._deliver_command_execution(
+                    execution=execution,
+                    message=message,
+                    identity=identity,
+                    sender=sender,
+                    event_key=event_key,
+                    started=started,
+                    handler="command_plugin_direct",
+                    turn_snapshot=None,
+                )
+        except (EffectGateTimeoutError, EffectPermitRejectedError) as exc:
+            raise TurnSupersededError("plugin command effect permit was rejected") from exc
 
     async def _deliver_command_execution(
         self,
         *,
         execution: CommandExecution,
         message: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         sender: OutboundSender,
         event_key: str,
         started: float,
         handler: str,
+        turn_snapshot: ConversationTurnSnapshot | None,
     ) -> ProcessResult:
         sent = (
-            await self._send_outbound(message, sender, execution.outbound)
+            await self._send_outbound(
+                message,
+                sender,
+                execution.outbound,
+                turn_snapshot=turn_snapshot,
+            )
             if execution.outbound is not None
             else await self._send_text(
                 message,
                 sender,
                 execution.text,
                 record=execution.record_reply,
+                turn_snapshot=turn_snapshot,
             )
         )
         if sent and execution.outbound is not None:
-            await self._commands.mark_media_sent(execution.outbound)
-        if execution.reset_after_reply and sent:
-            await self._conversations.clear(identity)
+            if turn_snapshot is None:
+                await self._commands.mark_media_sent(execution.outbound)
+            else:
+                try:
+                    async with self._effect_gate.permit(
+                        turn_snapshot,
+                        validate=self._validate_turn_snapshot,
+                        timeout_seconds=(self._settings.conversation_effect_gate_timeout_seconds),
+                    ):
+                        await self._commands.mark_media_sent(execution.outbound)
+                except (EffectGateTimeoutError, EffectPermitRejectedError):
+                    logger.warning("media_sent_followup_rejected_by_generation_fence")
         self._log_result(
             event_key,
             identity,
@@ -1048,47 +1264,105 @@ class MessageProcessor:
         text: str,
         *,
         record: bool = True,
+        turn_snapshot: ConversationTurnSnapshot | None = None,
     ) -> bool:
         try:
             outbound = OutboundMessage(text=text)
-            receipt = await sender.send(outbound)
-            if not isinstance(receipt, OutboundSendReceipt):
-                raise TypeError("outbound sender returned no delivery receipt")
-            if record:
-                await self._chat.record_confirmed_outbound(inbound, outbound, receipt)
+            if turn_snapshot is None:
+                await self._send_text_effect(inbound, sender, outbound, record=record)
             else:
-                await publish_notification(
-                    self._event_publisher,
-                    EventName.REPLY_SENT,
-                    {
-                        "trigger_message_id": inbound.message_id,
-                        "platform_message_id": receipt.platform_message_id,
-                        "scope_type": inbound.scope_type.value,
-                        "character_count": len(text),
-                        "delivered": True,
-                        "recorded": False,
-                    },
-                )
+                async with self._effect_gate.permit(
+                    turn_snapshot,
+                    validate=self._validate_turn_snapshot,
+                    timeout_seconds=self._settings.conversation_effect_gate_timeout_seconds,
+                ):
+                    await self._send_text_effect(inbound, sender, outbound, record=record)
             return True
-        except (OSError, RuntimeError, TypeError) as exc:
+        except (
+            EffectGateTimeoutError,
+            EffectPermitRejectedError,
+            OSError,
+            RuntimeError,
+            TypeError,
+        ) as exc:
             logger.error("outbound_send_failed", exc_info=exc)
             return False
+
+    async def _send_text_effect(
+        self,
+        inbound: InboundMessage,
+        sender: OutboundSender,
+        outbound: OutboundMessage,
+        *,
+        record: bool,
+    ) -> None:
+        receipt = await sender.send(outbound)
+        if not isinstance(receipt, OutboundSendReceipt):
+            raise TypeError("outbound sender returned no delivery receipt")
+        if record:
+            await self._chat.record_confirmed_outbound(inbound, outbound, receipt)
+        else:
+            await publish_notification(
+                self._event_publisher,
+                EventName.REPLY_SENT,
+                {
+                    "trigger_message_id": inbound.message_id,
+                    "platform_message_id": receipt.platform_message_id,
+                    "scope_type": inbound.scope_type.value,
+                    "character_count": len(outbound.text),
+                    "delivered": True,
+                    "recorded": False,
+                },
+            )
 
     async def _send_outbound(
         self,
         inbound: InboundMessage,
         sender: OutboundSender,
         outbound: OutboundMessage,
+        *,
+        turn_snapshot: ConversationTurnSnapshot | None = None,
     ) -> bool:
         try:
-            receipt = await sender.send(outbound)
-            if not isinstance(receipt, OutboundSendReceipt):
-                raise TypeError("outbound sender returned no delivery receipt")
-            await self._chat.record_confirmed_outbound(inbound, outbound, receipt)
+            if turn_snapshot is None:
+                await self._send_outbound_effect(inbound, sender, outbound)
+            else:
+                async with self._effect_gate.permit(
+                    turn_snapshot,
+                    validate=self._validate_turn_snapshot,
+                    timeout_seconds=self._settings.conversation_effect_gate_timeout_seconds,
+                ):
+                    await self._send_outbound_effect(inbound, sender, outbound)
             return True
-        except (OSError, RuntimeError) as exc:
+        except (
+            EffectGateTimeoutError,
+            EffectPermitRejectedError,
+            OSError,
+            RuntimeError,
+            TypeError,
+        ) as exc:
             logger.error("outbound_media_send_failed", exc_info=exc)
             return False
+
+    async def _send_outbound_effect(
+        self,
+        inbound: InboundMessage,
+        sender: OutboundSender,
+        outbound: OutboundMessage,
+    ) -> None:
+        receipt = await sender.send(outbound)
+        if not isinstance(receipt, OutboundSendReceipt):
+            raise TypeError("outbound sender returned no delivery receipt")
+        await self._chat.record_confirmed_outbound(inbound, outbound, receipt)
+
+    async def _validate_turn_snapshot(self, snapshot: ConversationTurnSnapshot) -> bool:
+        return self._turn_coordinator.version_matches(
+            snapshot.scope_key,
+            snapshot.coordinator_version,
+        ) and await self._conversation_scopes.generation_matches(
+            snapshot.scope_id,
+            snapshot.generation,
+        )
 
     async def _publish_turn_rejected(self, message: InboundMessage, reason: str) -> None:
         await publish_notification(
@@ -1105,7 +1379,7 @@ class MessageProcessor:
     @staticmethod
     def _log_result(
         event_key: str,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         message: InboundMessage,
         *,
         handler: str,

@@ -1074,6 +1074,7 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
         make_settings(
             database.url,
             max_context_characters=20_000,
+            context_metadata_budget_ratio=0.4,
             memory_automatic_recall_background_limit=10,
             memory_automatic_recall_per_target_limit=10,
         ),

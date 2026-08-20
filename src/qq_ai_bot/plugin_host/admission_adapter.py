@@ -64,11 +64,7 @@ class PluginAdmissionSignalAdapter:
         runtime: RuntimeConfigSnapshot,
     ) -> tuple[SdkAdmissionSignal, ...]:
         signal_context = AdmissionSignalContext(
-            conversation_key=(
-                f"group:{message.group_id}"
-                if message.group_id is not None
-                else f"private:{message.sender.user_id}"
-            ),
+            conversation_key=message.scope().key,
             origin=SdkTurnOrigin(origin.value),
             current=CurrentMessage(
                 message_id=message.message_id,

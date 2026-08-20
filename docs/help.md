@@ -1,12 +1,9 @@
 # Yuki-QQbot
 
-> **3.6.2（未发布）：**近窗左沿只认 `coverage_end`。超预算时同步 extractive，不再从尾巴滑动切窗。
-> 热尾是条数与渲染字符的交集。预算数字只触发压缩。无需新 Alembic。升级见
-> [3.6.2 升级指南](upgrade-3.6.2.md)。
-
-> **3.6.1 正式版：**长会话 Conversation History Rollup。有覆盖摘要后缩短原文近窗，SESSION 前沿
-> 换回被切掉的连续性。Alembic head 为 `0041`，Plugin API 仍为 `2.0`。从 3.6.0 升级见
-> [3.6.1 升级指南](upgrade-3.6.1.md)。
+> **3.7.0 正式版：**群聊短期会话统一为 Bot + 群，Actor 只影响当前轮。旧分层 History
+> Rollup 替换为每个 Scope 一个连续检查点；摘要作为不可信 input，不进入 Provider
+> instructions。Alembic head 为 `0042`，Plugin API 仍为 `2.0`。这是破坏性升级，请先读
+> [3.7.0 升级指南](upgrade-3.7.0.md)。
 
 > **3.6.0 正式版：**删除强制 Planner。普通聊天由 Conversation Runtime 准入后直接进入 Main Agent；
 > Memory Runtime 与 Capability Runtime 在模型前完成本地准备。当时 Alembic head 为 `0040`，
@@ -196,7 +193,7 @@ Yuki-QQbot 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和
 - `/ai` 确定性命令由 `CommandService` 调度并绕过 Main Agent；普通聊天由 Conversation Runtime 准入后进入 `ChatService.handle_turn → AgentRunner → ReplySequenceManager`，`MessageProcessor` 继续负责观察、账本、视觉和最终异常边界。
 - 运行时配置注册表只负责查找、别名和类型转换；热更新、仅影响未来、需重启、受保护/密钥配置分别维护在独立声明目录中。
 - 相关人物按批次读取，避免群聊中按 QQ 串行查询多组资料；群名片仍严格按当前群号隔离。
-- SQLite 使用 WAL 和有限等待支持多个后台 Worker；部署仍定位于单 Bot、小型服务器，未来需要多进程横向扩展时再迁移 PostgreSQL。
+- SQLite 使用 WAL 和短事务支持同一 Application 内的后台 Worker。3.7.0 的 EffectGate 只在单进程内线性化外部效果；同一数据库禁止运行两个主动 Bot 实例。
 - GitHub Actions 会在推送和 PR 时执行 Ruff、严格 mypy、pytest、Echo 示例插件契约测试、Alembic 全新安装和 Docker 构建。
 - GitHub Actions 还会单独验证 Prompt benchmark、模型路由和无真实模型下载的 Genie Worker 日语前端测试。
 - GitHub Actions 的独立 `memory-quality` job 使用合成数据、Fake Model 和 Fake Embedding 运行
@@ -672,7 +669,9 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 | `person_relationships` | 每个 QQ 当前好感度、信任度和自动变化时间 |
 | `relationship_events` | 自动及管理员手动关系变化审计，不重复保存聊天正文 |
 | `relationship_jobs` | 可在重启后继续处理的关系评价任务 |
-| `context_resets` | `/ai new` 的上下文切点 |
+| `conversation_scopes` | Bot-aware 私聊/群聊短期会话、generation、边界和未覆盖计数 |
+| `conversation_rollups` | 每个 Scope 当前 generation 的单一连续检查点 |
+| `conversation_rollup_jobs` | 每个 Scope 单一 signal-only 压缩任务，只有 pending/processing |
 | `agent_actions` | 通用 OneBot 工具的最小审计记录 |
 | `web_search_runs` | 按会话隔离的联网工具运行记录，不保存网页正文 |
 | `web_search_sources` | 真实来源的标题、URL、域名、摘要和发布时间 |
@@ -716,7 +715,7 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
   → 普通聊天成功发送后，关系评价任务入队
 ```
 
-`/ai new` 只写上下文切点，不删除永久账本或人物记忆。
+`/ai new` 把入站命令事件作为 generation 边界，删除当前 Rollup/job，但不删除永久账本或人物记忆。群聊中只允许 Bot 超级管理员执行，且对整个 Bot+群 Scope 生效；私聊用户只重置自己的 Bot+peer Scope。
 
 `/ai forgetme` 不会把命令和确认回复重新写回账本，并删除：
 
@@ -739,7 +738,7 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 - 只有当前真实事件明确 `@` 或回复的群成员，才以独立块加载该人的相关长期事实；
 - 被提及者和最近发言者中最多 5 人仍可提供当前群身份元数据，但最近发言者不会自动成为
   长期记忆检索目标；
-- 当前私聊或当前群在 `12000` 字符总预算内的连续滑动历史；
+- 当前私聊或当前群在 `MAX_CONTEXT_CHARACTERS`（默认 `81920`）总预算内的连续历史，其中 Actor 元数据受 `CONTEXT_METADATA_BUDGET_RATIO` 限制；
 - 只有模型主动调用搜索工具时，才加入更早历史。
 
 相关记忆检索不会调用聊天 LLM。Memory Runtime 按当前真实事件决定召回路径：
@@ -1141,9 +1140,9 @@ Conversation Runtime 自主参与规则：
 | 命令 | 作用 |
 |---|---|
 | `/ai help` | 显示帮助 |
-| `/ai new` | 设置当前用户/场景的新上下文切点 |
-| `/ai status` | 显示连接、模型、上下文和版本 |
-| `/ai stop` | 取消当前用户/场景的模型请求 |
+| `/ai new` | 私聊新建 Bot+peer 会话；群聊由超级管理员为整个 Bot+群切换 generation |
+| `/ai status` | 显示连接、模型、当前 Scope/generation/Rollup 和版本 |
+| `/ai stop` | 取消当前 Bot+peer 或整个 Bot+群 Scope 的可中断请求 |
 | `/ai ping` | 连通性检查 |
 | `/ai voice status|profiles|show|styles|test` | 查看或使用当前本地声线；管理操作仅超级管理员 |
 | `/ai whoami` | 显示 QQ、昵称、本群名片、别名与记忆统计 |
@@ -1293,13 +1292,16 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 |---|---:|
 | `OBSERVE_ENABLED_GROUPS` | `true` |
 | `RECENT_HISTORY_TOOL_LIMIT` | `20` |
-| `LOCAL_CONTEXT_EVENT_LIMIT` | `1000` |
-| `MAX_CONTEXT_CHARACTERS` | `12000`（字符，不是 token） |
+| `LOCAL_CONTEXT_EVENT_LIMIT` | `1024` |
+| `MAX_CONTEXT_CHARACTERS` | `81920`（字符，不是 token） |
+| `CONTEXT_METADATA_BUDGET_RATIO` | `0.06`（约 5k 字符 Actor 元数据上限） |
 | `HISTORY_WINDOW_LOW_WATERMARK_RATIO` | `0.67`（保留键；Prompt 选窗不再使用） |
-| `CONVERSATION_HISTORY_RAW_TAIL_EVENTS` | `32` |
-| `CONVERSATION_HISTORY_RAW_TAIL_CHARACTERS` | `1600`（渲染字符；触发压缩，不滑动切窗） |
-| `CONVERSATION_HISTORY_RAW_TAIL_BUDGET_RATIO` | `0.40` |
-| `CONVERSATION_HISTORY_SYNC_EXTRACTIVE_MAX_SLICES` | `3` |
+| `CONVERSATION_ROLLUP_RAW_TAIL_EVENTS` | `768` |
+| `CONVERSATION_ROLLUP_RAW_TAIL_CHARACTERS` | `65536` |
+| `CONVERSATION_ROLLUP_TRIGGER_EVENTS` / `STOP_EVENTS` | `512` / `192` |
+| `CONVERSATION_ROLLUP_TRIGGER_CHARACTERS` / `STOP_CHARACTERS` | `49152` / `16384` |
+| `CONVERSATION_ROLLUP_FOREGROUND_MAX_BATCHES` | `3` |
+| `CONVERSATION_EFFECT_GATE_TIMEOUT_SECONDS` | `30` |
 | `TOOLING_SELECTED_TOOL_LIMIT` | `32` |
 | `TOOLING_SCHEMA_TOKEN_BUDGET` | `12000` |
 | `MCP_SELECTED_TOOL_LIMIT` | `16` |

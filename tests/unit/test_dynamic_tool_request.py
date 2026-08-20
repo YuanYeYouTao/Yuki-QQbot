@@ -136,6 +136,12 @@ class _Service:
     def _record_memory_mutation_turn_outcome(self, outcome: str) -> None:
         self.mutation_turn_outcomes.append(outcome)
 
+    @staticmethod
+    async def _run_effect(_snapshot: object, effect: object) -> object:
+        """Keep backend unit tests focused on capability dispatch, not fencing."""
+
+        return await effect()  # type: ignore[operator]
+
 
 class _FakeMemorySession:
     def __init__(
@@ -794,7 +800,7 @@ def test_tool_exposure_log_records_final_tool_names(
     backend.definitions(SimpleNamespace(), web_was_used=False)
 
     assert "agent_tools_exposed" in caplog.text
-    assert "album_share" in caplog.text
+    assert "album_share" not in caplog.text
     assert "request_tools" in caplog.text
     assert "private:10001" not in caplog.text
 
@@ -851,7 +857,7 @@ def test_fts_initial_exposure_prefers_positive_music_matches() -> None:
     music = {name for name in names if name.startswith("music_")}
     weather = {name for name in names if name.startswith("weather_")}
 
-    assert music
+    assert not music
     assert not weather
     assert REQUEST_TOOLS_NAME in names
 
@@ -870,7 +876,7 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
     agent_runtime = SimpleNamespace()
 
     first = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
-    assert "album_share" in first
+    assert "album_share" not in first
     assert REQUEST_TOOLS_NAME in first
     assert "song_share" not in first
     assert service._tool_metrics.tool_enabled_turns == 1
@@ -908,7 +914,8 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
     assert service._tool_metrics.request_tools_zero_results == 0
 
     second = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
-    assert {"album_share", "song_share", REQUEST_TOOLS_NAME} <= second
+    assert {"song_share", REQUEST_TOOLS_NAME} <= second
+    assert "album_share" not in second
     assert service._tool_metrics.tool_enabled_turns == 1
 
     song_call = ToolCall(id="song", function=ToolFunction(name="song_share", arguments="{}"))
@@ -933,6 +940,16 @@ async def test_first_real_tool_call_records_initial_schema_hit(
     )
     agent_runtime = SimpleNamespace()
     backend.definitions(agent_runtime, web_was_used=False)
+    request_arguments = json.dumps({"query": "专辑", "max_results": 1}, ensure_ascii=False)
+    request_call = ToolCall(
+        id="request-album",
+        function=ToolFunction(name=REQUEST_TOOLS_NAME, arguments=request_arguments),
+    )
+    backend.begin_batch((request_call,), agent_runtime)
+    requested = json.loads(
+        await backend.execute(REQUEST_TOOLS_NAME, request_arguments, agent_runtime)
+    )
+    assert requested["ok"] is True
     call = ToolCall(id="album", function=ToolFunction(name="album_share", arguments="{}"))
 
     backend.begin_batch((call,), agent_runtime)
@@ -941,9 +958,9 @@ async def test_first_real_tool_call_records_initial_schema_hit(
     )
 
     assert outcome["ok"] is True
-    assert service._tool_metrics.first_round_tool_hits[True] == 1
+    assert service._tool_metrics.first_round_tool_hits[False] == 1
     assert "agent_first_round_tool_hit" in caplog.text
-    assert "hit=True" in caplog.text
+    assert "hit=False" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -956,7 +973,7 @@ async def test_agent_can_request_authorized_tool_outside_initial_exposure() -> N
     agent_runtime = SimpleNamespace()
 
     exposed = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
-    assert "album_share" in exposed
+    assert "album_share" not in exposed
     assert "web_search" not in exposed
 
     arguments = json.dumps(
@@ -1007,3 +1024,78 @@ async def test_request_tools_cannot_load_unauthorized_admin_tool() -> None:
     assert loaded is None or loaded.get("loaded_tools") in (None, [])
     names = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
     assert "admin_execute_action" not in names
+
+
+def test_superuser_and_member_share_first_round_tools() -> None:
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        return {"ok": True, "data": name}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="plugin",
+            source=CapabilityTrustSource.PLUGIN,
+            definitions=lambda _runtime: (_tool("album_share", "搜索并发送网易云专辑卡片"),),
+            execute=execute,
+        )
+    )
+    registry.register(
+        InProcessToolProvider(
+            provider_id="admin",
+            source=CapabilityTrustSource.ADMIN,
+            definitions=lambda _runtime: (_tool("admin_execute_action", "run an admin action"),),
+            execute=execute,
+        )
+    )
+    member = _backend(registry, replace(_runtime(), selection_query="改配置"))[1]
+    admin = _backend(
+        registry,
+        replace(
+            _runtime(),
+            actor_is_superuser=True,
+            allow_admin_actions=True,
+            selection_query="改配置",
+        ),
+    )[1]
+
+    member_names = {tool.name for tool in member.definitions(SimpleNamespace(), web_was_used=False)}
+    admin_names = {tool.name for tool in admin.definitions(SimpleNamespace(), web_was_used=False)}
+    assert member_names == admin_names
+    assert member_names == {REQUEST_TOOLS_NAME}
+    assert "admin_execute_action" not in admin_names
+
+
+@pytest.mark.asyncio
+async def test_superuser_can_request_admin_tool_after_first_round() -> None:
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        return {"ok": True, "data": name}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="admin",
+            source=CapabilityTrustSource.ADMIN,
+            definitions=lambda _runtime: (_tool("admin_execute_action", "run an admin action"),),
+            execute=execute,
+        )
+    )
+    _service, backend = _backend(
+        registry,
+        replace(_runtime(), actor_is_superuser=True, allow_admin_actions=True),
+    )
+    agent_runtime = SimpleNamespace()
+    first = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
+    assert first == {REQUEST_TOOLS_NAME}
+
+    arguments = json.dumps({"query": "admin_execute_action", "max_results": 1})
+    call = ToolCall(
+        id="request-admin",
+        function=ToolFunction(name=REQUEST_TOOLS_NAME, arguments=arguments),
+    )
+    backend.begin_batch((call,), agent_runtime)
+    result = json.loads(await backend.execute(REQUEST_TOOLS_NAME, arguments, agent_runtime))
+    assert result["ok"] is True
+    assert result["data"]["loaded_tools"][0]["name"] == "admin_execute_action"
+    assert "admin_execute_action" in {
+        tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)
+    }

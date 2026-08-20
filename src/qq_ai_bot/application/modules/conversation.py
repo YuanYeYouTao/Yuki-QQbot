@@ -14,8 +14,8 @@ from qq_ai_bot.capabilities import ToolArtifactWriter
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.cadence import ReplyEffectRepository
 from qq_ai_bot.conversation.features import AdmissionFeatureBuilder
-from qq_ai_bot.conversation.history.service import ConversationHistoryService
-from qq_ai_bot.conversation.history.worker import ConversationHistoryWorker
+from qq_ai_bot.conversation.rollup.service import ConversationRollupService
+from qq_ai_bot.conversation.rollup.worker import ConversationRollupWorker
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.memory.attribution import MemoryAttributionWorker
 from qq_ai_bot.memory.auditing import (
@@ -47,6 +47,7 @@ from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService, ToolInvocationRecorder
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
+from qq_ai_bot.services.effect_gate import ConversationEffectGate
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.services.prompt_registry import PromptRegistry
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
@@ -90,8 +91,8 @@ class ConversationBundle:
     memory_dream_worker: DreamWorker
     memory_evidence_compaction_worker: EvidenceCompactionWorker
     relationship_worker: RelationshipWorker
-    conversation_history_service: ConversationHistoryService
-    conversation_history_worker: ConversationHistoryWorker
+    conversation_rollup_service: ConversationRollupService
+    conversation_rollup_worker: ConversationRollupWorker
 
 
 class ConversationModule:
@@ -105,6 +106,7 @@ class ConversationModule:
         permission_catalog: PermissionCatalogService,
         concurrency: ConcurrencyManager,
         turns: ConversationTurnCoordinator,
+        effect_gate: ConversationEffectGate,
         time_service: TimeContextService,
         web_provider: WebSearchProvider | None,
         emoji_effects: EmojiReplyEffectService,
@@ -122,6 +124,7 @@ class ConversationModule:
         self._permission_catalog = permission_catalog
         self._concurrency = concurrency
         self._turns = turns
+        self._effect_gate = effect_gate
         self._time_service = time_service
         self._web_provider = web_provider
         self._emoji_effects = emoji_effects
@@ -218,19 +221,25 @@ class ConversationModule:
             runtime_config=self._runtime_config,
             metrics=persistence.memory_metrics,
         )
-        conversation_history_worker = ConversationHistoryWorker(
-            settings=settings,
-            repository=persistence.conversation_history,
-        )
-        conversation_history_service = ConversationHistoryService(
-            settings=settings,
-            repository=persistence.conversation_history,
-            ledger=persistence.ledger,
+        conversation_rollup_service = ConversationRollupService(
             models=models,
-            notify=conversation_history_worker.notify,
+            config=persistence.conversation_rollups.config,
+            timeout_seconds=settings.conversation_rollup_model_timeout_seconds,
+            metrics=persistence.conversation_rollup_metrics,
         )
-        conversation_history_worker.set_processor(conversation_history_service)
-        persistence.ledger.set_history_observer(conversation_history_service.observe_event)
+        conversation_rollup_worker = ConversationRollupWorker(
+            repository=persistence.conversation_rollups,
+            service=conversation_rollup_service,
+            enabled=settings.conversation_rollup_enabled,
+            concurrency=settings.conversation_rollup_worker_concurrency,
+            poll_seconds=settings.conversation_rollup_poll_seconds,
+            lease_seconds=settings.conversation_rollup_lease_seconds,
+            heartbeat_seconds=settings.conversation_rollup_lease_heartbeat_seconds,
+            retry_max_seconds=settings.conversation_rollup_retry_max_seconds,
+            max_batches_per_claim=(settings.conversation_rollup_worker_max_batches_per_claim),
+            metrics=persistence.conversation_rollup_metrics,
+        )
+        persistence.scoped_events.set_worker_notifier(conversation_rollup_worker.notify)
         chat = ChatService(
             settings=settings,
             model_executor=models,
@@ -256,8 +265,10 @@ class ConversationModule:
             voice_preferences=self._voice_preferences,
             tool_artifacts=self._tool_artifacts,
             tool_invocations=self._tool_invocations,
-            history_repository=persistence.conversation_history,
-            history_coverage=conversation_history_service,
+            rollup_repository=persistence.conversation_rollups,
+            rollup_service=conversation_rollup_service,
+            conversation_scopes=persistence.conversation_scopes,
+            effect_gate=self._effect_gate,
         )
         memory_rebuild_service = MemoryRebuildService(
             settings=settings,
@@ -355,8 +366,8 @@ class ConversationModule:
             memory_dream_worker,
             memory_evidence_compaction_worker,
             relationship_worker,
-            conversation_history_service,
-            conversation_history_worker,
+            conversation_rollup_service,
+            conversation_rollup_worker,
         )
 
     @staticmethod
@@ -408,8 +419,8 @@ class ConversationModule:
             close=bundle.relationship_worker.close,
         )
         lifecycle.register(
-            "conversation_history_worker",
-            start=bundle.conversation_history_worker.start,
-            close=bundle.conversation_history_worker.close,
-            health=bundle.conversation_history_worker.health,
+            "conversation_rollup_worker",
+            start=bundle.conversation_rollup_worker.start,
+            close=bundle.conversation_rollup_worker.close,
+            health=bundle.conversation_rollup_worker.health,
         )

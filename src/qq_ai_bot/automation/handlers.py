@@ -23,7 +23,7 @@ from qq_ai_bot.automation.registry import (
     CapabilityResult,
 )
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool, ToolCall
 from qq_ai_bot.domain.relationships import style_policy
 from qq_ai_bot.emoji.models import (
@@ -708,6 +708,11 @@ class AutomationCapabilityHandlers:
                     self._settings.bot_display_name,
                 )
             if declared.history_limit:
+                conversation_scope = (
+                    ConversationScope.group(context.bot_user_id, context.current_group_id)
+                    if scope is ScopeType.GROUP and context.current_group_id is not None
+                    else ConversationScope.private(context.bot_user_id, context.creator_user_id)
+                )
                 data["recent_history"] = [
                     {
                         "role": "assistant" if row.direction == "outbound" else "user",
@@ -716,10 +721,8 @@ class AutomationCapabilityHandlers:
                             context.local_time.tzinfo
                         ).isoformat(),
                     }
-                    for row in await self._ledger.list_recent(
-                        scope_type=scope,
-                        user_id=context.creator_user_id,
-                        group_id=context.current_group_id if scope is ScopeType.GROUP else None,
+                    for row in await self._ledger.list_scope_recent(
+                        conversation_scope,
                         limit=declared.history_limit,
                     )
                 ]
