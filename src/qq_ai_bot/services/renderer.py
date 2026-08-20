@@ -41,8 +41,13 @@ def strip_internal_history_markers(text: str) -> str:
     cleaned = _INTERNAL_HISTORY_MARKER.sub("", text)
     cleaned = _EVENT_IDENTITY_MARKER.sub("", cleaned)
     cleaned = _MAIN_AGENT_IDENTITY_MARKER.sub("", cleaned)
-    cleaned = _MAIN_AGENT_EVENT_PREFIX.sub("", cleaned)
-    return _BLOCKQUOTE_PREFIX.sub("", cleaned)
+    return _MAIN_AGENT_EVENT_PREFIX.sub("", cleaned)
+
+
+def strip_echoed_blockquote_prefixes(text: str) -> str:
+    """Remove leaked markdown quote markers from outbound QQ text only."""
+
+    return _BLOCKQUOTE_PREFIX.sub("", text)
 
 
 def clean_model_output(text: str, *, max_characters: int) -> str:
@@ -54,6 +59,7 @@ def clean_model_output(text: str, *, max_characters: int) -> str:
     # Identity envelopes belong only to model input. Treat an echoed envelope as
     # an internal annotation wherever it appears, never as ordinary QQ text.
     cleaned = strip_internal_history_markers(cleaned)
+    cleaned = strip_echoed_blockquote_prefixes(cleaned)
     cleaned = _MARKDOWN_LINK.sub(r"\1 (\2)", cleaned)
     cleaned = _HEADING.sub("", cleaned)
     cleaned = _HORIZONTAL_RULE.sub("", cleaned)

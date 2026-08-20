@@ -576,9 +576,70 @@ async def test_plugin_background_reply_exposes_no_business_tools(database: Datab
     assert result.text == "该喝水了"
     assert seen
     names = {name for batch in seen for name in batch}
-    assert names.isdisjoint(
-        {"web_search", "send_emoji", "send_voice", "memory_change", "request_tools"}
+    assert "request_tools" in names
+    assert names.isdisjoint({"send_emoji", "send_voice", "memory_change"})
+
+
+@pytest.mark.asyncio
+async def test_plugin_background_rejects_declared_tool_calls(database: Database) -> None:
+    calls = {"n": 0}
+
+    def responder(request: object) -> ChatResponse:
+        tools = getattr(request, "tools", ())
+        names = {tool.name for tool in tools}
+        if calls["n"] == 0 and "request_tools" in names:
+            calls["n"] += 1
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="req-1",
+                        function=ToolFunction(
+                            name="request_tools",
+                            arguments=json.dumps({"query": "web_search", "max_results": 1}),
+                        ),
+                    ),
+                ),
+            )
+        return ChatResponse(content="该喝水了", latency_seconds=0)
+
+    harness = build_harness(database, make_settings(database.url), FakeLLMProvider(responder))
+    chat = harness.processor._chat
+    runtime = await chat._runtime_config.snapshot(user_id="1001")
+    scope = ConversationScope.private("9999", "1001")
+    appended = await harness.processor._scoped_events.append_external(
+        scope=scope,
+        platform_message_id="ext-2",
+        source_plugin_id="demo",
+        external_source="plugin",
+        external_event_key="reminder-2",
+        external_event_type="reminder",
+        external_payload={},
+        external_target_id="1001",
+        content="插件提醒：该喝水了",
+        occurred_at=datetime.now(UTC),
     )
+    token = await chat._turn_coordinator.begin_background(scope.key)
+    assert token is not None
+    result = await chat.generate_external_reply(
+        event=appended.event,
+        authorization_user_id="1001",
+        runtime=runtime,
+        agent_intent="提醒用户喝水",
+        turn_token=token,
+        turn_snapshot=ConversationTurnSnapshot(
+            scope_id=appended.scope.id,
+            scope_key=scope.key,
+            generation=appended.scope.generation,
+            trigger_event_id=appended.event.id,
+            coordinator_version=token.version,
+        ),
+    )
+    assert result.text == "该喝水了"
+    assert calls["n"] == 1
+    assert result.tool_calls_used == 1
+    assert result.model_requests == 2
 
 
 @pytest.mark.asyncio
