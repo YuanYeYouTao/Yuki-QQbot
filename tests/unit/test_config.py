@@ -271,21 +271,21 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.conversation_autonomous_admission_threshold == 0
     assert settings.conversation_autonomous_batch_limit == 8
     assert settings.reply_hard_max_messages == 10
-    assert settings.max_context_characters == 12_000
-    assert settings.local_context_event_limit == 1_000
+    assert settings.max_context_characters == 81_920
+    assert settings.local_context_event_limit == 1_024
     assert settings.history_window_low_watermark_ratio == 0.67
-    assert settings.context_metadata_budget_ratio == 0.35
+    assert settings.context_metadata_budget_ratio == 0.06
     assert settings.memory_context_limit_per_entity == 4
     assert settings.memory_automatic_recall_continuation_limit == 2
-    assert settings.conversation_rollup_raw_tail_events == 32
-    assert settings.conversation_rollup_raw_tail_characters == 1600
-    assert settings.conversation_rollup_trigger_events == 64
-    assert settings.conversation_rollup_trigger_characters == 8000
-    assert settings.conversation_rollup_stop_events == 16
-    assert settings.conversation_rollup_stop_characters == 2000
-    assert settings.conversation_rollup_batch_max_events == 100
-    assert settings.conversation_rollup_batch_max_characters == 16_000
-    assert settings.conversation_rollup_worker_max_batches_per_claim == 3
+    assert settings.conversation_rollup_raw_tail_events == 768
+    assert settings.conversation_rollup_raw_tail_characters == 65_536
+    assert settings.conversation_rollup_trigger_events == 512
+    assert settings.conversation_rollup_trigger_characters == 49_152
+    assert settings.conversation_rollup_stop_events == 192
+    assert settings.conversation_rollup_stop_characters == 16_384
+    assert settings.conversation_rollup_batch_max_events == 256
+    assert settings.conversation_rollup_batch_max_characters == 32_768
+    assert settings.conversation_rollup_worker_max_batches_per_claim == 4
     assert settings.conversation_rollup_summary_max_characters == 1200
     assert settings.conversation_rollup_retry_max_seconds == 960
     assert settings.conversation_rollup_lease_heartbeat_seconds == 60

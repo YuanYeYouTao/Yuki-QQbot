@@ -120,10 +120,12 @@ class Settings(BaseSettings):
     processed_event_ttl_seconds: int = 86400
     processed_event_cleanup_seconds: int = 3600
     # PromptCompiler uses the repository-wide characters / 4 token estimate.
-    # Keep history meaningfully larger than the old 12K-character window without
-    # making a rolling cache miss resend a six-figure token prompt.
-    max_context_characters: int = 12_000
-    context_metadata_budget_ratio: float = Field(default=0.35, gt=0, lt=1)
+    # History must stay append-only long enough that DeepSeek can persist the
+    # prefix; a 12k pool forced extractive rewrites of input[0] every few dozen
+    # group messages. Keep actor metadata near 5k characters so expanding the
+    # pool does not inflate the unavoidable per-turn miss.
+    max_context_characters: int = 81_920
+    context_metadata_budget_ratio: float = Field(default=0.06, gt=0, lt=1)
     history_window_low_watermark_ratio: float = Field(default=0.67, gt=0, lt=1)
 
     global_llm_concurrency: int = 4
@@ -140,7 +142,7 @@ class Settings(BaseSettings):
     recent_history_tool_limit: int = 20
     # This is a safety ceiling, not the normal window size. The character budget
     # remains the primary bound and rolls history in stable low/high-watermark blocks.
-    local_context_event_limit: int = 1_000
+    local_context_event_limit: int = 1_024
     person_memory_max_entries: int = 100
     person_group_memory_max_entries: int = 50
     preference_max_entries: int = 30
@@ -328,15 +330,15 @@ class Settings(BaseSettings):
     conversation_rollup_poll_seconds: float = Field(default=1.0, gt=0)
     conversation_rollup_lease_seconds: int = Field(default=180, gt=0)
     conversation_rollup_model_timeout_seconds: float = Field(default=60.0, gt=0)
-    conversation_rollup_raw_tail_events: int = Field(default=32, ge=1)
-    conversation_rollup_raw_tail_characters: int = Field(default=1600, ge=1)
-    conversation_rollup_trigger_events: int = Field(default=64, ge=2)
-    conversation_rollup_trigger_characters: int = Field(default=8000, ge=1)
-    conversation_rollup_stop_events: int = Field(default=16, ge=0)
-    conversation_rollup_stop_characters: int = Field(default=2000, ge=0)
-    conversation_rollup_batch_max_events: int = Field(default=100, ge=1)
-    conversation_rollup_batch_max_characters: int = Field(default=16_000, ge=1)
-    conversation_rollup_worker_max_batches_per_claim: int = Field(default=3, ge=1)
+    conversation_rollup_raw_tail_events: int = Field(default=768, ge=1)
+    conversation_rollup_raw_tail_characters: int = Field(default=65_536, ge=1)
+    conversation_rollup_trigger_events: int = Field(default=512, ge=2)
+    conversation_rollup_trigger_characters: int = Field(default=49_152, ge=1)
+    conversation_rollup_stop_events: int = Field(default=192, ge=0)
+    conversation_rollup_stop_characters: int = Field(default=16_384, ge=0)
+    conversation_rollup_batch_max_events: int = Field(default=256, ge=1)
+    conversation_rollup_batch_max_characters: int = Field(default=32_768, ge=1)
+    conversation_rollup_worker_max_batches_per_claim: int = Field(default=4, ge=1)
     conversation_rollup_summary_max_characters: int = Field(default=1200, ge=1)
     conversation_rollup_retry_max_seconds: int = Field(default=960, ge=1)
     conversation_rollup_lease_heartbeat_seconds: float = Field(default=60.0, gt=0)
