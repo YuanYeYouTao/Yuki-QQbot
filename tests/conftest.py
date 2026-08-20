@@ -10,15 +10,21 @@ import pytest_asyncio
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+from qq_ai_bot.conversation.rollup.repository import (
+    ConversationRollupRepository,
+    ConversationScopeRepository,
+)
+from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.domain.messages import OutboundMessage, OutboundSendReceipt
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.model_runtime.executor import require_model_executor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
-    ConversationRepository,
     EmojiDescriptionRepository,
     EventLedgerRepository,
     GroupSettingsRepository,
@@ -30,12 +36,14 @@ from qq_ai_bot.persistence.repositories import (
     UserProfileRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
 from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.command_service import CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
+from qq_ai_bot.services.effect_gate import ConversationEffectGate
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.services.processor import DirectPluginCommandResolver, MessageProcessor
@@ -44,6 +52,7 @@ from qq_ai_bot.services.relationship_evaluator import FakeRelationshipEvaluator
 from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
+from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.services.user_profiles import UserProfileService
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
 from qq_ai_bot.services.vision_service import VisionService
@@ -77,7 +86,10 @@ class MemorySender:
 class Harness:
     settings: Settings
     database: Database
-    conversations: ConversationRepository
+    ledger: EventLedgerRepository
+    scoped_events: ScopedEventLedgerUnitOfWork
+    conversation_scopes: ConversationScopeRepository
+    conversation_rollups: ConversationRollupRepository
     groups: GroupSettingsRepository
     private_users: PrivateUserSettingsRepository
     profiles: UserProfileRepository
@@ -119,7 +131,6 @@ def build_harness(
     command_service: CommandService | None = None,
     direct_plugin_commands: DirectPluginCommandResolver | None = None,
 ) -> Harness:
-    conversations = ConversationRepository(database)
     groups = GroupSettingsRepository(database)
     private_users = PrivateUserSettingsRepository(
         database,
@@ -133,7 +144,22 @@ def build_harness(
     )
     user_profiles = UserProfileService(profiles)
     processed_events = ProcessedEventRepository(database)
+    rollup_config = RollupPolicyConfig(
+        raw_tail_events=settings.conversation_rollup_raw_tail_events,
+        raw_tail_characters=settings.conversation_rollup_raw_tail_characters,
+        trigger_events=settings.conversation_rollup_trigger_events,
+        trigger_characters=settings.conversation_rollup_trigger_characters,
+        stop_events=settings.conversation_rollup_stop_events,
+        stop_characters=settings.conversation_rollup_stop_characters,
+        batch_max_events=settings.conversation_rollup_batch_max_events,
+        batch_max_characters=settings.conversation_rollup_batch_max_characters,
+        summary_max_characters=settings.conversation_rollup_summary_max_characters,
+    )
+    scoped_events = ScopedEventLedgerUnitOfWork(database, config=rollup_config)
     ledger = EventLedgerRepository(database)
+    ledger.set_scoped_writer(scoped_events)
+    conversation_scopes = ConversationScopeRepository(database)
+    conversation_rollups = ConversationRollupRepository(database, rollup_config)
     memories = MemoryFactService(MemoryFactRepository(database))
     relationships = RelationshipRepository(
         database,
@@ -173,6 +199,7 @@ def build_harness(
         else None
     )
     llm = provider or FakeLLMProvider()
+    models = require_model_executor(None, provider=llm, model=settings.llm_model or "fake")
     concurrency = ConcurrencyManager(settings.global_llm_concurrency)
     runtime_config = RuntimeConfigService(settings=settings, database=database)
     time_service = TimeContextService(database, default_timezone=settings.default_timezone)
@@ -182,6 +209,18 @@ def build_harness(
         relationships=relationships,
         evaluator=FakeRelationshipEvaluator(),
     )
+    rollup_service = ConversationRollupService(
+        models=models,
+        config=rollup_config,
+        timeout_seconds=settings.conversation_rollup_model_timeout_seconds,
+    )
+    turn_coordinator = ConversationTurnCoordinator(
+        cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
+        interrupt_autonomous_on_new_message=(
+            settings.conversation_interrupt_autonomous_on_new_message
+        ),
+    )
+    effect_gate = ConversationEffectGate()
     agent_tools = AgentToolService(
         settings=settings,
         ledger=ledger,
@@ -194,7 +233,7 @@ def build_harness(
     )
     chat = ChatService(
         settings=settings,
-        provider=llm,
+        model_executor=models,
         concurrency=concurrency,
         ledger=ledger,
         people=profiles,
@@ -206,10 +245,19 @@ def build_harness(
         source_renderer=SourceRenderer(),
         runtime_config=runtime_config,
         time_service=time_service,
+        rollup_repository=conversation_rollups,
+        rollup_service=rollup_service,
+        conversation_scopes=conversation_scopes,
+        effect_gate=effect_gate,
+        turn_coordinator=turn_coordinator,
     )
     processor = MessageProcessor(
         settings=settings,
-        conversations=conversations,
+        ledger=ledger,
+        scoped_events=scoped_events,
+        conversation_scopes=conversation_scopes,
+        conversation_rollups=conversation_rollups,
+        effect_gate=effect_gate,
         groups=groups,
         private_users=private_users,
         user_profiles=user_profiles,
@@ -224,7 +272,6 @@ def build_harness(
         ),
         concurrency=concurrency,
         onebot_connected=lambda: True,
-        ledger=ledger,
         people=profiles,
         memories=memories,
         relationships=relationships,
@@ -233,12 +280,16 @@ def build_harness(
         vision_service=vision,
         command_service=command_service,
         direct_plugin_commands=direct_plugin_commands,
+        turn_coordinator=turn_coordinator,
         turn_observations=RuntimeTurnObservationRepository(database),
     )
     return Harness(
         settings,
         database,
-        conversations,
+        ledger,
+        scoped_events,
+        conversation_scopes,
+        conversation_rollups,
         groups,
         private_users,
         profiles,

@@ -7,6 +7,9 @@ import logging
 import time
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.conversation.rollup.repository import ConversationScopeRepository
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.plugin_host.notification_repository import (
     BackgroundTurnJobRecord,
@@ -42,6 +45,7 @@ class PluginBackgroundTurnWorker:
         runtime_config: RuntimeConfigService,
         chat: ChatService,
         turns: ConversationTurnCoordinator,
+        conversation_scopes: ConversationScopeRepository,
         turn_observations: TurnObservationRecorder | None = None,
     ) -> None:
         self._repository = repository
@@ -49,6 +53,7 @@ class PluginBackgroundTurnWorker:
         self._runtime_config = runtime_config
         self._chat = chat
         self._turns = turns
+        self._conversation_scopes = conversation_scopes
         self._turn_observations = turn_observations
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
@@ -94,7 +99,9 @@ class PluginBackgroundTurnWorker:
         )
         error_category: str | None = None
         conversation_key = (
-            f"group:{job.target_id}" if job.target_type == "group" else f"private:{job.target_id}"
+            ConversationScope.group(job.bot_user_id, job.target_id).key
+            if job.target_type == "group"
+            else ConversationScope.private(job.bot_user_id, job.target_id).key
         )
         with bind_runtime_turn(correlation):
             try:
@@ -137,9 +144,12 @@ class PluginBackgroundTurnWorker:
             await self._repository.fail_turn(job.id, error_category="source_event_invalid")
             return
 
-        conversation_key = (
-            f"group:{job.target_id}" if job.target_type == "group" else f"private:{job.target_id}"
+        scope = (
+            ConversationScope.group(event.bot_user_id, job.target_id)
+            if event.scope_type is ScopeType.GROUP
+            else ConversationScope.private(event.bot_user_id, job.target_id)
         )
+        conversation_key = scope.key
         token = await self._turns.begin_background(conversation_key)
         if token is None:
             await self._repository.defer_turn(
@@ -162,15 +172,29 @@ class PluginBackgroundTurnWorker:
                 runtime.conversation_policy().interrupt_autonomous_on_new_message
             ),
         )
+        scope_state = await self._conversation_scopes.get(scope)
+        if scope_state is None:
+            await self._repository.fail_turn(
+                job.id,
+                error_category="conversation_scope_missing",
+            )
+            return
+        turn_snapshot = ConversationTurnSnapshot(
+            scope_id=scope_state.id,
+            scope_key=scope.key,
+            generation=scope_state.generation,
+            trigger_event_id=event.id,
+            coordinator_version=token.version,
+        )
         try:
             async with self._turns.track(token, "generation"):
                 result = await self._chat.generate_external_reply(
                     event=event,
                     authorization_user_id=context_user_id,
-                    conversation_key=conversation_key,
                     runtime=runtime,
                     agent_intent=job.agent_intent,
                     turn_token=token,
+                    turn_snapshot=turn_snapshot,
                 )
             await self._repository.finish_turn(
                 job.id,

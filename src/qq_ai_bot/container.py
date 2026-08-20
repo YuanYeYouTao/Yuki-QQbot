@@ -59,6 +59,7 @@ from qq_ai_bot.plugin_host.storage import BoundStorageFacade
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.command_service import CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.services.effect_gate import ConversationEffectGate
 from qq_ai_bot.services.plugin_events import publish_notification
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
@@ -117,7 +118,9 @@ class ApplicationContainer:
             config_registry=self.runtime_config.registry,
             action_registry=self.admin_action_registry,
         )
-        self.conversations = persistence.conversations
+        self.conversation_scopes = persistence.conversation_scopes
+        self.conversation_rollups = persistence.conversation_rollups
+        self.scoped_events = persistence.scoped_events
         self.groups = persistence.groups
         self.private_users = persistence.private_users
         self.user_profile_repository = persistence.people
@@ -155,7 +158,6 @@ class ApplicationContainer:
         self.relationships = persistence.relationships
         self.relationship_jobs = persistence.relationship_jobs
         self.turn_observations = persistence.turn_observations
-        self.conversation_history = persistence.conversation_history
         self.runtime_foundation = RuntimeFoundationModule(
             turn_observability=self.turn_observations,
             superusers=settings.superusers,
@@ -216,6 +218,7 @@ class ApplicationContainer:
                 settings.conversation_interrupt_autonomous_on_new_message
             ),
         )
+        self.conversation_effect_gate = ConversationEffectGate()
         speech = SpeechModule(
             settings=settings.speech,
             preference_repository=self.voice_preferences,
@@ -245,6 +248,7 @@ class ApplicationContainer:
             permission_catalog=self.permission_catalog,
             concurrency=self.concurrency,
             turns=self.turn_coordinator,
+            effect_gate=self.conversation_effect_gate,
             time_service=self.time_context,
             web_provider=self.web_provider,
             emoji_effects=self.emoji_effects,
@@ -278,8 +282,8 @@ class ApplicationContainer:
         self.memory_dream_worker = conversation.memory_dream_worker
         self.memory_evidence_compaction_worker = conversation.memory_evidence_compaction_worker
         self.relationship_worker = conversation.relationship_worker
-        self.conversation_history_worker = conversation.conversation_history_worker
-        self.conversation_history_service = conversation.conversation_history_service
+        self.conversation_rollup_worker = conversation.conversation_rollup_worker
+        self.conversation_rollup_service = conversation.conversation_rollup_service
         admin = AdminModule(
             settings=settings,
             database=self.database,
@@ -353,7 +357,10 @@ class ApplicationContainer:
         self.automation_worker = automation.worker
         self.mcp_automation_bridge = automation.mcp_bridge
         self._plugin_contexts: dict[str, HostPluginContext] = {}
-        self.plugin_notification_repository = PluginNotificationRepository(self.database)
+        self.plugin_notification_repository = PluginNotificationRepository(
+            self.database,
+            self.scoped_events,
+        )
         self.plugin_media_artifacts = PluginMediaArtifactStore(self.database)
         self.plugin_notification_outbox = PluginNotificationOutboxWorker(
             repository=self.plugin_notification_repository,
@@ -366,6 +373,7 @@ class ApplicationContainer:
             runtime_config=self.runtime_config,
             chat=self.chat,
             turns=self.turn_coordinator,
+            conversation_scopes=self.conversation_scopes,
             turn_observations=self.turn_observations,
         )
         self.plugin_module = PluginModule(
@@ -425,7 +433,7 @@ class ApplicationContainer:
         )
         self.command_service = CommandService(
             settings=settings,
-            conversations=self.conversations,
+            rollups=self.conversation_rollups,
             people=self.people,
             memories=self.memories,
             concurrency=self.concurrency,
@@ -452,7 +460,11 @@ class ApplicationContainer:
         )
         self.processor = MessageProcessor(
             settings=settings,
-            conversations=self.conversations,
+            ledger=self.ledger,
+            scoped_events=self.scoped_events,
+            conversation_scopes=self.conversation_scopes,
+            conversation_rollups=self.conversation_rollups,
+            effect_gate=self.conversation_effect_gate,
             groups=self.groups,
             private_users=self.private_users,
             user_profiles=self.user_profiles,
@@ -461,7 +473,6 @@ class ApplicationContainer:
             rate_limiter=self.rate_limiter,
             concurrency=self.concurrency,
             onebot_connected=self.onebot_connected,
-            ledger=self.ledger,
             people=self.people,
             memories=self.memories,
             memory_worker=self.memory_worker,

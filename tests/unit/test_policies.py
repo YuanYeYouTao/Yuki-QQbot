@@ -1,7 +1,7 @@
 """Permission, trigger, and conversation-key tests."""
 
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.services.policies import (
     CommandName,
@@ -163,9 +163,8 @@ def test_self_and_known_bot_messages_are_rejected() -> None:
 
 
 def test_conversation_keys_are_isolated() -> None:
-    assert ConversationIdentity.private("1").key == "private:1"
-    assert ConversationIdentity.private("1").key != ConversationIdentity.private("2").key
-    assert ConversationIdentity.group("9", "1").key == "group:9:user:1"
-    assert ConversationIdentity.group("9", "1").key != ConversationIdentity.group("9", "2").key
-    shared = ConversationIdentity.group("9", "1", ConversationMode.SHARED)
-    assert shared.key == "group:9:user:1"
+    assert ConversationScope.private("bot-a", "1").key == "bot:bot-a:private:1"
+    assert ConversationScope.private("bot-a", "1") != ConversationScope.private("bot-a", "2")
+    assert ConversationScope.group("bot-a", "9").key == "bot:bot-a:group:9"
+    assert ConversationScope.group("bot-a", "9") == ConversationScope.group("bot-a", "9")
+    assert ConversationScope.group("bot-a", "9") != ConversationScope.group("bot-b", "9")

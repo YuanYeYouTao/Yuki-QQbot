@@ -33,7 +33,8 @@ from qq_ai_bot.conversation.participation import (
     AdmissionFeatures,
     LocalAutonomousParticipationPolicy,
 )
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatResponse,
@@ -53,14 +54,12 @@ from qq_ai_bot.emoji.models import (
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.observability import stable_identifier_hash
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.agent_tools import _RUNTIME_SNAPSHOT, AgentToolService, ToolRuntime
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.policies import evaluate_message, replies_to_bot
-from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.time.models import TimeContext
 
@@ -545,33 +544,33 @@ async def test_plugin_background_reply_exposes_no_business_tools(database: Datab
     harness = build_harness(database, make_settings(database.url), FakeLLMProvider(responder))
     chat = harness.processor._chat
     runtime = await chat._runtime_config.snapshot(user_id="1001")
+    scope = ConversationScope.private("9999", "1001")
+    appended = await harness.processor._scoped_events.append_external(
+        scope=scope,
+        platform_message_id="ext-1",
+        source_plugin_id="demo",
+        external_source="plugin",
+        external_event_key="reminder-1",
+        external_event_type="reminder",
+        external_payload={},
+        external_target_id="1001",
+        content="插件提醒：该喝水了",
+        occurred_at=datetime.now(UTC),
+    )
+    token = await chat._turn_coordinator.begin_background(scope.key)
+    assert token is not None
     result = await chat.generate_external_reply(
-        event=EventRecord(
-            id=1,
-            bot_user_id="9999",
-            platform_message_id="ext-1",
-            scope_type=ScopeType.PRIVATE,
-            sender_user_id="1001",
-            direction="inbound",
-            content="插件提醒：该喝水了",
-            visual_summary="",
-            segments=(),
-            occurred_at=datetime.now(UTC),
-            private_peer_user_id="1001",
-            origin="plugin_background",
-            event_kind="external_event",
-            source_plugin_id="demo",
-            external_source="plugin",
-            external_event_type="reminder",
-        ),
+        event=appended.event,
         authorization_user_id="1001",
-        conversation_key="private:1001",
         runtime=runtime,
         agent_intent="提醒用户喝水",
-        turn_token=TurnToken(
-            conversation_key="private:1001",
-            version=1,
-            origin=TurnOrigin.PLUGIN_BACKGROUND,
+        turn_token=token,
+        turn_snapshot=ConversationTurnSnapshot(
+            scope_id=appended.scope.id,
+            scope_key=scope.key,
+            generation=appended.scope.generation,
+            trigger_event_id=appended.event.id,
+            coordinator_version=token.version,
         ),
     )
     assert result.text == "该喝水了"

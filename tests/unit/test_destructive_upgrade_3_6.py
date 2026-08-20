@@ -52,6 +52,13 @@ def _seed_0036_shaped_db(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute(
             """
+            INSERT INTO people(user_id,nickname,enabled,is_bot,first_seen_at,last_seen_at)
+            VALUES('1001','fixture-user',1,0,?,?)
+            """,
+            (now, now),
+        )
+        connection.execute(
+            """
             INSERT INTO memory_facts(
                 scope_type,subject_user_id,group_id,visibility_type,visibility_user_id,
                 visibility_group_id,kind,memory_key,category,content,normalized_content,
@@ -130,7 +137,7 @@ def _seed_0036_shaped_db(path: Path) -> None:
         connection.commit()
 
 
-def test_constructed_3_5_3_deployment_upgrades_to_0041_without_losing_memory(
+def test_constructed_3_5_3_deployment_upgrades_to_0042_without_losing_memory(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "deploy"
@@ -176,9 +183,10 @@ def test_constructed_3_5_3_deployment_upgrades_to_0041_without_losing_memory(
     assert "planner =" not in document
     assert "tool_selection =" not in document
 
+    _migrate(db, "0041")
     _migrate(db, "head")
     with sqlite3.connect(db) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0041",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0042",)
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -186,10 +194,10 @@ def test_constructed_3_5_3_deployment_upgrades_to_0041_without_losing_memory(
         assert "planner_runs" not in tables
         assert "runtime_turn_observations" in tables
         assert "reply_effect_events" in tables
-        assert "conversation_history_states" in tables
-        assert "conversation_history_summaries" in tables
-        assert "conversation_history_summary_members" in tables
-        assert "conversation_history_rollup_jobs" in tables
+        assert "conversation_scopes" in tables
+        assert "conversation_rollups" in tables
+        assert "conversation_rollup_jobs" in tables
+        assert "conversation_history_states" not in tables
         assert connection.execute("SELECT content FROM memory_facts").fetchone() == (_SECRET_FACT,)
         assert connection.execute("SELECT COUNT(*) FROM memory_facts").fetchone() == (1,)
         assert connection.execute("SELECT task FROM model_invocations").fetchone() == ("planner",)
@@ -212,7 +220,7 @@ def test_constructed_3_5_3_deployment_upgrades_to_0041_without_losing_memory(
         assert cadence == ("migrated_planner",)
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
-    with pytest.raises((RuntimeError, CommandError), match="cannot restore deleted planner_runs"):
+    with pytest.raises((RuntimeError, CommandError), match="0042 is irreversible"):
         _downgrade(db, "0039")
     with sqlite3.connect(db) as connection:
         assert connection.execute("SELECT content FROM memory_facts").fetchone() == (_SECRET_FACT,)

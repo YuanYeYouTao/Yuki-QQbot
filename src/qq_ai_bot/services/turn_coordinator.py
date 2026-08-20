@@ -71,11 +71,9 @@ class ConversationTurnCoordinator:
 
     @staticmethod
     def key_for(message: InboundMessage) -> str:
-        """Use one cancellation domain per private peer or whole QQ group."""
+        """Use the exact bot-aware conversation scope as cancellation domain."""
 
-        if message.group_id is not None:
-            return f"group:{message.group_id}"
-        return f"private:{message.sender.user_id}"
+        return message.scope().key
 
     async def notify_message(
         self,
@@ -216,6 +214,30 @@ class ConversationTurnCoordinator:
                 cancelled = True
         return cancelled
 
+    async def cancel_running_before_boundary(self, conversation_key: str) -> bool:
+        """Cancel prior registered stages without advancing the already-admitted command token."""
+
+        async with self._guard:
+            state = self._states.get(conversation_key)
+            tasks = (
+                tuple(task for task in state.tasks.values() if not task.done())
+                if state is not None
+                else ()
+            )
+        current = asyncio.current_task()
+        cancelled = False
+        for task in tasks:
+            if task is not current:
+                task.cancel()
+                cancelled = True
+        return cancelled
+
     def is_current(self, token: TurnToken) -> bool:
         state = self._states.get(token.conversation_key)
         return state is not None and state.version == token.version
+
+    def version_matches(self, conversation_key: str, version: int) -> bool:
+        """Check a persisted turn snapshot without manufacturing a token."""
+
+        state = self._states.get(conversation_key)
+        return state is not None and state.version == version

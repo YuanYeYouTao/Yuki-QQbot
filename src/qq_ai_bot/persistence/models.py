@@ -1410,21 +1410,6 @@ class RelationshipJobModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class ContextResetModel(Base):
-    """A context cutoff that preserves the permanent event ledger."""
-
-    __tablename__ = "context_resets"
-
-    context_key: Mapped[str] = mapped_column(String(255), primary_key=True)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
-    )
-    group_id: Mapped[str | None] = mapped_column(
-        ForeignKey("groups.group_id", ondelete="CASCADE"), nullable=True
-    )
-    reset_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
 class ProcessedEventModel(Base):
     """Durable idempotency record for incoming OneBot events."""
 

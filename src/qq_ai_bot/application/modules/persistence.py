@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.history.repository import ConversationHistoryRepository
+from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
+from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+from qq_ai_bot.conversation.rollup.repository import (
+    ConversationRollupRepository,
+    ConversationScopeRepository,
+)
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.memory.activation import MemoryActivationRepository, MemoryIntentRanker
 from qq_ai_bot.memory.audit import MemoryAuditService
@@ -25,7 +30,6 @@ from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
-    ConversationRepository,
     EmojiDescriptionRepository,
     EventLedgerRepository,
     GroupSettingsRepository,
@@ -37,6 +41,7 @@ from qq_ai_bot.persistence.repositories import (
     UserProfileRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
 from qq_ai_bot.speech.preference_repository import VoicePreferenceRepository
 from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfileRepository
@@ -46,12 +51,15 @@ from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfile
 class PersistenceBundle:
     database: Database
     runtime_config: RuntimeConfigService
-    conversations: ConversationRepository
     groups: GroupSettingsRepository
     private_users: PrivateUserSettingsRepository
     people: UserProfileRepository
     processed_events: ProcessedEventRepository
     ledger: EventLedgerRepository
+    scoped_events: ScopedEventLedgerUnitOfWork
+    conversation_scopes: ConversationScopeRepository
+    conversation_rollups: ConversationRollupRepository
+    conversation_rollup_metrics: ConversationRollupMetrics
     memories: MemoryFactService
     memory_context: MemoryContextService
     memory_index: SQLiteMemoryFTSIndex
@@ -71,7 +79,6 @@ class PersistenceBundle:
     relationships: RelationshipRepository
     relationship_jobs: RelationshipJobRepository
     turn_observations: RuntimeTurnObservationRepository
-    conversation_history: ConversationHistoryRepository
 
 
 class PersistenceModule:
@@ -100,7 +107,12 @@ class PersistenceModule:
             "initial_affection": settings.relationship_initial_affection,
             "initial_trust": settings.relationship_initial_trust,
         }
-        people = UserProfileRepository(database, **initial)
+        memory_rebuilds = MemoryRebuildRepository(database)
+        people = UserProfileRepository(
+            database,
+            **initial,
+            memory_rebuilds=memory_rebuilds,
+        )
         memory_repository = MemoryFactRepository(database)
         memory_metrics = MemoryLifecycleMetrics()
         memories = MemoryFactService(
@@ -140,15 +152,41 @@ class PersistenceModule:
             receipts=memory_receipts,
             metrics=memory_metrics,
         )
+        rollup_config = RollupPolicyConfig(
+            raw_tail_events=settings.conversation_rollup_raw_tail_events,
+            raw_tail_characters=settings.conversation_rollup_raw_tail_characters,
+            trigger_events=settings.conversation_rollup_trigger_events,
+            trigger_characters=settings.conversation_rollup_trigger_characters,
+            stop_events=settings.conversation_rollup_stop_events,
+            stop_characters=settings.conversation_rollup_stop_characters,
+            batch_max_events=settings.conversation_rollup_batch_max_events,
+            batch_max_characters=settings.conversation_rollup_batch_max_characters,
+            summary_max_characters=settings.conversation_rollup_summary_max_characters,
+        )
+        rollup_metrics = ConversationRollupMetrics()
+        scoped_events = ScopedEventLedgerUnitOfWork(
+            database,
+            config=rollup_config,
+            metrics=rollup_metrics,
+        )
+        ledger = EventLedgerRepository(database)
+        ledger.set_scoped_writer(scoped_events)
         return PersistenceBundle(
             database=database,
             runtime_config=runtime_config,
-            conversations=ConversationRepository(database),
             groups=GroupSettingsRepository(database),
             private_users=PrivateUserSettingsRepository(database, **initial),
             people=people,
             processed_events=ProcessedEventRepository(database),
-            ledger=EventLedgerRepository(database),
+            ledger=ledger,
+            scoped_events=scoped_events,
+            conversation_scopes=ConversationScopeRepository(database),
+            conversation_rollups=ConversationRollupRepository(
+                database,
+                rollup_config,
+                metrics=rollup_metrics,
+            ),
+            conversation_rollup_metrics=rollup_metrics,
             memories=memories,
             memory_context=memory_context,
             memory_index=memory_index,
@@ -163,7 +201,7 @@ class PersistenceModule:
                 receipts=memory_receipts,
             ),
             memory_metrics=memory_metrics,
-            memory_rebuilds=MemoryRebuildRepository(database),
+            memory_rebuilds=memory_rebuilds,
             agent_actions=AgentActionRepository(database),
             web_sources=WebSearchSourceRepository(database),
             media_analyses=MediaAnalysisRepository(database),
@@ -184,5 +222,4 @@ class PersistenceModule:
                 max_attempts=settings.relationship_max_attempts,
             ),
             turn_observations=RuntimeTurnObservationRepository(database),
-            conversation_history=ConversationHistoryRepository(database),
         )

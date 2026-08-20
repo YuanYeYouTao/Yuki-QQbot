@@ -41,7 +41,7 @@ from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
 
 def _base_environment() -> dict[str, str]:
     return {
-        "YUKI_VERSION": "3.6.1",
+        "YUKI_VERSION": "3.7.0",
         "ONEBOT_ACCESS_TOKEN": "onebot-test-token",
         "NAPCAT_WEBUI_TOKEN": "napcat-test-token",
         "SUPERUSERS": "12345678",
@@ -221,7 +221,7 @@ def test_first_run_generates_safe_all_disabled_configuration(tmp_path: Path) -> 
 
     assert _configure(paths, ui) == 0
     environment = EnvironmentDocument.load(paths).values()
-    assert environment["YUKI_VERSION"] == "3.6.1"
+    assert environment["YUKI_VERSION"] == "3.7.0"
     assert len(environment["ONEBOT_ACCESS_TOKEN"]) >= 43
     assert len(environment["NAPCAT_WEBUI_TOKEN"]) >= 43
     assert environment["ONEBOT_ACCESS_TOKEN"] != environment["NAPCAT_WEBUI_TOKEN"]
@@ -668,7 +668,7 @@ def test_atomic_commit_backs_up_and_does_not_rewrite_unselected_files(tmp_path: 
         paths,
         document,
         SetupConfiguration(
-            environment={**document.values(), "YUKI_VERSION": "3.6.1"},
+            environment={**document.values(), "YUKI_VERSION": "3.7.0"},
             model_profiles="ignored replacement\n",
             mcp_document={"mcpServers": {"ignored": {}}},
             pending_plugins=("example.guided",),

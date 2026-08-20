@@ -1,6 +1,6 @@
 """Transport-independent domain models."""
 
-from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
@@ -17,8 +17,7 @@ __all__ = [
     "ChatMessage",
     "ChatRequest",
     "ChatResponse",
-    "ConversationIdentity",
-    "ConversationMode",
+    "ConversationScope",
     "InboundMessage",
     "MessageAttachment",
     "OutboundMessage",

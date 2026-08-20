@@ -68,6 +68,10 @@ async def test_request_mapping_is_responses_native_and_flat() -> None:
             {"type": "web_search"},
         ]
         assert "tool_choice" not in payload
+        assert "conversation_prefix_hash" not in payload
+        assert "request_shape_hash" not in payload
+        assert "prompt_snapshot_fingerprint" not in payload
+        assert "static_prompt_revision" not in payload
         assert payload["reasoning"] == {"effort": "max"}
         assert payload["stream"] is False
         return httpx.Response(200, request=request, json=_fixture("text_completed.json"))
@@ -95,6 +99,10 @@ async def test_request_mapping_is_responses_native_and_flat() -> None:
                 ),
                 native_tools=(NativeToolDefinition(type=NativeToolType.WEB_SEARCH),),
                 tool_choice="required",
+                conversation_prefix_hash="prefix-diagnostic",
+                request_shape_hash="shape-diagnostic",
+                prompt_snapshot_fingerprint="snapshot-diagnostic",
+                static_prompt_revision="static-diagnostic",
             )
         )
 

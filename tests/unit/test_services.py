@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from qq_ai_bot.domain.conversations import ConversationIdentity
+from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import ConversationRepository, ProcessedEventRepository
+from qq_ai_bot.persistence.repositories import EventLedgerRepository, ProcessedEventRepository
+from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.renderer import (
@@ -123,15 +125,24 @@ def test_model_output_keeps_event_like_text_inside_an_ordinary_sentence() -> Non
 
 
 @pytest.mark.asyncio
-async def test_conversation_isolation_and_clear(database: Database) -> None:
-    repository = ConversationRepository(database)
-    first = ConversationIdentity.private("1")
-    second = ConversationIdentity.private("2")
-    await repository.add_message(first, role="user", content="first")
-    await repository.add_message(second, role="user", content="second")
-    assert await repository.clear(first) == 1
-    assert await repository.count_messages(first) == 0
-    assert await repository.count_messages(second) == 1
+async def test_bot_aware_private_scope_isolation(database: Database) -> None:
+    repository = EventLedgerRepository(database)
+    first = ConversationScope.private("bot-a", "1")
+    second = ConversationScope.private("bot-b", "1")
+    for index, scope in enumerate((first, second), start=1):
+        await repository.append(
+            bot_user_id=scope.bot_user_id,
+            platform_message_id=f"message-{index}",
+            scope_type=ScopeType.PRIVATE,
+            private_peer_user_id="1",
+            sender_user_id="1",
+            direction="inbound",
+            content=scope.bot_user_id,
+        )
+    assert [row.content for row in await repository.list_scope_recent(first, limit=10)] == ["bot-a"]
+    assert [row.content for row in await repository.list_scope_recent(second, limit=10)] == [
+        "bot-b"
+    ]
 
 
 @pytest.mark.asyncio
@@ -139,15 +150,20 @@ async def test_database_restart_restores_history(tmp_path: Path) -> None:
     url = f"sqlite+aiosqlite:///{(tmp_path / 'restart.db').as_posix()}"
     first_db = Database(url)
     await first_db.create_schema()
-    identity = ConversationIdentity.private("42")
-    await ConversationRepository(first_db).add_message(identity, role="user", content="durable")
+    identity = ConversationScope.private("bot", "42")
+    writer = ScopedEventLedgerUnitOfWork(first_db, config=RollupPolicyConfig())
+    await writer.append(
+        scope=identity,
+        platform_message_id="durable-1",
+        sender_user_id="42",
+        direction="inbound",
+        content="durable",
+    )
     await first_db.close()
 
     second_db = Database(url)
     try:
-        history = await ConversationRepository(second_db).list_context(
-            identity, max_messages=10, max_characters=100
-        )
+        history = await EventLedgerRepository(second_db).list_scope_recent(identity, limit=10)
         assert [item.content for item in history] == ["durable"]
     finally:
         await second_db.close()

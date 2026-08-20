@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.conversations import ConversationMode, ScopeType
+from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
 
 
@@ -53,7 +53,6 @@ class EffectiveGroupPolicy:
 
     enabled: bool
     require_mention: bool = True
-    conversation_mode: ConversationMode = ConversationMode.PER_USER
     autonomous_enabled: bool = True
 
 

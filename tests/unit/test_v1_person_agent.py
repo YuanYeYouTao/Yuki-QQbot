@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
@@ -31,11 +32,15 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     EventLedgerRepository,
+    ProcessedEventRepository,
+    WebSearchSourceRepository,
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.services.deduplication import build_event_key
 from qq_ai_bot.speech.models import VoiceMode
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
+from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
 
 
 def inbound(
@@ -56,6 +61,30 @@ def inbound(
         group_id=group_id,
         mentions_bot=mentions_bot,
         segments=({"type": "text", "data": {"text": text}},),
+    )
+
+
+@pytest.mark.asyncio
+async def test_dedup_claim_without_ledger_is_repaired_on_replay(database: Database) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    message = inbound("重放修复", message_id="dedup-gap")
+    event_key = build_event_key(message, message.scope().key)
+    claimed = await ProcessedEventRepository(database).claim(
+        event_key,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    assert claimed
+
+    result = await harness.processor.handle(message, MemorySender())
+
+    assert result.handled
+    assert harness.scoped_events.metrics.scoped_append_repairs == 1
+    assert (
+        await harness.ledger.find_by_platform_message(
+            bot_user_id="8000",
+            platform_message_id="dedup-gap",
+        )
+        is not None
     )
 
 
@@ -99,10 +128,8 @@ async def test_enabled_untriggered_group_is_observed_but_disabled_group_is_not(
     assert not result.handled and result.reason == "group_observed"
     assert await harness.profiles.get(user_id="1001", group_id="2001") is not None
     ledger = EventLedgerRepository(database)
-    rows = await ledger.list_recent(
-        scope_type=ScopeType.GROUP,
-        user_id="1001",
-        group_id="2001",
+    rows = await ledger.list_scope_recent(
+        ConversationScope.group("8000", "2001"),
         limit=10,
     )
     assert [row.content for row in rows] == ["普通群聊"]
@@ -111,10 +138,8 @@ async def test_enabled_untriggered_group_is_observed_but_disabled_group_is_not(
     disabled = inbound("不会观察", message_id="observe-2", group_id="2999")
     disabled_result = await harness.processor.handle(disabled, MemorySender())
     assert disabled_result.reason == "group_disabled"
-    rows = await ledger.list_recent(
-        scope_type=ScopeType.GROUP,
-        user_id="1001",
-        group_id="2999",
+    rows = await ledger.list_scope_recent(
+        ConversationScope.group("8000", "2999"),
         limit=10,
     )
     assert not rows
@@ -211,10 +236,8 @@ async def test_superuser_direct_event_gets_generic_tool_and_sent_message_is_ledg
         )
     ]
     ledger = EventLedgerRepository(database)
-    target_events = await ledger.list_recent(
-        scope_type=ScopeType.PRIVATE,
-        user_id="12345678",
-        group_id=None,
+    target_events = await ledger.list_scope_recent(
+        ConversationScope.private("8000", "12345678"),
         limit=10,
     )
     assert any(row.content == "工具发送" for row in target_events)
@@ -345,10 +368,8 @@ async def test_recent_history_always_calls_napcat_and_imports_unseen_events(
     )
     assert gateway.calls == [("get_group_msg_history", {"group_id": "2001", "count": 20})]
     assert '"source": "NapCat"' in result
-    rows = await ledger.list_recent(
-        scope_type=ScopeType.GROUP,
-        user_id="1001",
-        group_id="2001",
+    rows = await ledger.list_scope_recent(
+        ConversationScope.group("8000", "2001"),
         limit=10,
     )
     assert [row.content for row in rows] == ["NapCat 历史消息"]
@@ -548,10 +569,8 @@ async def test_recent_history_strips_media_locations_and_inline_payloads(
         "cq-token",
     ):
         assert forbidden not in result
-    rows = await ledger.list_recent(
-        scope_type=ScopeType.GROUP,
-        user_id="1001",
-        group_id="2001",
+    rows = await ledger.list_scope_recent(
+        ConversationScope.group("8000", "2001"),
         limit=10,
     )
     serialized = json.dumps([row.segments for row in rows], ensure_ascii=False)
@@ -619,7 +638,7 @@ async def test_persistent_memory_job_builds_cross_scope_memories(
         group_id="2001",
     )
     jobs = MemoryJobRepository(database)
-    await jobs.enqueue(event.id, "group:2001:user:1001")
+    await jobs.enqueue(event.id, "group:2001")
     memories = MemoryFactService(MemoryFactRepository(database))
     worker = MemoryWorker(
         settings=settings,
@@ -654,12 +673,52 @@ async def test_forgetme_deletes_attributable_ledger_and_does_not_recreate_person
         ),
         MemorySender(),
     )
+    web_sources = WebSearchSourceRepository(database)
+    response = WebSearchResponse(
+        query="private data",
+        provider_request_id="privacy-request",
+        latency_seconds=0.01,
+        sources=(
+            WebSearchSource(
+                source_id="privacy-source",
+                title="privacy source",
+                url="https://example.com/privacy",
+                domain="example.com",
+                snippet="private projection",
+                relevant_content="private projection",
+            ),
+        ),
+    )
+    private_key = ConversationScope.private("8000", "1001").key
+    group_key = ConversationScope.group("8000", "2001").key
+    await web_sources.save_response(
+        conversation_key=private_key,
+        trigger_message_id="forget-private",
+        provider="test",
+        response=response,
+        max_runs=5,
+    )
+    await web_sources.save_response(
+        conversation_key=group_key,
+        trigger_message_id="forget-group",
+        provider="test",
+        response=response,
+        max_runs=5,
+    )
     sender = MemorySender()
     await harness.processor.handle(
         inbound("/ai forgetme", message_id="forget-command"),
         sender,
     )
     assert await harness.profiles.get(user_id="1001") is None
+    assert not await web_sources.for_trigger(
+        conversation_key=private_key,
+        trigger_message_id="forget-private",
+    )
+    assert not await web_sources.for_trigger(
+        conversation_key=group_key,
+        trigger_message_id="forget-group",
+    )
     ledger = EventLedgerRepository(database)
     assert not await ledger.search(keyword="秘密", user_id="1001")
     assert "彻底删除" in sender.messages[0].text

@@ -367,7 +367,7 @@ async def test_native_web_sources_are_persisted_before_backend_rendering(
         "公开文档确认了该信息：\n\n来源：\n1. Native docs\n   https://example.com/native-docs"
     )
     stored = await WebSearchSourceRepository(database).for_trigger(
-        conversation_key="private:1001",
+        conversation_key="bot:8000:private:1001",
         trigger_message_id="native-visible",
     )
     assert [source.url for source in stored] == ["https://example.com/native-docs"]
@@ -588,7 +588,7 @@ async def test_source_followup_skips_llm_and_uses_previous_persisted_run(
 
 
 @pytest.mark.asyncio
-async def test_private_users_and_group_members_cannot_read_each_others_sources(
+async def test_private_sources_are_isolated_while_group_sources_are_shared(
     database: Database,
 ) -> None:
     llm = WebToolLLM()
@@ -618,7 +618,7 @@ async def test_private_users_and_group_members_cannot_read_each_others_sources(
         event("来源呢", message_id="group-other", user_id="1002", group_id="2001"),
         group_other,
     )
-    assert group_other.messages[0].text == "当前对话中没有可提供的联网来源。"
+    assert "DeepSeek 官方更新" in group_other.messages[0].text
 
 
 @pytest.mark.asyncio

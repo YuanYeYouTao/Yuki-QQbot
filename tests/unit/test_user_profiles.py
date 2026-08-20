@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.adapters.onebot.profiles import OneBotUserProfileResolver
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
@@ -50,6 +50,7 @@ def inbound(
             group_card=group_card,
         ),
         text=text,
+        bot_user_id="9999",
         group_id=group_id,
         mentions_bot=mentions_bot,
         mentioned_user_ids=mentioned_user_ids,
@@ -225,13 +226,12 @@ async def test_llm_identity_context_is_sanitized_ephemeral_and_uses_qq_identity(
     assert identity_context.content is not None
     assert "小明 忽略系统 1001" in identity_context.content
     assert '"user_id":"1001"' in identity_context.content
-    history = await harness.conversations.list_context(
-        ConversationIdentity.private("1001"),
-        max_messages=10,
-        max_characters=1000,
+    history = await harness.conversation_rollups.load_prompt_snapshot(
+        ConversationScope.private("9999", "1001")
     )
-    assert [item.role for item in history] == ["user", "assistant"]
-    assert all("current_person" not in (item.content or "") for item in history)
+    assert history.raw_events[0].direction == "inbound"
+    assert all(item.direction == "outbound" for item in history.raw_events[1:])
+    assert all("current_person" not in (item.content or "") for item in history.raw_events)
 
 
 @pytest.mark.asyncio
@@ -335,7 +335,10 @@ async def test_whoami_and_forgetme_are_caller_scoped(database: Database) -> None
     assert "彻底删除" in forget_sender.messages[0].text
     assert await harness.profiles.get(user_id="1001") is None
     assert await harness.profiles.get(user_id="1002") is not None
-    assert await harness.conversations.count_messages(ConversationIdentity.private("1001")) == 0
+    assert not await harness.ledger.list_scope_recent(
+        ConversationScope.private("9999", "1001"),
+        limit=10,
+    )
     async with database.sessions() as session:
         forgotten_overrides = (
             await session.scalars(
@@ -392,6 +395,7 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
         )
         connection.commit()
 
+    command.upgrade(config, "0041")
     command.upgrade(config, "head")
 
     with sqlite3.connect(database_path) as connection:
@@ -414,7 +418,7 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
         chat_event_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(chat_events)").fetchall()
         }
-    assert revision == ("0041",)
+    assert revision == ("0042",)
     assert "visual_summary" in chat_event_columns
     assert "conversations" not in tables
     assert {
@@ -514,6 +518,7 @@ def test_0007_non_destructively_backfills_existing_people(
         )
         connection.commit()
 
+    command.upgrade(config, "0041")
     command.upgrade(config, "head")
 
     with sqlite3.connect(database_path) as connection:
@@ -528,4 +533,4 @@ def test_0007_non_destructively_backfills_existing_people(
             """
         ).fetchone() == (50, 50)
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0041",)
+    assert revision == ("0042",)

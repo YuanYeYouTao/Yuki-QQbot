@@ -98,6 +98,30 @@ async def test_foreground_preempts_running_background_provider() -> None:
     await executor.close()
 
 
+@pytest.mark.asyncio
+async def test_prompt_shape_metrics_compare_repeated_snapshot_without_content() -> None:
+    provider = PreemptibleProvider()
+    executor = _executor(provider)
+
+    def request(content: str, *, revision: str = "static-r1") -> ChatRequest:
+        return ChatRequest(
+            messages=(ChatMessage(role="user", content=content),),
+            conversation_prefix_hash="prefix-a",
+            prompt_snapshot_fingerprint="snapshot-a",
+            static_prompt_revision=revision,
+        )
+
+    await executor.execute(ModelTask.CHAT_AGENT, request("first"))
+    await executor.execute(ModelTask.CHAT_AGENT, request("different content"))
+    await executor.execute(ModelTask.CHAT_AGENT, request("third", revision="static-r2"))
+
+    assert executor.prompt_shape_metrics() == {
+        "conversation_prefix_shape_match_total": 1,
+        "conversation_prefix_shape_split_total": 1,
+    }
+    await executor.close()
+
+
 class SlowCancellationProvider(LLMProvider):
     def __init__(self) -> None:
         self.background_started = asyncio.Event()

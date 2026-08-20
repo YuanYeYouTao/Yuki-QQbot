@@ -21,8 +21,9 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.delivery import ReplyControlState, ReplySequenceSpec
 from qq_ai_bot.conversation.reply import ReplyEffect
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
-from qq_ai_bot.domain.messages import ChatTool, InboundMessage
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import ChatTool, InboundMessage, PromptRequestDiagnostics
 from qq_ai_bot.emoji.models import (
     EmojiPlacement,
     EmojiReplyMode,
@@ -145,6 +146,7 @@ class ToolRuntime:
     tools_closed: bool = False
     read_only: bool = False
     turn_token: TurnToken | None = None
+    turn_snapshot: ConversationTurnSnapshot | None = None
     reply_effects: list[ReplyEffect] | None = None
     reply_target_control: ReplyTargetControl | None = None
     reply_control: ReplyControlState | None = None
@@ -159,6 +161,7 @@ class ToolRuntime:
     memory_exposure_registry: MemoryExposureRegistry | None = None
     memory_intent: MemoryQueryIntent | None = None
     memory_session: object | None = None
+    prompt_diagnostics: PromptRequestDiagnostics | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1399,12 +1402,7 @@ class AgentToolService:
                 detail="必须提供 event_id 或 platform_message_id",
             )
         inbound = runtime.inbound
-        identity = (
-            ConversationIdentity.group(inbound.group_id, inbound.sender.user_id)
-            if inbound.scope_type is ScopeType.GROUP and inbound.group_id is not None
-            else ConversationIdentity.private(inbound.sender.user_id)
-        )
-        reset = await self._ledger.context_reset(identity)
+        scope = inbound.scope()
         max_before = self._settings.conversation_history_around_before
         max_after = self._settings.conversation_history_around_after
         total_limit = self._settings.conversation_history_around_limit
@@ -1423,16 +1421,12 @@ class AgentToolService:
             before -= reduce_before
             extra -= reduce_before
             after = max(0, after - extra)
-        center, earlier, later = await self._ledger.list_around(
-            bot_user_id=inbound.bot_user_id,
-            scope_type=inbound.scope_type,
-            user_id=inbound.sender.user_id,
-            group_id=inbound.group_id,
+        center, earlier, later = await self._ledger.list_scope_around(
+            scope,
             event_id=event_id,
             platform_message_id=platform_message_id,
             before=before,
             after=after,
-            since=reset,
         )
         if center is None:
             return self._result(error="not_found", detail="当前会话找不到这条消息")

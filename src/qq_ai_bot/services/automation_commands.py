@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.conversations import ConversationIdentity
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.time.formatting import local_text
 
@@ -25,7 +25,7 @@ class AutomationCommandHandler:
         self,
         *,
         message: InboundMessage,
-        identity: ConversationIdentity,
+        identity: ConversationScope,
         argument: str,
     ) -> str:
         """Manage owner-scoped tasks through the same service used by Agent tools."""

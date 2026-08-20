@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import os
-import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import cast
@@ -18,12 +17,6 @@ from alembic.config import Config
 from qq_ai_bot import __version__
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.history.errors import HistoryIdentityError, HistoryJobConflictError
-from qq_ai_bot.conversation.history.operations import (
-    ConversationHistoryOperations,
-    parse_history_identity,
-)
-from qq_ai_bot.conversation.history.repository import ConversationHistoryRepository
 from qq_ai_bot.deployment_setup import add_setup_parser, run_setup_command
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
 from qq_ai_bot.memory.embedding.qwen import QwenDashScopeEmbeddingProvider
@@ -55,7 +48,6 @@ from qq_ai_bot.model_runtime import (
     load_model_profile_catalog,
 )
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from qq_ai_bot.plugin_host.manifest import load_manifest
 from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
@@ -82,6 +74,8 @@ from yuki_plugin_sdk.testing.contract import run_plugin_contract_tests
 def _init_database(settings: Settings) -> None:
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+    # 0042 requires an exact 0041 source and a fresh FK-enforced connection.
+    command.upgrade(config, "0041")
     command.upgrade(config, "head")
 
 
@@ -244,28 +238,6 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     apply.add_argument("--database-url", required=True)
     release = commands.add_parser("release-check", help="组合正式发布只读门禁")
     release.add_argument("--database-url")
-
-
-def _add_identity_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--bot-user-id", required=True)
-    parser.add_argument("--scope", required=True, choices=("private", "group"))
-    parser.add_argument("--user-id")
-    parser.add_argument("--group-id")
-    parser.add_argument("--reset-at")
-
-
-def _add_history_rollup_parser(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
-) -> None:
-    history = subparsers.add_parser("history-rollup", help="会话历史摘要的审计、重建与失效")
-    commands = history.add_subparsers(dest="history_rollup_command", required=True)
-    commands.add_parser("status", help="查看 State、待处理/失败 Job 与 Health")
-    _add_identity_arguments(commands.add_parser("inspect", help="按精确会话与 epoch 查看覆盖"))
-    rebuild = commands.add_parser("rebuild", help="从原文事件重建，默认 dry-run")
-    _add_identity_arguments(rebuild)
-    rebuild.add_argument("--commit", action="store_true", help="实际写入；省略则为 dry-run")
-    _add_identity_arguments(commands.add_parser("invalidate", help="只失效派生摘要，不删除原文"))
-    _add_identity_arguments(commands.add_parser("reconcile", help="按账本修复 State 计数"))
 
 
 def _model_catalog(settings: Settings) -> ModelProfileCatalog:
@@ -1016,47 +988,6 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
     return 1
 
 
-async def _history_rollup_command(settings: Settings, args: argparse.Namespace) -> int:
-    database = Database(settings.database_url)
-    try:
-        operations = ConversationHistoryOperations(
-            settings=settings,
-            repository=ConversationHistoryRepository(database),
-            ledger=EventLedgerRepository(database),
-        )
-        action = str(args.history_rollup_command)
-        if action == "status":
-            payload = await operations.status()
-        else:
-            identity = parse_history_identity(
-                bot_user_id=getattr(args, "bot_user_id", None),
-                scope=getattr(args, "scope", None),
-                user_id=getattr(args, "user_id", None),
-                group_id=getattr(args, "group_id", None),
-                reset_at=getattr(args, "reset_at", None),
-            )
-            if action == "inspect":
-                payload = await operations.inspect(identity)
-            elif action == "rebuild":
-                payload = await operations.rebuild(identity, commit=bool(args.commit))
-            elif action == "invalidate":
-                payload = await operations.invalidate(identity)
-            elif action == "reconcile":
-                payload = await operations.reconcile(identity)
-            else:
-                return 1
-        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
-        return 0
-    except HistoryIdentityError as error:
-        print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
-        return 2
-    except HistoryJobConflictError as error:
-        print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
-        return 1
-    finally:
-        await database.close()
-
-
 def main() -> None:
     """Run one explicit administrative subcommand."""
 
@@ -1070,7 +1001,6 @@ def main() -> None:
     _add_speech_parser(subparsers)
     _add_diagnostics_parsers(subparsers)
     _add_memory_parser(subparsers)
-    _add_history_rollup_parser(subparsers)
     args = parser.parse_args()
     if args.command == "setup":
         raise SystemExit(run_setup_command(args))
@@ -1113,8 +1043,6 @@ def main() -> None:
         raise SystemExit(asyncio.run(_runtime_diagnostics(settings, args)))
     elif args.command == "memory":
         raise SystemExit(asyncio.run(_memory_command(settings, args)))
-    elif args.command == "history-rollup":
-        raise SystemExit(asyncio.run(_history_rollup_command(settings, args)))
 
 
 if __name__ == "__main__":

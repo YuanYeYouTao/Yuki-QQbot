@@ -7,7 +7,8 @@ import asyncio
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     InboundMessage,
@@ -27,6 +28,7 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
+from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.chat import _with_memory_mutation_contract
 from qq_ai_bot.services.processor import MENTION_ONLY_CONTEXT, _vision_failure_message
 
@@ -48,6 +50,7 @@ def inbound(
         scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,
         sender=SenderIdentity(user_id),
         text=text,
+        bot_user_id="9999",
         group_id=group_id,
         mentions_bot=mentions_bot,
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image"),) if unsupported else (),
@@ -91,9 +94,10 @@ def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
     mutation_messages = _with_memory_mutation_contract(messages, True)
 
     assert len(mutation_messages) == 2
-    assert mutation_messages[-1].role == "system"
-    assert "真实工具回执" in (mutation_messages[-1].content or "")
-    assert "管理员能力" in (mutation_messages[-1].content or "")
+    assert mutation_messages[-1] is messages[-1]
+    assert mutation_messages[-2].role == "system"
+    assert "真实工具回执" in (mutation_messages[-2].content or "")
+    assert "管理员能力" in (mutation_messages[-2].content or "")
     assert _with_memory_mutation_contract(messages, False) is messages
 
 
@@ -220,16 +224,34 @@ async def test_superuser_memory_search_and_index_diagnostics(database: Database)
 
 
 @pytest.mark.asyncio
-async def test_new_clears_only_current_conversation(database: Database) -> None:
+async def test_new_changes_only_the_current_scope_generation(database: Database) -> None:
     harness = build_harness(database, make_settings(database.url))
-    first = ConversationIdentity.private("1001")
-    second = ConversationIdentity.private("1002")
-    await harness.conversations.add_message(first, role="user", content="one")
-    await harness.conversations.add_message(second, role="user", content="two")
+    first = ConversationScope.private("9999", "1001")
+    second = ConversationScope.private("9999", "1002")
+    await harness.ledger.append(
+        bot_user_id="9999",
+        platform_message_id="old-first",
+        scope_type=ScopeType.PRIVATE,
+        private_peer_user_id="1001",
+        sender_user_id="1001",
+        direction="inbound",
+        content="one",
+    )
+    await harness.ledger.append(
+        bot_user_id="9999",
+        platform_message_id="old-second",
+        scope_type=ScopeType.PRIVATE,
+        private_peer_user_id="1002",
+        sender_user_id="1002",
+        direction="inbound",
+        content="two",
+    )
     sender = MemorySender()
     await harness.processor.handle(inbound("/ai new", message_id="new-1"), sender)
-    assert await harness.conversations.count_messages(first) == 0
-    assert await harness.conversations.count_messages(second) == 1
+    first_snapshot = await harness.conversation_rollups.load_prompt_snapshot(first)
+    second_snapshot = await harness.conversation_rollups.load_prompt_snapshot(second)
+    assert all(event.content != "one" for event in first_snapshot.raw_events)
+    assert [event.content for event in second_snapshot.raw_events] == ["two"]
 
 
 @pytest.mark.asyncio
@@ -392,7 +414,7 @@ async def test_stop_cancels_only_current_task(database: Database) -> None:
     chat_task = asyncio.create_task(
         harness.processor.handle(inbound("slow", message_id="slow"), chat_sender)
     )
-    identity = ConversationIdentity.private("1001")
+    identity = ConversationScope.private("9999", "1001")
     for _ in range(500):
         if harness.concurrency.is_processing(identity.key):
             break
@@ -462,10 +484,25 @@ async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract
 
     await harness.processor._chat.respond(
         message,
-        ConversationIdentity.private("1001"),
+        message.scope(),
         UserProfileSnapshot(user_id="1001", scope_type=ScopeType.PRIVATE, nickname="tester"),
         "撤回一条测试配置",
         sender,
+        turn_token=(
+            token := await harness.processor._turn_coordinator.notify_message(
+                message.scope().key,
+                TurnOrigin.USER_MESSAGE,
+            )
+        ),
+        turn_snapshot=ConversationTurnSnapshot(
+            scope_id=(
+                appended := await harness.processor._scoped_events.append_inbound(message)
+            ).scope.id,
+            scope_key=message.scope().key,
+            generation=appended.scope.generation,
+            trigger_event_id=appended.event.id,
+            coordinator_version=token.version,
+        ),
         structured_memory_command=MemoryStructuredCommand.WRITE,
     )
 
@@ -538,10 +575,8 @@ async def test_group_mention_without_text_starts_a_natural_chat_turn(database: D
     request = provider.requests[0]
     assert request.messages[-1].role == "user"
     assert request.messages[-1].content.endswith(MENTION_ONLY_CONTEXT)
-    events = await EventLedgerRepository(database).list_recent(
-        scope_type=ScopeType.GROUP,
-        user_id="1001",
-        group_id="2001",
+    events = await EventLedgerRepository(database).list_scope_recent(
+        ConversationScope.group("9999", "2001"),
         limit=10,
     )
     inbound_event = next(row for row in events if row.direction == "inbound")
@@ -568,8 +603,6 @@ async def test_send_failure_is_not_retried_or_persisted_as_assistant(database: D
     result = await harness.processor.handle(inbound("hello", message_id="send-fail"), sender)
     assert result.reason == "send_or_storage_failure"
     assert sender.calls == 1
-    identity = ConversationIdentity.private("1001")
-    history = await harness.conversations.list_context(
-        identity, max_messages=10, max_characters=1000
-    )
-    assert [(item.role, item.content) for item in history] == [("user", "hello")]
+    identity = ConversationScope.private("9999", "1001")
+    history = await harness.conversation_rollups.load_prompt_snapshot(identity)
+    assert [(item.direction, item.content) for item in history.raw_events] == [("inbound", "hello")]

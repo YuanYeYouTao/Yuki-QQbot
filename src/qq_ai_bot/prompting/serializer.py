@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
+from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.prompting.models import PromptContribution
 
 DYNAMIC_ENVELOPE_HEADER = "本轮运行资料（按 trust 字段区分可信度）："
@@ -53,3 +55,30 @@ def serialized_characters(contribution: PromptContribution) -> int:
             default=str,
         )
     )
+
+
+def serialized_messages_hash(messages: tuple[ChatMessage, ...]) -> str:
+    """Hash the actual canonical bytes of a provider-neutral message prefix."""
+
+    payload = [
+        {
+            "role": message.role,
+            "content": message.content,
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "type": call.type,
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": call.function.arguments,
+                    },
+                }
+                for call in message.tool_calls
+            ],
+            "tool_call_id": message.tool_call_id,
+            "reasoning_content": message.reasoning_content,
+        }
+        for message in messages
+    ]
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()

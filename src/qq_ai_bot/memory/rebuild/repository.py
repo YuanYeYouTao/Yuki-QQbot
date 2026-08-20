@@ -11,6 +11,7 @@ from typing import Any, cast
 from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from qq_ai_bot.memory.enums import (
@@ -1033,61 +1034,65 @@ class MemoryRebuildRepository:
             await session.delete(run)
             return True
 
-    async def forget_person(self, user_id: str) -> int:
+    async def forget_person(
+        self,
+        user_id: str,
+        *,
+        session: AsyncSession | None = None,
+    ) -> int:
         """Cancel person-only runs and remove exact QQ values from stored selections."""
 
+        if session is None:
+            async with self.database.sessions() as owned_session, owned_session.begin():
+                return await self.forget_person(user_id, session=owned_session)
         now = datetime.now(UTC)
         changed = 0
-        async with self.database.sessions() as session, session.begin():
-            deleted_proposals = await session.execute(
-                delete(MemoryRebuildProposalModel).where(
-                    MemoryRebuildProposalModel.subject_user_id == user_id
-                )
+        deleted_proposals = await session.execute(
+            delete(MemoryRebuildProposalModel).where(
+                MemoryRebuildProposalModel.subject_user_id == user_id
             )
-            changed += int(cast(CursorResult[Any], deleted_proposals).rowcount or 0)
-            rows = (await session.scalars(select(MemoryRebuildRunModel))).all()
-            for row in rows:
-                selection = MemoryRebuildSelection.model_validate_json(row.selection_json)
-                if (
-                    user_id not in selection.sender_user_ids
-                    and user_id not in selection.bot_user_ids
-                ):
-                    continue
-                remaining = tuple(item for item in selection.sender_user_ids if item != user_id)
-                remaining_bots = tuple(item for item in selection.bot_user_ids if item != user_id)
-                other_bounds = bool(
-                    selection.all_events
-                    or remaining_bots
-                    or selection.scope_types
-                    or selection.group_ids
-                    or selection.after
-                    or selection.before
-                    or selection.minimum_event_id
-                    or selection.maximum_event_id
-                    or remaining
-                )
-                if not other_bounds:
-                    remaining = ("[deleted-user]",)
-                sanitized = selection.model_copy(
-                    update={
-                        "sender_user_ids": remaining,
-                        "bot_user_ids": remaining_bots,
-                    }
-                )
-                encoded = json.dumps(
-                    sanitized.model_dump(mode="json"),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                row.selection_json = encoded
-                row.selection_hash = hashlib.sha256(encoded.encode()).hexdigest()
-                if not other_bounds and row.status not in TERMINAL_STATUSES:
-                    row.status = MemoryRebuildRunStatus.CANCELLED.value
-                    row.cancelled_at = now
-                    row.error_category = "privacy_deletion"
-                row.updated_at = now
-                changed += 1
+        )
+        changed += int(cast(CursorResult[Any], deleted_proposals).rowcount or 0)
+        rows = (await session.scalars(select(MemoryRebuildRunModel))).all()
+        for row in rows:
+            selection = MemoryRebuildSelection.model_validate_json(row.selection_json)
+            if user_id not in selection.sender_user_ids and user_id not in selection.bot_user_ids:
+                continue
+            remaining = tuple(item for item in selection.sender_user_ids if item != user_id)
+            remaining_bots = tuple(item for item in selection.bot_user_ids if item != user_id)
+            other_bounds = bool(
+                selection.all_events
+                or remaining_bots
+                or selection.scope_types
+                or selection.group_ids
+                or selection.after
+                or selection.before
+                or selection.minimum_event_id
+                or selection.maximum_event_id
+                or remaining
+            )
+            if not other_bounds:
+                remaining = ("[deleted-user]",)
+            sanitized = selection.model_copy(
+                update={
+                    "sender_user_ids": remaining,
+                    "bot_user_ids": remaining_bots,
+                }
+            )
+            encoded = json.dumps(
+                sanitized.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            row.selection_json = encoded
+            row.selection_hash = hashlib.sha256(encoded.encode()).hexdigest()
+            if not other_bounds and row.status not in TERMINAL_STATUSES:
+                row.status = MemoryRebuildRunStatus.CANCELLED.value
+                row.cancelled_at = now
+                row.error_category = "privacy_deletion"
+            row.updated_at = now
+            changed += 1
         return changed
 
     async def health(

@@ -121,6 +121,9 @@ def upgrade() -> None:
             "plugin_background_turn_jobs",
             "runtime_turn_observations",
             "reply_effect_events",
+            "conversation_scopes",
+            "conversation_rollups",
+            "conversation_rollup_jobs",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

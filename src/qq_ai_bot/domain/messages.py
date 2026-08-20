@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 
 
 def sanitize_display_name(value: str) -> str:
@@ -138,17 +138,17 @@ class InboundMessage:
     reply_sender_user_id: str | None = None
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
-    def conversation(self, *, shared_group: bool = False) -> ConversationIdentity:
-        """Build the conversation identity for this message."""
+    def scope(self, *, bot_user_id: str | None = None) -> ConversationScope:
+        """Build the bot-aware conversation scope for this message."""
 
+        bot = (bot_user_id if bot_user_id is not None else self.bot_user_id).strip()
+        if not bot:
+            raise ValueError("conversation scope requires bot_user_id")
         if self.scope_type is ScopeType.PRIVATE:
-            return ConversationIdentity.private(self.sender.user_id)
+            return ConversationScope.private(bot, self.sender.user_id)
         if self.group_id is None:
             raise ValueError("group message is missing group_id")
-        from qq_ai_bot.domain.conversations import ConversationMode
-
-        mode = ConversationMode.SHARED if shared_group else ConversationMode.PER_USER
-        return ConversationIdentity.group(self.group_id, self.sender.user_id, mode)
+        return ConversationScope.group(bot, self.group_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +278,15 @@ class FunctionCallOutput:
 
 
 @dataclass(frozen=True, slots=True)
+class PromptRequestDiagnostics:
+    """Content-free prompt identity that is never serialized to a provider."""
+
+    conversation_prefix_hash: str
+    prompt_snapshot_fingerprint: str
+    static_prompt_revision: str
+
+
+@dataclass(frozen=True, slots=True)
 class ChatRequest:
     """Provider-independent chat request."""
 
@@ -294,6 +303,10 @@ class ChatRequest:
     native_tools: tuple[NativeToolDefinition, ...] = ()
     continuation: ProviderContinuation | None = None
     function_outputs: tuple[FunctionCallOutput, ...] = ()
+    conversation_prefix_hash: str = ""
+    request_shape_hash: str = ""
+    prompt_snapshot_fingerprint: str = ""
+    static_prompt_revision: str = ""
 
 
 @dataclass(frozen=True, slots=True)

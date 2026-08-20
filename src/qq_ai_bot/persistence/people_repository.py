@@ -11,8 +11,14 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.domain.conversations import ConversationMode, ScopeType
+from qq_ai_bot.conversation.rollup.db_models import (
+    ConversationRollupJobModel,
+    ConversationRollupModel,
+    ConversationScopeModel,
+)
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     AdminOperationEventModel,
@@ -70,10 +76,53 @@ class PeopleRepository:
         *,
         initial_affection: int = 50,
         initial_trust: int = 50,
+        memory_rebuilds: MemoryRebuildRepository | None = None,
     ) -> None:
         self._database = database
         self._initial_affection = initial_affection
         self._initial_trust = initial_trust
+        self._memory_rebuilds = memory_rebuilds
+
+    async def affected_conversation_scopes(
+        self,
+        user_id: str,
+    ) -> tuple[ConversationScope, ...]:
+        """Resolve every conversation whose retained projection may mention a person."""
+
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        ChatEventModel.bot_user_id,
+                        ChatEventModel.scope_type,
+                        ChatEventModel.group_id,
+                        ChatEventModel.private_peer_user_id,
+                    )
+                    .where(
+                        or_(
+                            ChatEventModel.sender_user_id == user_id,
+                            ChatEventModel.private_peer_user_id == user_id,
+                            ChatEventModel.content.contains(user_id),
+                            ChatEventModel.visual_summary.contains(user_id),
+                            ChatEventModel.segments_json.contains(user_id),
+                        )
+                    )
+                    .distinct()
+                )
+            ).all()
+        scopes: dict[str, ConversationScope] = {}
+        for bot_user_id, scope_type, group_id, private_peer_user_id in rows:
+            if scope_type == ScopeType.GROUP.value and group_id is not None:
+                scope = ConversationScope.group(str(bot_user_id), str(group_id))
+            elif private_peer_user_id is not None:
+                scope = ConversationScope.private(
+                    str(bot_user_id),
+                    str(private_peer_user_id),
+                )
+            else:
+                continue
+            scopes[scope.key] = scope
+        return tuple(scopes[key] for key in sorted(scopes))
 
     async def observe(
         self,
@@ -455,10 +504,68 @@ class PeopleRepository:
     async def delete_person(self, user_id: str, *, marker: str = "[已删除用户]") -> bool:
         """Delete all attributable data and redact exact QQ text elsewhere."""
 
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             person = await session.get(PersonModel, user_id)
             if person is None:
                 return False
+            affected_scopes = await self.affected_conversation_scopes_in_session(
+                session,
+                user_id,
+            )
+            privacy_event_match = or_(
+                ChatEventModel.sender_user_id == user_id,
+                ChatEventModel.private_peer_user_id == user_id,
+                ChatEventModel.content.contains(user_id),
+                ChatEventModel.visual_summary.contains(user_id),
+                ChatEventModel.segments_json.contains(user_id),
+            )
+            private_scope_keys = tuple(
+                scope.key
+                for scope in affected_scopes
+                if scope.scope_type is ScopeType.PRIVATE and scope.private_peer_user_id == user_id
+            )
+            web_cleanup_conditions = [
+                WebSearchRunModel.trigger_message_id.in_(
+                    select(ChatEventModel.platform_message_id).where(privacy_event_match)
+                ),
+                WebSearchRunModel.conversation_key == f"private:{user_id}",
+                WebSearchRunModel.conversation_key.like(f"group:%:user:{user_id}"),
+            ]
+            if private_scope_keys:
+                web_cleanup_conditions.append(
+                    WebSearchRunModel.conversation_key.in_(private_scope_keys)
+                )
+            await session.execute(delete(WebSearchRunModel).where(or_(*web_cleanup_conditions)))
+            now = datetime.now(UTC)
+            for scope in affected_scopes:
+                scope_row = await session.scalar(
+                    select(ConversationScopeModel).where(
+                        ConversationScopeModel.scope_key == scope.key
+                    )
+                )
+                if scope_row is None:
+                    continue
+                await session.execute(
+                    delete(ConversationRollupModel).where(
+                        ConversationRollupModel.scope_id == scope_row.id
+                    )
+                )
+                await session.execute(
+                    delete(ConversationRollupJobModel).where(
+                        ConversationRollupJobModel.scope_id == scope_row.id
+                    )
+                )
+                if scope.scope_type is ScopeType.PRIVATE and scope.private_peer_user_id == user_id:
+                    await session.delete(scope_row)
+                else:
+                    scope_row.generation += 1
+                    scope_row.starts_after_event_id = scope_row.last_event_id
+                    scope_row.last_generation_change_event_id = 0
+                    scope_row.uncovered_event_count = 0
+                    scope_row.uncovered_character_count = 0
+                    scope_row.updated_at = now
+            if self._memory_rebuilds is not None:
+                await self._memory_rebuilds.forget_person(user_id, session=session)
             attributable_event_ids = (
                 await session.scalars(
                     select(ChatEventModel.id).where(
@@ -534,16 +641,6 @@ class PeopleRepository:
                 )
             )
             await session.execute(
-                delete(WebSearchRunModel).where(
-                    or_(
-                        WebSearchRunModel.conversation_key == f"private:{user_id}",
-                        WebSearchRunModel.conversation_key.like(
-                            f"group:%:user:{user_id}",
-                        ),
-                    )
-                )
-            )
-            await session.execute(
                 delete(RuntimeConfigOverrideModel).where(
                     RuntimeConfigOverrideModel.scope_type == "user",
                     RuntimeConfigOverrideModel.scope_id == user_id,
@@ -577,6 +674,45 @@ class PeopleRepository:
                 audit.after_json = audit.after_json.replace(user_id, marker)
             await session.delete(person)
             return True
+
+    @staticmethod
+    async def affected_conversation_scopes_in_session(
+        session: AsyncSession,
+        user_id: str,
+    ) -> tuple[ConversationScope, ...]:
+        rows = (
+            await session.execute(
+                select(
+                    ChatEventModel.bot_user_id,
+                    ChatEventModel.scope_type,
+                    ChatEventModel.group_id,
+                    ChatEventModel.private_peer_user_id,
+                )
+                .where(
+                    or_(
+                        ChatEventModel.sender_user_id == user_id,
+                        ChatEventModel.private_peer_user_id == user_id,
+                        ChatEventModel.content.contains(user_id),
+                        ChatEventModel.visual_summary.contains(user_id),
+                        ChatEventModel.segments_json.contains(user_id),
+                    )
+                )
+                .distinct()
+            )
+        ).all()
+        scopes: dict[str, ConversationScope] = {}
+        for bot_user_id, scope_type, group_id, private_peer_user_id in rows:
+            if scope_type == ScopeType.GROUP.value and group_id is not None:
+                scope = ConversationScope.group(str(bot_user_id), str(group_id))
+            elif private_peer_user_id is not None:
+                scope = ConversationScope.private(
+                    str(bot_user_id),
+                    str(private_peer_user_id),
+                )
+            else:
+                continue
+            scopes[scope.key] = scope
+        return tuple(scopes[key] for key in sorted(scopes))
 
 
 class UserProfileRepository(PeopleRepository):
@@ -631,7 +767,6 @@ class GroupSettingsRepository:
             group_id=group_id,
             enabled=row.enabled,
             require_mention=row.require_mention,
-            conversation_mode=ConversationMode.SHARED,
             autonomous_enabled=row.autonomous_enabled,
             name=row.name,
         )
@@ -653,7 +788,6 @@ class GroupSettingsRepository:
             group_id=group_id,
             enabled=enabled,
             require_mention=row.require_mention,
-            conversation_mode=ConversationMode.SHARED,
             autonomous_enabled=row.autonomous_enabled,
             name=row.name,
         )
@@ -683,7 +817,6 @@ class GroupSettingsRepository:
             group_id=group_id,
             enabled=row.enabled,
             require_mention=row.require_mention,
-            conversation_mode=ConversationMode.SHARED,
             autonomous_enabled=enabled,
             name=row.name,
         )
@@ -711,7 +844,6 @@ class GroupSettingsRepository:
             group_id=group_id,
             enabled=row.enabled,
             require_mention=row.require_mention,
-            conversation_mode=ConversationMode.SHARED,
             autonomous_enabled=row.autonomous_enabled,
             name=row.name,
         )

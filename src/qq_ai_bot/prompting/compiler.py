@@ -13,7 +13,11 @@ from qq_ai_bot.prompting.models import (
     PromptProgram,
     PromptStability,
 )
-from qq_ai_bot.prompting.serializer import serialize_dynamic, serialized_characters
+from qq_ai_bot.prompting.serializer import (
+    serialize_dynamic,
+    serialized_characters,
+    serialized_messages_hash,
+)
 
 
 class PromptCompiler:
@@ -44,34 +48,35 @@ class PromptCompiler:
         )
         static = tuple(item for item in ordered if item.stability is PromptStability.STATIC)
         session = tuple(item for item in ordered if item.stability is PromptStability.SESSION)
+        if session:
+            raise ValueError("SESSION prompt contributions are not supported in 3.7.0")
         dynamic = tuple(item for item in ordered if item.stability is PromptStability.TURN)
         selected_dynamic = self._select(dynamic, dynamic_character_budget)
         stable_text = "\n\n".join(item.content or "" for item in static)
-        session_text = "\n\n".join(item.content or "" for item in session)
         dynamic_text = serialize_dynamic(selected_dynamic)
         messages: list[ChatMessage] = []
         if stable_text:
             messages.append(ChatMessage(role="system", content=stable_text))
-        if session_text:
-            messages.append(ChatMessage(role="system", content=session_text))
         messages.extend(history)
         if current_message is not None:
             messages.append(_with_dynamic_prefix(current_message, dynamic_text))
         elif dynamic_text:
-            messages.append(ChatMessage(role="system", content=dynamic_text))
+            messages.append(ChatMessage(role="user", content=dynamic_text))
         stable_hash = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()
+        prefix_messages = (
+            tuple(messages[:-1]) if current_message or dynamic_text else tuple(messages)
+        )
+        conversation_prefix_hash = (
+            serialized_messages_hash(prefix_messages) if prefix_messages else ""
+        )
         history_characters = sum(len(item.content or "") for item in history)
         current_message_characters = len(current_message.content or "") if current_message else 0
         total_characters = (
-            len(stable_text)
-            + len(session_text)
-            + len(dynamic_text)
-            + history_characters
-            + current_message_characters
+            len(stable_text) + len(dynamic_text) + history_characters + current_message_characters
         )
         return CompiledPrompt(
             messages=tuple(messages),
-            selected=static + session + selected_dynamic,
+            selected=static + selected_dynamic,
             metrics=PromptMetrics(
                 static_characters=len(stable_text),
                 dynamic_characters=len(dynamic_text),
@@ -79,10 +84,11 @@ class PromptCompiler:
                 current_message_characters=current_message_characters,
                 total_characters=total_characters,
                 estimated_tokens=math.ceil(total_characters / 4),
-                contribution_count=len(static) + len(session) + len(selected_dynamic),
+                contribution_count=len(static) + len(selected_dynamic),
                 message_count=len(messages),
                 stable_prefix_hash=stable_hash,
-                session_characters=len(session_text),
+                session_characters=0,
+                conversation_prefix_hash=conversation_prefix_hash,
             ),
         )
 

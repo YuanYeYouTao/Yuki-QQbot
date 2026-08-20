@@ -19,7 +19,8 @@ from qq_ai_bot.conversation.participation import (
     AdmissionSignalHint,
     LocalAutonomousParticipationPolicy,
 )
-from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.llm.base import LLMError
@@ -95,16 +96,17 @@ class AutonomousGroupService:
         group_id = message.group_id
         if group_id is None:
             return
-        state = self._states.setdefault(group_id, _GroupState())
+        scope_key = message.scope().key
+        state = self._states.setdefault(scope_key, _GroupState())
         state.messages.append(message)
         state.profiles.append(profile)
         state.senders.append(sender)
         state.latest_token = turn_token
         state.revision += 1
         state.changed.set()
-        self._ensure_task(group_id, state)
+        self._ensure_task(scope_key, state)
 
-    def _ensure_task(self, group_id: str, state: _GroupState) -> None:
+    def _ensure_task(self, scope_key: str, state: _GroupState) -> None:
         """Keep exactly one coalescing worker alive for one group."""
 
         if self._closed:
@@ -112,17 +114,17 @@ class AutonomousGroupService:
         if state.task is not None and not state.task.done():
             return
         task = asyncio.create_task(
-            self._after_silence(group_id),
-            name=f"conversation-group-{group_id}",
+            self._after_silence(scope_key),
+            name="conversation-scope-autonomous",
         )
         state.task = task
 
         def task_done(completed: asyncio.Task[None]) -> None:
-            self._task_done(group_id, completed)
+            self._task_done(scope_key, completed)
 
         task.add_done_callback(task_done)
 
-    def _task_done(self, group_id: str, completed: asyncio.Task[None]) -> None:
+    def _task_done(self, scope_key: str, completed: asyncio.Task[None]) -> None:
         """Own a detached task, consume its outcome, and release its state reference."""
 
         try:
@@ -135,25 +137,28 @@ class AutonomousGroupService:
                 "autonomous_group_task_failed exception_category=%s",
                 type(exc).__name__,
             )
-        state = self._states.get(group_id)
+        state = self._states.get(scope_key)
         if state is None or state.task is not completed:
             return
         state.task = None
         # A message can arrive between the worker's final revision check and this
         # callback. Its event is the hand-off that prevents that update being lost.
         if state.changed.is_set():
-            self._ensure_task(group_id, state)
+            self._ensure_task(scope_key, state)
 
-    async def _after_silence(self, group_id: str) -> None:
+    async def _after_silence(self, scope_key: str) -> None:
         while True:
             revision = -1
             try:
+                state = self._states.get(scope_key)
+                if state is None or not state.messages:
+                    return
+                group_id = state.messages[-1].group_id
+                if group_id is None:
+                    return
                 runtime = await self._runtime_config.snapshot(group_id=group_id)
                 policy = _conversation_policy(runtime)
                 if not policy.autonomous_enabled:
-                    return
-                state = self._states.get(group_id)
-                if state is None or not state.messages:
                     return
                 # One worker absorbs every update until the group has remained
                 # quiet for a full debounce interval.
@@ -166,9 +171,9 @@ class AutonomousGroupService:
                     )
                 except TimeoutError:
                     pass
-                if not self._is_latest(group_id, revision):
+                if not self._is_latest(scope_key, revision):
                     continue
-                await self._run_latest(group_id, revision, runtime)
+                await self._run_latest(scope_key, revision, runtime)
             except asyncio.CancelledError:
                 raise
             except (
@@ -188,17 +193,17 @@ class AutonomousGroupService:
                     "autonomous_group_task_failed exception_category=%s",
                     type(exc).__name__,
                 )
-            if revision >= 0 and not self._is_latest(group_id, revision):
+            if revision >= 0 and not self._is_latest(scope_key, revision):
                 continue
             return
 
-    def _is_latest(self, group_id: str, revision: int) -> bool:
-        state = self._states.get(group_id)
+    def _is_latest(self, scope_key: str, revision: int) -> bool:
+        state = self._states.get(scope_key)
         return state is not None and state.revision == revision
 
     async def _run_latest(
         self,
-        group_id: str,
+        scope_key: str,
         revision: int,
         runtime: RuntimeConfigSnapshot,
     ) -> None:
@@ -215,9 +220,10 @@ class AutonomousGroupService:
             origin=TurnOrigin.AUTONOMOUS_GROUP,
         )
         error_category: str | None = None
+        observation_key = scope_key
         with bind_runtime_turn(correlation):
             try:
-                await self._admit_latest(group_id, revision, runtime)
+                await self._admit_latest(scope_key, revision, runtime)
             except BaseException as exc:
                 error_category = type(exc).__name__
                 raise
@@ -226,7 +232,7 @@ class AutonomousGroupService:
                     observation = build_turn_observation(
                         correlation,
                         scope_type="group",
-                        conversation_key=f"group:{group_id}",
+                        conversation_key=observation_key,
                         admission_outcome="autonomous_group",
                         handled=error_category is None,
                         sent_messages=0,
@@ -237,11 +243,11 @@ class AutonomousGroupService:
 
     async def _admit_latest(
         self,
-        group_id: str,
+        scope_key: str,
         revision: int,
         runtime: RuntimeConfigSnapshot,
     ) -> None:
-        state = self._states.get(group_id)
+        state = self._states.get(scope_key)
         if state is None or not state.messages:
             return
         last = state.messages[-1]
@@ -250,7 +256,7 @@ class AutonomousGroupService:
         token = state.latest_token
         if token is None:
             token = await self._coordinator.notify_message(
-                f"group:{group_id}",
+                last.scope().key,
                 TurnOrigin.AUTONOMOUS_GROUP,
             )
         else:
@@ -276,7 +282,7 @@ class AutonomousGroupService:
         snapshot = LocalAutonomousParticipationPolicy(
             threshold=policy.autonomous_admission_threshold,
         ).evaluate(features)
-        conversation_key = f"group:{group_id}"
+        conversation_key = last.scope().key
         publisher = getattr(self._chat, "_event_publisher", None)
         if not snapshot.should_participate:
             await publish_notification(
@@ -292,12 +298,24 @@ class AutonomousGroupService:
                 ),
             )
             return
-        if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
+        if not self._is_latest(scope_key, revision) or not self._coordinator.is_current(token):
             return
-        identity = ConversationIdentity.group(
-            group_id,
-            last.sender.user_id,
-            ConversationMode.SHARED,
+        if last.group_id is None:
+            return
+        identity = ConversationScope.group(last.bot_user_id, last.group_id)
+        scope_state = await self._chat._conversation_scopes.get(identity)
+        trigger_event = await self._chat._ledger.find_by_platform_message(
+            bot_user_id=identity.bot_user_id,
+            platform_message_id=last.message_id,
+        )
+        if scope_state is None or trigger_event is None:
+            return
+        turn_snapshot = ConversationTurnSnapshot(
+            scope_id=scope_state.id,
+            scope_key=identity.key,
+            generation=scope_state.generation,
+            trigger_event_id=trigger_event.id,
+            coordinator_version=token.version,
         )
         await publish_notification(
             publisher,
@@ -321,6 +339,7 @@ class AutonomousGroupService:
                 autonomous=True,
                 runtime_snapshot=runtime,
                 turn_token=token,
+                turn_snapshot=turn_snapshot,
             )
         except (TurnInterruptedError, TurnSupersededError):
             outcome = "turn_interrupted"
@@ -340,9 +359,9 @@ class AutonomousGroupService:
                 ),
             )
 
-    async def wait_until_idle(self, group_id: str) -> None:
+    async def wait_until_idle(self, scope_key: str) -> None:
         while True:
-            state = self._states.get(group_id)
+            state = self._states.get(scope_key)
             if state is None or state.task is None:
                 return
             task = state.task

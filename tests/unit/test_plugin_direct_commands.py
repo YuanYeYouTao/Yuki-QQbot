@@ -17,7 +17,7 @@ from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
     InboundMessage,
@@ -211,6 +211,7 @@ async def test_adapter_rechecks_lifecycle_permission_and_trusted_context() -> No
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity("10001"),
         text="*攻击 @玩家",
+        bot_user_id="99999",
         group_id="20001",
         mentioned_user_ids=("10002",),
         received_at=datetime.now(UTC),
@@ -219,7 +220,7 @@ async def test_adapter_rechecks_lifecycle_permission_and_trusted_context() -> No
 
     result = await adapter.execute_direct(
         message=message,
-        identity=ConversationIdentity.group("20001", "10001"),
+        identity=ConversationScope.group("99999", "20001"),
         match=match,
         runtime=cast(RuntimeConfigSnapshot, SimpleNamespace()),
     )
@@ -236,7 +237,7 @@ async def test_adapter_rechecks_lifecycle_permission_and_trusted_context() -> No
     manager.running_plugin_ids = ()
     assert "未运行" in await adapter.execute_direct(
         message=message,
-        identity=ConversationIdentity.group("20001", "10001"),
+        identity=ConversationScope.group("99999", "20001"),
         match=match,
         runtime=cast(RuntimeConfigSnapshot, SimpleNamespace()),
     )
@@ -259,7 +260,7 @@ async def test_adapter_keeps_registered_command_timeout() -> None:
 
     result = await adapter.execute_direct(
         message=message,
-        identity=ConversationIdentity.group("2001", "10001"),
+        identity=ConversationScope.group("99999", "2001"),
         match=DirectCommandMatch("*", PLUGIN_ID, "play", "签到", True, "active"),
         runtime=cast(RuntimeConfigSnapshot, SimpleNamespace()),
     )
@@ -297,7 +298,7 @@ class RecordingCommandService:
     async def execute_direct_plugin(
         self,
         message: InboundMessage,
-        _identity: ConversationIdentity,
+        _identity: ConversationScope,
         match: DirectCommandMatch,
     ) -> CommandExecution:
         self.calls.append(match)
@@ -322,6 +323,7 @@ def _inbound(
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity("10001"),
         text=text,
+        bot_user_id="99999",
         group_id=group_id,
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image"),) if image else (),
         received_at=datetime.now(UTC),
@@ -349,7 +351,7 @@ async def test_management_enable_reports_start_failure_instead_of_success() -> N
 
     result = await adapter.execute(
         message=_inbound("/ai plugin enable github-monitor", message_id="plugin-enable-failed"),
-        identity=ConversationIdentity.group("2001", "10001"),
+        identity=ConversationScope.group("99999", "2001"),
         argument="enable github-monitor",
         runtime=cast(RuntimeConfigSnapshot, SimpleNamespace()),
     )

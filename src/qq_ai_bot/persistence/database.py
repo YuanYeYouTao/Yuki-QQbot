@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +149,22 @@ class Database:
             return True
         except (OSError, RuntimeError, SQLAlchemyError):
             return False
+
+    @asynccontextmanager
+    async def immediate_session(self) -> AsyncIterator[AsyncSession]:
+        """Open one short writer transaction, using BEGIN IMMEDIATE on SQLite."""
+
+        async with self.sessions() as session:
+            try:
+                if self.url.startswith("sqlite+"):
+                    await session.execute(text("BEGIN IMMEDIATE"))
+                else:
+                    await session.begin()
+                yield session
+                await session.commit()
+            except BaseException:
+                await session.rollback()
+                raise
 
     async def close(self) -> None:
         """Dispose pooled database connections."""

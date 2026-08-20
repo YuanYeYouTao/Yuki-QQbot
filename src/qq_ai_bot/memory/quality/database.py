@@ -18,6 +18,7 @@ def migrate_sqlite_database(repository_root: Path, path: Path) -> None:
     previous = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = database_url
     try:
+        command.upgrade(config, "0041")
         command.upgrade(config, "head")
     finally:
         if previous is None:

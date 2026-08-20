@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.conversation.session import ConversationSessionLifecycle
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.contracts import (
@@ -65,8 +66,10 @@ def _context() -> TurnContext:
         ),
         scene=TurnSceneFacts(scope_type=ScopeType.GROUP, group_id="g-1"),
         runtime_config=_StubConfig(),  # type: ignore[arg-type]
-        conversation=ConversationIdentity.group("g-1", "u-1"),
-        coordination_key=TurnCoordinationKey.for_group("g-1"),
+        scope=ConversationScope.group("bot-9", "g-1"),
+        actor=inbound.sender,
+        turn_snapshot=ConversationTurnSnapshot(1, "bot:bot-9:group:g-1", 1, 1, 1),
+        coordination_key=TurnCoordinationKey.for_group("bot-9", "g-1"),
         turn_id="turn-1",
         turn_token=None,
         current_time=_StubTime(),  # type: ignore[arg-type]

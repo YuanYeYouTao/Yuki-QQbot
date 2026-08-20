@@ -138,17 +138,18 @@ async def test_autonomous_decline_emits_score_and_reason_codes() -> None:
     )
     state.senders.append(cast(Any, object()))
     state.revision = 1
-    state.latest_token = await coordinator.notify_message("group:2001", observation=True)
-    service._states["2001"] = state
+    scope_key = message.scope().key
+    state.latest_token = await coordinator.notify_message(scope_key, observation=True)
+    service._states[scope_key] = state
 
-    await service._admit_latest("2001", 1, await _SnapshotRuntime().snapshot())
+    await service._admit_latest(scope_key, 1, await _SnapshotRuntime().snapshot())
 
     assert chat.respond.await_count == 0
     assert [event.name for event in publisher.events] == [EventName.AUTONOMOUS_DECLINED]
     payload = publisher.events[0].payload
     assert payload["origin"] == "autonomous_group"
     assert payload["conversation_key_hash"] == stable_identifier_hash(
-        "group:2001",
+        scope_key,
         kind="conversation",
     )
     assert payload["score"] < payload["threshold"]

@@ -9,7 +9,7 @@
 <p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.6.1"><img src="https://img.shields.io/badge/Version-3.6.1-orange" alt="Version 3.6.1"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.7.0"><img src="https://img.shields.io/badge/Version-3.7.0-orange" alt="Version 3.7.0"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2 and OneBot v11">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -432,7 +432,7 @@ MCP Client 支持 stdio 和 Streamable HTTP，包含动态发现、元数据缓�
 
 ### 1. 运行引导安装器
 
-从 [Yuki 3.6.1 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.6.1)
+从 [Yuki 3.7.0 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.7.0)
 下载对应安装器。它会校验部署包、拉取正式镜像，并在一次性容器中启动彩色向导；宿主机不需要
 Python、uv 或源码。
 
@@ -642,9 +642,9 @@ GitHub Actions 还会验证 Docker Compose、运行时镜像、隔离的 Genie-T
 ## 文档
 
 - [完整使用帮助](docs/help.md)
-- [3.6.1 发布与升级说明](docs/releases/v3.6.1.md)
-- [从 3.6.0 升级到 3.6.1](docs/upgrade-3.6.1.md)
-- [会话历史 Rollup 合同](docs/architecture/conversation-rollup.md)
+- [3.7.0 发布说明](docs/releases/v3.7.0.md)
+- [从 3.6.1 升级到 3.7.0](docs/upgrade-3.7.0.md)
+- [ConversationScope 与单检查点 Rollup 合同](docs/architecture/conversation-rollup.md)
 - [3.6.1 History Rollup 性能报告](docs/performance/3.6.1-history-rollup-report.md)
 - [3.6.0 运行时架构](docs/architecture/yuki-3.6.0-runtime.md)
 - [3.6.0 发布与升级说明](docs/releases/v3.6.0.md)

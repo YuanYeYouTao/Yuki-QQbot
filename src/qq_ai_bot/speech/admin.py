@@ -300,11 +300,7 @@ class SpeechAdminService:
                 style_hint=style,
                 text=text,
                 split_sentence=runtime.speech.split_sentence,
-                conversation_key=(
-                    f"group:{message.group_id}"
-                    if message.group_id is not None
-                    else f"private:{message.sender.user_id}"
-                ),
+                conversation_key=message.scope().key,
                 trigger_event_id=None,
                 turn_token=None,
             ),

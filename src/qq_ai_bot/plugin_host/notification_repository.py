@@ -12,10 +12,12 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel, GroupModel, PersonModel
 from qq_ai_bot.persistence.repository_helpers import _ensure_person
+from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
     PluginBackgroundTurnJobModel,
@@ -64,8 +66,16 @@ class BackgroundTurnJobRecord:
 class PluginNotificationRepository:
     """Keep publication idempotency and delivery work in Host-owned transactions."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self,
+        database: Database,
+        scoped_events: ScopedEventLedgerUnitOfWork | None = None,
+    ) -> None:
         self._database = database
+        self._scoped_events = scoped_events or ScopedEventLedgerUnitOfWork(
+            database,
+            config=RollupPolicyConfig(),
+        )
 
     async def grant_target(
         self,
@@ -214,7 +224,6 @@ class PluginNotificationRepository:
                 receipt = await self._publish_once(
                     plugin_id=plugin_id,
                     request=request,
-                    payload_json=payload_json,
                 )
                 logger.info(
                     "plugin_external_event_published plugin_id=%s event_type=%s "
@@ -236,10 +245,25 @@ class PluginNotificationRepository:
         *,
         plugin_id: str,
         request: PublishNotificationRequest,
-        payload_json: str,
     ) -> NotificationPublishReceipt:
         now = datetime.now(UTC)
         target = request.target
+        scope, bot_user_id = await self._resolve_publication_scope(
+            plugin_id=plugin_id,
+            target=target,
+        )
+        appended = await self._scoped_events.append_external(
+            scope=scope,
+            platform_message_id=_external_platform_id(plugin_id, request.event_key, target),
+            source_plugin_id=plugin_id,
+            external_source=request.external_source,
+            external_event_key=request.event_key,
+            external_event_type=request.event_type,
+            external_payload=request.payload,
+            external_target_id=target.target_id,
+            content=request.summary,
+            occurred_at=_aware(request.occurred_at),
+        )
         async with self._database.sessions() as session, session.begin():
             installation = await session.get(PluginInstallationModel, plugin_id)
             if installation is None or not installation.enabled or installation.status != "running":
@@ -254,13 +278,14 @@ class PluginNotificationRepository:
             )
             if grant is None:
                 raise PluginPermissionError("notification target is not granted")
+            if grant.bot_user_id != bot_user_id:
+                raise PluginPermissionError("notification target grant changed during publish")
             if target.target_type == "group":
                 group = await session.get(GroupModel, target.target_id)
                 if group is None or not group.enabled:
                     raise PluginPermissionError("notification group is unknown or disabled")
             elif await session.get(PersonModel, target.target_id) is None:
                 raise PluginPermissionError("notification private target is unknown")
-            scope = ScopeType(target.target_type)
             notification_id = _notification_id(
                 plugin_id, request.event_key, target.target_type, target.target_id
             )
@@ -286,40 +311,13 @@ class PluginNotificationRepository:
                     ChatEventModel.event_kind == "external_event",
                     ChatEventModel.source_plugin_id == plugin_id,
                     ChatEventModel.external_event_key == request.event_key,
-                    ChatEventModel.scope_type == scope.value,
+                    ChatEventModel.scope_type == scope.scope_type.value,
                     ChatEventModel.external_target_id == target.target_id,
                 )
             )
-            event_created = existing is None
-            if existing is None:
-                platform_id = _external_platform_id(plugin_id, request.event_key, target)
-                existing = ChatEventModel(
-                    bot_user_id=grant.bot_user_id,
-                    platform_message_id=platform_id,
-                    scope_type=scope.value,
-                    group_id=target.target_id if scope is ScopeType.GROUP else None,
-                    private_peer_user_id=(target.target_id if scope is ScopeType.PRIVATE else None),
-                    sender_user_id=grant.bot_user_id,
-                    direction="external",
-                    event_kind="external_event",
-                    source_plugin_id=plugin_id,
-                    external_source=request.external_source,
-                    external_event_key=request.event_key,
-                    external_event_type=request.event_type,
-                    external_payload_json=payload_json,
-                    external_target_id=target.target_id,
-                    content=request.summary,
-                    visual_summary="",
-                    segments_json="[]",
-                    reply_to_message_id=None,
-                    origin="plugin_background",
-                    automation_id=None,
-                    automation_run_id=None,
-                    occurred_at=_aware(request.occurred_at),
-                    observed_at=now,
-                )
-                session.add(existing)
-                await session.flush()
+            if existing is None or existing.id != appended.event.id:
+                raise RuntimeError("scoped external event could not be reloaded")
+            event_created = appended.created
             delivery_enqueued = False
             for index, handle_id in enumerate(request.media_handles):
                 delivery_enqueued |= await _ensure_outbox_part(
@@ -386,6 +384,39 @@ class PluginNotificationRepository:
                 agent_turn_enqueued=job_created,
                 deduplicated=not event_created,
             )
+
+    async def _resolve_publication_scope(
+        self,
+        *,
+        plugin_id: str,
+        target: NotificationTarget,
+    ) -> tuple[ConversationScope, str]:
+        """Resolve authorization separately from the target conversation identity."""
+
+        async with self._database.sessions() as session:
+            installation = await session.get(PluginInstallationModel, plugin_id)
+            if installation is None or not installation.enabled or installation.status != "running":
+                raise PluginPermissionError("plugin is not running")
+            grant = await session.scalar(
+                select(PluginBackgroundTargetGrantModel).where(
+                    PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
+                    PluginBackgroundTargetGrantModel.target_type == target.target_type,
+                    PluginBackgroundTargetGrantModel.target_id == target.target_id,
+                    PluginBackgroundTargetGrantModel.enabled.is_(True),
+                )
+            )
+            if grant is None:
+                raise PluginPermissionError("notification target is not granted")
+            if target.target_type == "group":
+                group = await session.get(GroupModel, target.target_id)
+                if group is None or not group.enabled:
+                    raise PluginPermissionError("notification group is unknown or disabled")
+                scope = ConversationScope.group(grant.bot_user_id, target.target_id)
+            else:
+                if await session.get(PersonModel, target.target_id) is None:
+                    raise PluginPermissionError("notification private target is unknown")
+                scope = ConversationScope.private(grant.bot_user_id, target.target_id)
+        return scope, grant.bot_user_id
 
     async def claim_outbox(self, *, lease_seconds: int = 60) -> OutboxRecord | None:
         now = datetime.now(UTC)

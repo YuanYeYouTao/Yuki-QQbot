@@ -50,7 +50,7 @@ Plugin API `2.0` 是破坏性升级：声明 `1.0` / `1.1` 的插件在导入代
 
 | 标识 | 当前值 | 用途 |
 |---|---:|---|
-| Yuki | `3.6.1` | Host 产品版本 |
+| Yuki | `3.7.0` | Host 产品版本 |
 | Plugin API | `2.0` | SDK 主兼容边界 |
 | Event/Tool/Automation Schema | `1` | 单类载荷的结构版本 |
 | Feature | 如 `admission.signal.v1` | 运行时能力探测 |

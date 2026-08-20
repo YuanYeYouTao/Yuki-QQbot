@@ -77,6 +77,9 @@ class PromptMetrics(BaseModel):
     message_count: int
     stable_prefix_hash: str
     session_characters: int = 0
+    conversation_prefix_hash: str = ""
+    request_shape_hash: str = ""
+    prompt_snapshot_fingerprint: str = ""
 
 
 class CompiledPrompt(BaseModel):

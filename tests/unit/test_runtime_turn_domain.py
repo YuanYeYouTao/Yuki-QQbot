@@ -7,7 +7,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.runtime.authority import (
     CapabilityRevalidationFacts,
@@ -134,12 +135,12 @@ class TestTurnTriggers:
 
 class TestIdentityKeys:
     def test_three_key_families_never_collide(self) -> None:
-        history = ConversationIdentity.group("g-1", "u-1")
-        coordination = TurnCoordinationKey.for_group("g-1")
+        history = ConversationScope.group("bot-9", "g-1")
+        coordination = TurnCoordinationKey.for_group("bot-9", "g-1")
         memory = ResolvedMemoryScope.for_group("g-1")
 
-        assert history.key == "group:g-1:user:u-1"
-        assert coordination.partition_key == "group:g-1"
+        assert history.key == "bot:bot-9:group:g-1"
+        assert coordination.partition_key == history.key
         assert memory.partition_key == "group:g-1"
         # Same string shape for coordination/memory today, still distinct types.
         assert coordination != memory
@@ -149,12 +150,12 @@ class TestIdentityKeys:
     def test_coordination_key_from_inbound_matches_coordinator_semantics(self) -> None:
         group_key = TurnCoordinationKey.from_inbound(_inbound(group=True))
         private_key = TurnCoordinationKey.from_inbound(_inbound(group=False))
-        assert group_key.partition_key == "group:g-1"
-        assert private_key.partition_key == "private:u-1"
+        assert group_key.partition_key == "bot:bot-9:group:g-1"
+        assert private_key.partition_key == "bot:bot-9:private:u-1"
 
     def test_keys_reject_empty_ids(self) -> None:
         with pytest.raises(InvalidTurnContextError):
-            TurnCoordinationKey.for_group("")
+            TurnCoordinationKey.for_group("bot-9", "")
         with pytest.raises(InvalidTurnContextError):
             ResolvedMemoryScope.for_private("")
 
@@ -341,8 +342,16 @@ def _context(**overrides: object) -> TurnContext:
         "authority": _authority(),
         "scene": TurnSceneFacts(scope_type=ScopeType.GROUP, group_id="g-1"),
         "runtime_config": _StubConfig(),
-        "conversation": ConversationIdentity.group("g-1", "u-1"),
-        "coordination_key": TurnCoordinationKey.for_group("g-1"),
+        "scope": ConversationScope.group("bot-9", "g-1"),
+        "actor": inbound.sender,
+        "turn_snapshot": ConversationTurnSnapshot(
+            scope_id=1,
+            scope_key="bot:bot-9:group:g-1",
+            generation=1,
+            trigger_event_id=7,
+            coordinator_version=1,
+        ),
+        "coordination_key": TurnCoordinationKey.for_group("bot-9", "g-1"),
         "turn_id": "turn-1",
         "turn_token": None,
         "current_time": _StubTime(),
@@ -363,23 +372,25 @@ class TestTurnContext:
         with pytest.raises(InvalidTurnContextError):
             _context(authority=_authority(TurnOrigin.SCHEDULED_AUTOMATION))
 
-    def test_message_turn_requires_conversation_and_key(self) -> None:
+    def test_message_turn_requires_scope_and_key(self) -> None:
         with pytest.raises(InvalidTurnContextError):
-            _context(conversation=None)
+            _context(scope=None)
         with pytest.raises(InvalidTurnContextError):
             _context(coordination_key=None)
 
-    def test_scheduled_turn_needs_no_conversation(self) -> None:
+    def test_scheduled_turn_needs_no_scope(self) -> None:
         trigger = ScheduledTurnTrigger(
             automation_id=5, creator_user_id="u-1", scheduled_for=datetime.now(UTC)
         )
         context = _context(
             trigger=trigger,
             authority=_authority(TurnOrigin.SCHEDULED_AUTOMATION),
-            conversation=None,
+            scope=None,
+            actor=None,
+            turn_snapshot=None,
             coordination_key=None,
         )
-        assert context.conversation is None
+        assert context.scope is None
 
     def test_context_is_frozen(self) -> None:
         context = _context()

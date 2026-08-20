@@ -37,7 +37,7 @@ from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.tools import _CREATE_DESCRIPTION, AutomationToolService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.capabilities.catalog import estimate_chat_tool_tokens
-from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.persistence.models import AutomationStepRunModel, AutomationVersionModel
 from qq_ai_bot.services.agent_runner import AgentRuntime
@@ -121,14 +121,14 @@ async def test_repository_persists_versions_and_owner_scope(database) -> None:
     commands = AutomationCommandHandler(settings=settings, automation_service=service)
     listed = await commands.execute(
         message=_inbound(),
-        identity=ConversationIdentity.private("10001"),
+        identity=ConversationScope.private("7777", "10001"),
         argument="list",
     )
     assert f"[ID {row.id}]" in listed
     assert "#1" not in listed
     shown = await commands.execute(
         message=_inbound(),
-        identity=ConversationIdentity.private("10001"),
+        identity=ConversationScope.private("7777", "10001"),
         argument=f"show {row.id}",
     )
     assert f"自动化 ID：{row.id}" in shown
@@ -142,7 +142,7 @@ async def test_repository_persists_versions_and_owner_scope(database) -> None:
     assert [item.id for item in await service.list_completed("10001")] == [row.id]
     completed = await commands.execute(
         message=_inbound(),
-        identity=ConversationIdentity.private("10001"),
+        identity=ConversationScope.private("7777", "10001"),
         argument="completed",
     )
     assert f"[ID {row.id}]" in completed

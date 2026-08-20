@@ -8,7 +8,7 @@ from hashlib import sha256
 import pytest
 from sqlalchemy import delete, func, select
 
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel, MediaAnalysisModel
 from qq_ai_bot.persistence.repositories import EventLedgerRepository, MediaAnalysisRepository
@@ -271,10 +271,8 @@ async def test_chat_event_visual_summary_is_persisted_without_changing_raw_text(
     event_id = await _event(database, "visual-summary")
 
     assert await ledger.set_visual_summary(event_id, '{"overall_description":"一只猫"}')
-    recent = await ledger.list_recent(
-        scope_type=ScopeType.PRIVATE,
-        user_id="1001",
-        group_id=None,
+    recent = await ledger.list_scope_recent(
+        ConversationScope.private("9000", "1001"),
         limit=10,
     )
     event = next(row for row in recent if row.id == event_id)

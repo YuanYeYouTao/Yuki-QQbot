@@ -136,6 +136,12 @@ class _Service:
     def _record_memory_mutation_turn_outcome(self, outcome: str) -> None:
         self.mutation_turn_outcomes.append(outcome)
 
+    @staticmethod
+    async def _run_effect(_snapshot: object, effect: object) -> object:
+        """Keep backend unit tests focused on capability dispatch, not fencing."""
+
+        return await effect()  # type: ignore[operator]
+
 
 class _FakeMemorySession:
     def __init__(

@@ -15,6 +15,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.container import ApplicationContainer, get_container, set_container
 from qq_ai_bot.health import HealthPayload, build_health_payload
 from qq_ai_bot.logging import configure_logging
+from qq_ai_bot.persistence.instance_lock import SQLiteApplicationLock
 
 
 @contextmanager
@@ -52,16 +53,25 @@ def bootstrap(settings: Settings | None = None) -> None:
     configure_logging(app_settings.log_level)
     driver = nonebot.get_driver()
     driver.register_adapter(Adapter)
+    application_lock = SQLiteApplicationLock(app_settings.sqlite_path)
 
     @driver.on_startup
     async def startup() -> None:
-        container = await ApplicationContainer.create(app_settings)
-        set_container(container)
-        await container.start()
+        application_lock.acquire()
+        try:
+            container = await ApplicationContainer.create(app_settings)
+            set_container(container)
+            await container.start()
+        except BaseException:
+            application_lock.release()
+            raise
 
     @driver.on_shutdown
     async def shutdown() -> None:
-        await get_container().close()
+        try:
+            await get_container().close()
+        finally:
+            application_lock.release()
 
     async def healthz() -> HealthPayload:
         return await build_health_payload(get_container())
