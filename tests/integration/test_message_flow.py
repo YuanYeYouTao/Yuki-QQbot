@@ -88,11 +88,11 @@ async def test_future_mcd_query_is_persisted_instead_of_executed_immediately(
 
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
+        names = {tool.name for tool in request.tools}
+        if "automation_create" not in names:
+            assert "request_tools" in names
+            return _request_tools_response("automation_create")
         calls += 1
-        assert {
-            "automation_create",
-            "request_tools",
-        } <= {tool.name for tool in request.tools}
         if calls == 1:
             return ChatResponse(
                 content="",
@@ -168,10 +168,9 @@ async def test_future_task_success_claim_is_blocked_without_create_tool_result(
     settings = make_settings(database.url, automation_enabled=True)
 
     def responder(request: ChatRequest) -> ChatResponse:
-        assert {
-            "automation_create",
-            "request_tools",
-        } <= {tool.name for tool in request.tools}
+        names = {tool.name for tool in request.tools}
+        assert "automation_create" not in names
+        assert "request_tools" in names
         return ChatResponse(content="设好了，明天九点四十五分准时查", latency_seconds=0)
 
     harness = build_harness(database, settings, FakeLLMProvider(responder))
@@ -202,7 +201,7 @@ async def test_automation_hint_keeps_web_search_available(database: Database) ->
         calls += 1
         if calls == 1:
             tool_names = {tool.name for tool in request.tools}
-            assert "automation_create" in tool_names
+            assert "automation_create" not in tool_names
             assert "web_search" in tool_names
             return ChatResponse(
                 content="",

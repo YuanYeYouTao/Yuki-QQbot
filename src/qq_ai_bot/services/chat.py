@@ -526,11 +526,8 @@ class _ChatAgentBackend(AgentToolBackend):
         return capability_runtime
 
     def _capability_query(self) -> CapabilityQuery:
-        query_text = self._runtime.selection_query
-        if self._runtime.scheduled_automation_intent:
-            query_text = f"{query_text} 定时任务 automation_create".strip()
         return CapabilityQuery(
-            text=query_text,
+            text=self._runtime.selection_query,
             origin=RuntimeTurnOrigin(self._runtime.origin.value),
             limit=8,
             reply_excerpt=(self._runtime.inbound.reply_text or "")[:500],
@@ -633,11 +630,9 @@ class _ChatAgentBackend(AgentToolBackend):
         )
 
     def _host_priority_capability_ids(self) -> tuple[str, ...]:
-        """Pin tools implied by origin or deployment mode, not the current message."""
+        """Pin tools implied by deployment mode, not the current message or origin."""
 
         names: list[str] = []
-        if self._runtime.scheduled_automation_intent:
-            names.append("automation_create")
         web_route = self._runtime.web_route
         if self._native_web_fallback or (
             web_route is not None
@@ -648,8 +643,6 @@ class _ChatAgentBackend(AgentToolBackend):
             # from a URL, user override, or domain rule: those change tools[]
             # per message and punch the DeepSeek prefix from token 0.
             names.extend(("web_search", "read_webpage"))
-        if self._runtime.origin is TurnOrigin.AUTONOMOUS_GROUP:
-            names.append("decline_reply")
         return tuple(dict.fromkeys(names))
 
     def _scene_facts(self) -> Any:
@@ -1904,9 +1897,9 @@ class ChatService:
                     ChatMessage(
                         role="system",
                         content=(
-                            "当前消息可能涉及未来触发任务，automation_create 已作为候选能力提供。"
-                            "请根据用户的真实意图自行决定是否创建自动化；如果只是当前查询、"
-                            "列举、讨论或无需持久化，则不要创建。可以使用本轮其他已授权工具。"
+                            "当前消息可能涉及未来触发任务。如果需要创建定时任务，先用 "
+                            "request_tools 加载 automation_create，再调用它。"
+                            "如果只是当前查询、列举、讨论或无需持久化，则不要创建。"
                             "只有 automation_create 返回 confirmation=persisted 和真实 "
                             "automation_id 后，才能声称任务已经创建。"
                         ),

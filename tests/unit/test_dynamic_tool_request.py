@@ -386,6 +386,116 @@ async def test_aligned_plugin_background_declares_same_prefix_tools_as_user() ->
     assert control.override_applied is False
 
 
+def test_host_priority_does_not_pin_origin_or_message_tools() -> None:
+    control = ReplyTargetControl(visible_event_ids=frozenset({42}))
+    scheduled = replace(_runtime(), scheduled_automation_intent=True, reply_target_control=control)
+    autonomous = replace(
+        _runtime(),
+        origin=TurnOrigin.AUTONOMOUS_GROUP,
+        read_only=True,
+        reply_target_control=control,
+    )
+    _, scheduled_backend = _backend(_registry([]), scheduled)
+    _, autonomous_backend = _backend(_registry([]), autonomous)
+
+    assert "automation_create" not in scheduled_backend._host_priority_capability_ids()
+    assert "decline_reply" not in autonomous_backend._host_priority_capability_ids()
+
+
+@pytest.mark.asyncio
+async def test_autonomous_first_round_matches_user_and_loads_decline_via_request() -> None:
+    calls: list[str] = []
+    control = ReplyTargetControl(visible_event_ids=frozenset({42}))
+    registry = _registry(calls)
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core-decline",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: (
+                ChatTool(
+                    name="decline_reply",
+                    description="决定本轮不回复",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "reason_code": {
+                                "type": "string",
+                                "enum": ["not_relevant"],
+                            }
+                        },
+                        "required": ["reason_code"],
+                        "additionalProperties": False,
+                    },
+                ),
+            ),
+            execute=lambda name, _arguments, _runtime: (
+                calls.append(name)
+                or {
+                    "ok": True,
+                    "data": {"called": name},
+                }
+            ),
+        )
+    )
+    user_runtime = replace(_runtime(), reply_target_control=control)
+    autonomous_runtime = replace(
+        user_runtime,
+        origin=TurnOrigin.AUTONOMOUS_GROUP,
+        read_only=True,
+    )
+    agent_runtime = SimpleNamespace()
+    _, user_backend = _backend(registry, user_runtime)
+    _, autonomous_backend = _backend(registry, autonomous_runtime)
+
+    user_names = {tool.name for tool in user_backend.definitions(agent_runtime, web_was_used=False)}
+    autonomous_names = {
+        tool.name for tool in autonomous_backend.definitions(agent_runtime, web_was_used=False)
+    }
+    assert user_names == autonomous_names
+    assert "decline_reply" not in autonomous_names
+
+    arguments = json.dumps({"query": "不用回", "max_results": 2}, ensure_ascii=False)
+    call = ToolCall(
+        id="request-decline",
+        function=ToolFunction(name=REQUEST_TOOLS_NAME, arguments=arguments),
+    )
+    autonomous_backend.begin_batch((call,), agent_runtime)
+    requested = json.loads(
+        await autonomous_backend.execute(REQUEST_TOOLS_NAME, arguments, agent_runtime)
+    )
+    assert requested["ok"] is True
+    assert any(item["name"] == "decline_reply" for item in requested["data"]["loaded_tools"])
+    assert "decline_reply" in {
+        tool.name for tool in autonomous_backend.definitions(agent_runtime, web_was_used=False)
+    }
+
+
+@pytest.mark.asyncio
+async def test_scheduled_intent_does_not_pin_automation_create() -> None:
+    calls: list[str] = []
+    control = ReplyTargetControl(visible_event_ids=frozenset({42}))
+    registry = _registry(calls)
+    registry.register(
+        InProcessToolProvider(
+            provider_id="automation",
+            source=CapabilityTrustSource.AUTOMATION,
+            definitions=lambda _runtime: (_tool("automation_create", "创建定时任务"),),
+            execute=lambda name, _arguments, _runtime: (
+                calls.append(name) or {"ok": True, "data": {"called": name}}
+            ),
+        )
+    )
+    runtime = replace(
+        _runtime(),
+        scheduled_automation_intent=True,
+        reply_target_control=control,
+    )
+    _, backend = _backend(registry, runtime)
+    names = {tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)}
+    assert "automation_create" not in names
+    assert "request_tools" in names
+
+
 @pytest.mark.asyncio
 async def test_user_message_can_request_authorized_tools() -> None:
     calls: list[str] = []
