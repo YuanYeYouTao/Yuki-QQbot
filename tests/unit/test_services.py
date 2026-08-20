@@ -124,6 +124,37 @@ def test_model_output_keeps_event_like_text_inside_an_ordinary_sentence() -> Non
     assert clean_model_output(text, max_characters=200) == text
 
 
+def test_prompt_history_keeps_blockquote_body() -> None:
+    from datetime import UTC, datetime
+
+    from qq_ai_bot.domain.conversations import ScopeType
+    from qq_ai_bot.event_prompt import ChatEventPromptRenderer
+    from qq_ai_bot.persistence.repository_records import EventRecord
+
+    event = EventRecord(
+        id=32915,
+        bot_user_id="380726517",
+        platform_message_id="m-32915",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="380726517",
+        direction="outbound",
+        content="> 你俩一个揭穿一个补刀，配合得还挺默契\n> 不过反正格洛腾迪克本人也犯过这错",
+        visual_summary="",
+        segments=(),
+        occurred_at=datetime(2026, 8, 20, 11, 21, 42, tzinfo=UTC),
+        sender_group_card="Yuki",
+        group_id="1049765710",
+    )
+    rendered = ChatEventPromptRenderer((event,), bot_display_name="Yuki").render_reference_event(
+        event
+    )
+
+    assert "> 你俩一个揭穿一个补刀，配合得还挺默契" in rendered
+    assert clean_model_output(event.content, max_characters=200) == (
+        "你俩一个揭穿一个补刀，配合得还挺默契\n不过反正格洛腾迪克本人也犯过这错"
+    )
+
+
 def test_model_output_strips_echoed_blockquote_prefixes() -> None:
     text = (
         "> Diana 这是被你自己的烤肉账撑爆了吗，连网关都502了\n"

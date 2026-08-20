@@ -145,6 +145,7 @@ class ToolRuntime:
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     tools_closed: bool = False
     read_only: bool = False
+    align_conversation_prefix_tools: bool = False
     turn_token: TurnToken | None = None
     turn_snapshot: ConversationTurnSnapshot | None = None
     reply_effects: list[ReplyEffect] | None = None

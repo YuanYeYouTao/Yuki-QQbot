@@ -471,11 +471,21 @@ class _ChatAgentBackend(AgentToolBackend):
             return False
         return runtime.consume_provider_chain_restart()
 
+    def _prompt_tools_closed(self) -> bool:
+        if self._tools_closed:
+            return True
+        return self._runtime.tools_closed and not self._runtime.align_conversation_prefix_tools
+
+    def _prefix_policy_origin(self) -> TurnOrigin:
+        if self._runtime.align_conversation_prefix_tools:
+            return TurnOrigin.USER_MESSAGE
+        return self._runtime.origin
+
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         del runtime
         self._web_was_used = self._web_was_used or web_was_used
         response_controls = () if self._exclusive_write() else self._response_control_definitions()
-        if self._tools_closed or self._runtime.tools_closed:
+        if self._prompt_tools_closed():
             self._callable_tool_names = {tool.name for tool in response_controls}
             self._log_tool_exposure(response_controls, reason="business_tools_closed")
             return response_controls
@@ -545,18 +555,19 @@ class _ChatAgentBackend(AgentToolBackend):
         session = self._memory()
         memory_view = session.capability_view() if session is not None else None
         reply_target = self._runtime.reply_target_control
+        align_prefix = self._runtime.align_conversation_prefix_tools
         policy_context = CapabilityPolicyContext(
             authority=AuthorityContext(
                 actor_user_id=self._runtime.actor_user_id,
                 is_superuser=self._runtime.actor_is_superuser,
             ),
-            origin=self._runtime.origin,
+            origin=self._prefix_policy_origin(),
             contains_images=bool(
                 self._runtime.inbound.attachments or self._runtime.inbound.reply_attachments
             ),
             web_was_used=self._web_was_used,
-            tools_closed=self._runtime.tools_closed,
-            read_only=self._runtime.read_only,
+            tools_closed=False if align_prefix else self._runtime.tools_closed,
+            read_only=False if align_prefix else self._runtime.read_only,
             memory_view=memory_view,
             artifact_available=self._service._tool_artifacts is not None,
             reply_target_available=bool(
@@ -739,8 +750,17 @@ class _ChatAgentBackend(AgentToolBackend):
                     {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
                 )
             call = self._batch.pop(call_index)
-        if name == _SET_REPLY_TARGET_NAME:
+        if name == _SET_REPLY_TARGET_NAME and not self._runtime.align_conversation_prefix_tools:
             return self._set_reply_target(arguments_json)
+        if self._runtime.tools_closed:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "tools_closed",
+                    "detail": "本轮只声明会话前缀工具 schema，不允许真实调用。",
+                },
+                ensure_ascii=False,
+            )
         if self._tools_closed:
             return json.dumps(
                 {
@@ -2937,9 +2957,12 @@ class ChatService:
             origin=TurnOrigin.PLUGIN_BACKGROUND,
             tools_closed=True,
             read_only=True,
+            align_conversation_prefix_tools=True,
             turn_token=turn_token,
             turn_snapshot=turn_snapshot,
+            reply_target_control=ReplyTargetControl(visible_event_ids=context.visible_event_ids),
             selection_query=event.content,
+            web_route=self._web_router.select("", runtime.web.mode),
             max_model_requests_override=min(2, runtime.agent.max_model_requests),
             prompt_diagnostics=PromptRequestDiagnostics(
                 conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
