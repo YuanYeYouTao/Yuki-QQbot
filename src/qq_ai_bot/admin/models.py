@@ -253,6 +253,8 @@ class AgentRuntimeConfig:
 class ToolingRuntimeConfig:
     max_parallel_calls: int
     selected_tool_limit: int | None
+    first_round_hard_cap: int
+    first_round_pin_ids: tuple[str, ...]
     schema_token_budget: int | None
     result_token_budget: int | None
     result_item_limit: int | None

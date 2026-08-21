@@ -12,7 +12,7 @@ from qq_ai_bot.capabilities.models import (
     CapabilityRisk,
     CapabilityTrustSource,
 )
-from qq_ai_bot.capabilities.request import request_tools_definition
+from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME, request_tools_definition
 from qq_ai_bot.capabilities.search_index import CapabilitySearchHit
 
 
@@ -24,6 +24,7 @@ def _descriptor(
     provider_id: str = "core",
     bundle: str = "",
     synthetic: bool = False,
+    allowed_origins: frozenset[TurnOrigin] | None = None,
 ) -> CapabilityDescriptor:
     return CapabilityDescriptor(
         canonical_name=name,
@@ -35,7 +36,7 @@ def _descriptor(
         effect=CapabilityEffect.READ_STATE,
         risk=CapabilityRisk.READ,
         trust_source=trust,
-        allowed_origins=frozenset(TurnOrigin),
+        allowed_origins=allowed_origins if allowed_origins is not None else frozenset(TurnOrigin),
         required_permissions=frozenset(),
         uses_external_data=trust is CapabilityTrustSource.MCP,
         cancellable=True,
@@ -467,3 +468,39 @@ def test_first_round_ignores_retrieval_hits_and_elevated_tools() -> None:
     assert {entry.descriptor.model_name for entry in idle.entries} == set()
     assert {entry.descriptor.model_name for entry in music.entries} == set()
     assert {entry.descriptor.model_name for entry in admin.entries} == set()
+
+
+def test_priority_pins_are_declared_even_when_not_requestable() -> None:
+    catalog = _catalog(
+        _entry(_descriptor("memory_change", namespace="memory.state.write")),
+        _entry(
+            _descriptor(
+                "decline_reply",
+                namespace="reply.admission.decline",
+                allowed_origins=frozenset({TurnOrigin.AUTONOMOUS_GROUP}),
+            )
+        ),
+        _entry(
+            _descriptor(
+                "admin_execute_action",
+                namespace="admin.action.write",
+                trust=CapabilityTrustSource.ADMIN,
+            )
+        ),
+    )
+    planner = AuthorityFirstExposurePlanner(first_round_hard_cap=16)
+    plan = planner.plan_initial(
+        catalog=catalog,
+        requestable_ids=frozenset(),
+        hits=(),
+        memory_view=None,
+        kernel_tools=(request_tools_definition(),),
+        query="",
+        artifact_available=False,
+        reply_target_available=False,
+        priority_ids=("memory_change", "decline_reply", "admin_execute_action"),
+    )
+    names = {entry.descriptor.model_name for entry in plan.entries}
+    assert names == {"memory_change"}
+    assert "memory_change" not in plan.callable_ids
+    assert REQUEST_TOOLS_NAME in plan.callable_ids

@@ -600,6 +600,9 @@ class _ChatAgentBackend(AgentToolBackend):
             schema_token_budget=tooling.schema_token_budget if tooling is not None else None,
             mcp_schema_token_budget=mcp.schema_token_budget if mcp is not None else None,
             mcp_tool_limit=mcp.selected_tool_limit if mcp is not None else None,
+            first_round_hard_cap=(
+                tooling.first_round_hard_cap if tooling is not None else None
+            ),
             ensure_metadata=ensure_metadata,
             refresh_registry=self._refresh_capability_registry,
             on_searched=self._publish_capability_searched,
@@ -630,9 +633,18 @@ class _ChatAgentBackend(AgentToolBackend):
         )
 
     def _host_priority_capability_ids(self) -> tuple[str, ...]:
-        """Pin tools implied by deployment mode, not the current message or origin."""
+        """Pin tools implied by deployment config, not the current message or origin."""
 
         names: list[str] = []
+        tooling = (
+            self._runtime.runtime_config.tooling
+            if self._runtime.runtime_config is not None
+            else None
+        )
+        if tooling is not None:
+            names.extend(getattr(tooling, "first_round_pin_ids", ()))
+        elif getattr(self._service, "_settings", None) is not None:
+            names.extend(self._service._settings.tooling_first_round_pin_ids)
         web_route = self._runtime.web_route
         if self._native_web_fallback or (
             web_route is not None
@@ -1401,10 +1413,13 @@ class _ChatAgentBackend(AgentToolBackend):
         return self._retry_identity(call) == expected
 
     def _request_runtime(self) -> ToolRuntime:
+        runtime = self._runtime
+        reply_effects = runtime.reply_effects if runtime.reply_effects is not None else []
         return replace(
-            self._runtime,
-            allow_generic_onebot=self._runtime.allow_generic_onebot,
-            allow_admin_actions=self._runtime.allow_admin_actions,
+            runtime,
+            origin=TurnOrigin.USER_MESSAGE,
+            allow_automation=True,
+            reply_effects=reply_effects,
             native_web_fallback=self._native_web_fallback,
         )
 

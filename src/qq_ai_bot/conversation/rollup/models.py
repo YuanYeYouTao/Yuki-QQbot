@@ -22,9 +22,9 @@ class RollupJobStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class RollupPolicyConfig:
-    raw_tail_events: int = 256
+    raw_tail_events: int = 128
     raw_tail_characters: int = 20_480
-    trigger_events: int = 1024
+    trigger_events: int = 384
     trigger_characters: int = 81_920
     stop_events: int = 0
     stop_characters: int = 0

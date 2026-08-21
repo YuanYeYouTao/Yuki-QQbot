@@ -528,6 +528,8 @@ class AutomationSettings(DomainSettings):
 class ToolingSettings(DomainSettings):
     tooling_max_parallel_calls: int = Field(gt=0)
     tooling_selected_tool_limit: int | None = Field(default=None, gt=0)
+    tooling_first_round_hard_cap: int = Field(gt=0)
+    tooling_first_round_pin_ids_csv: str = ""
     tooling_schema_token_budget: int | None = Field(default=None, gt=0)
     tooling_result_token_budget: int | None = Field(default=None, gt=0)
     tooling_result_item_limit: int | None = Field(default=None, gt=0)

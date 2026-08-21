@@ -400,6 +400,125 @@ def test_host_priority_does_not_pin_origin_or_message_tools() -> None:
 
     assert "automation_create" not in scheduled_backend._host_priority_capability_ids()
     assert "decline_reply" not in autonomous_backend._host_priority_capability_ids()
+    assert scheduled_backend._host_priority_capability_ids() == (
+        autonomous_backend._host_priority_capability_ids()
+    )
+
+
+def test_host_priority_uses_config_pins_not_origin() -> None:
+    pins = (
+        "memory_change",
+        "automation_create",
+        "send_emoji",
+        "web_search",
+    )
+    runtime = replace(
+        _runtime(),
+        runtime_config=SimpleNamespace(
+            tooling=SimpleNamespace(first_round_pin_ids=pins),
+            mcp=None,
+            agent=SimpleNamespace(tool_result_max_characters=32_000),
+            web=SimpleNamespace(max_calls_per_turn=3),
+        ),
+    )
+    autonomous = replace(runtime, origin=TurnOrigin.AUTONOMOUS_GROUP, read_only=True)
+    plugin = replace(
+        runtime,
+        origin=TurnOrigin.PLUGIN_BACKGROUND,
+        tools_closed=True,
+        align_conversation_prefix_tools=True,
+    )
+    _, user_backend = _backend(_registry([]), runtime)
+    _, autonomous_backend = _backend(_registry([]), autonomous)
+    _, plugin_backend = _backend(_registry([]), plugin)
+
+    assert user_backend._host_priority_capability_ids() == pins
+    assert autonomous_backend._host_priority_capability_ids() == pins
+    assert plugin_backend._host_priority_capability_ids() == pins
+    assert "decline_reply" not in pins
+
+
+def test_user_autonomous_and_plugin_declare_the_same_pinned_tools() -> None:
+    pins = (
+        "memory_change",
+        "automation_create",
+        "send_emoji",
+        "web_search",
+    )
+    calls: list[str] = []
+    registry = _registry(calls)
+    extra = (
+        _tool("memory_change", "改记忆"),
+        _tool("send_emoji", "发表情"),
+        _tool("decline_reply", "本轮不回"),
+    )
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core-pins",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: extra,
+            execute=lambda name, _arguments, _runtime: (
+                calls.append(name) or {"ok": True, "data": {"called": name}}
+            ),
+        )
+    )
+    registry.register(
+        InProcessToolProvider(
+            provider_id="automation",
+            source=CapabilityTrustSource.AUTOMATION,
+            definitions=lambda _runtime: (_tool("automation_create", "建自动任务"),),
+            execute=lambda name, _arguments, _runtime: (
+                calls.append(name) or {"ok": True, "data": {"called": name}}
+            ),
+        )
+    )
+    registry.register(
+        InProcessToolProvider(
+            provider_id="admin",
+            source=CapabilityTrustSource.ADMIN,
+            definitions=lambda _runtime: (_tool("admin_execute_action", "管理员操作"),),
+            execute=lambda name, _arguments, _runtime: (
+                calls.append(name) or {"ok": True, "data": {"called": name}}
+            ),
+        )
+    )
+    runtime = replace(
+        _runtime(),
+        runtime_config=SimpleNamespace(
+            tooling=SimpleNamespace(
+                first_round_pin_ids=pins,
+                first_round_hard_cap=16,
+                schema_token_budget=12_000,
+            ),
+            mcp=None,
+            agent=SimpleNamespace(tool_result_max_characters=32_000),
+            web=SimpleNamespace(max_calls_per_turn=3),
+        ),
+    )
+    autonomous = replace(runtime, origin=TurnOrigin.AUTONOMOUS_GROUP, read_only=True)
+    plugin = replace(
+        runtime,
+        origin=TurnOrigin.PLUGIN_BACKGROUND,
+        tools_closed=True,
+        align_conversation_prefix_tools=True,
+        allow_automation=False,
+        reply_effects=None,
+    )
+    agent_runtime = SimpleNamespace()
+    _, user_backend = _backend(registry, runtime)
+    _, autonomous_backend = _backend(registry, autonomous)
+    _, plugin_backend = _backend(registry, plugin)
+    user_names = {tool.name for tool in user_backend.definitions(agent_runtime, web_was_used=False)}
+    autonomous_names = {
+        tool.name for tool in autonomous_backend.definitions(agent_runtime, web_was_used=False)
+    }
+    plugin_names = {
+        tool.name for tool in plugin_backend.definitions(agent_runtime, web_was_used=False)
+    }
+    assert user_names == autonomous_names == plugin_names
+    assert set(pins) <= user_names
+    assert "decline_reply" not in user_names
+    assert "admin_execute_action" not in user_names
 
 
 @pytest.mark.asyncio
@@ -991,6 +1110,8 @@ def test_fts_initial_exposure_prefers_positive_music_matches() -> None:
                 selected_tool_limit=32,
                 schema_token_budget=12_000,
                 result_artifact_retention_seconds=86_400,
+                first_round_hard_cap=16,
+                first_round_pin_ids=(),
             ),
             mcp=None,
             agent=SimpleNamespace(tool_result_max_characters=32_000),

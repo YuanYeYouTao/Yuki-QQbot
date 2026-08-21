@@ -586,7 +586,13 @@ async def test_plugin_background_reply_exposes_no_business_tools(database: Datab
     assert seen
     names = {name for batch in seen for name in batch}
     assert {"request_tools", "set_reply_target"} <= names
-    assert names.isdisjoint({"send_emoji", "send_voice", "memory_change"})
+    assert {
+        "get_person_memories",
+        "search_chat_history",
+        "get_relationship",
+        "get_self_memories",
+    } <= names
+    assert names.isdisjoint({"decline_reply", "admin_execute_action", "send_voice"})
 
 
 @pytest.mark.asyncio
