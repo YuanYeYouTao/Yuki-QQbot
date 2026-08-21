@@ -18,6 +18,7 @@ from qq_ai_bot.capabilities.models import (
     CapabilityRisk,
     CapabilityTrustSource,
 )
+from qq_ai_bot.capabilities.search_aliases import merge_search_terms
 from qq_ai_bot.domain.messages import ChatTool
 
 _ALL_ORIGINS = frozenset(TurnOrigin)
@@ -296,6 +297,11 @@ class ChatToolCapabilityProvider:
         )
         aliases = tool.aliases or _CORE_SEARCH_TAGS.get(tool.name, ())
         use_when = tool.use_when or _CORE_USE_WHEN.get(tool.name, ())
+        aliases, use_when = merge_search_terms(
+            aliases=tuple(aliases),
+            use_when=tuple(use_when),
+            tool_name=tool.name,
+        )
         tags = tool.tags or (namespace.split(".")[0], self._source.value)
         return CapabilityDescriptor(
             canonical_name=f"{self._source.value}.{tool.name}",

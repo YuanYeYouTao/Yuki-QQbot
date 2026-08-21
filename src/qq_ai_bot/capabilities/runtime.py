@@ -28,6 +28,7 @@ from qq_ai_bot.capabilities.models import CapabilityDescriptor
 from qq_ai_bot.capabilities.namespace import is_valid_namespace_id, lookup_namespace
 from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
 from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME, request_tools_definition
+from qq_ai_bot.capabilities.search_aliases import merge_search_terms
 from qq_ai_bot.capabilities.search_document import (
     SEARCH_DOCUMENT_BODY_MAX,
     CapabilitySearchDocument,
@@ -489,6 +490,11 @@ def _document_from_entry(entry: UnifiedToolCatalogEntry) -> CapabilitySearchDocu
         parameter_descriptions = tuple(item for item in descriptions if item)
     synthetic = bool((descriptor.provider_metadata or {}).get("synthetic"))
     model_name = _bounded_text(descriptor.model_name, 64) or "tool"
+    aliases, use_when = merge_search_terms(
+        aliases=descriptor.aliases,
+        use_when=descriptor.use_when,
+        tool_name=descriptor.model_name,
+    )
     return CapabilitySearchDocument(
         capability_id=_bounded_text(descriptor.model_name, 128) or model_name,
         model_name=model_name,
@@ -503,9 +509,9 @@ def _document_from_entry(entry: UnifiedToolCatalogEntry) -> CapabilitySearchDocu
             SEARCH_DOCUMENT_BODY_MAX,
         )
         or model_name,
-        aliases=descriptor.aliases,
+        aliases=aliases,
         tags=descriptor.tags,
-        use_when=descriptor.use_when,
+        use_when=use_when,
         parameter_names=parameter_names,
         parameter_descriptions=tuple(
             _bounded_text(item, 80) for item in parameter_descriptions[:12]

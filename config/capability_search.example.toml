@@ -1,0 +1,6 @@
+# 运营侧追加 / 覆盖 request_tools 别名。
+# 复制为 config/capability_search.toml，或设置 CAPABILITY_SEARCH_FILE。
+# 同名工具的 aliases、use_when 会与内置表合并，不会改首轮钉选。
+
+# [tool.automation_create]
+# aliases = ["设个闹钟"]

@@ -1,0 +1,26 @@
+# request_tools 检索别名。这里只声明发现用语，不写路由。
+# 运营覆盖：CAPABILITY_SEARCH_FILE 或 config/capability_search.toml
+
+[tool.automation_create]
+aliases = [
+    "提醒我",
+    "创建提醒",
+    "创建定时",
+    "创建任务",
+    "创建自动化",
+    "定时任务",
+    "定时任务能力",
+    "创建定时任务",
+]
+use_when = [
+    "把一件事安排到未来再执行",
+]
+
+[tool.automation_list]
+aliases = ["任务列表", "我的定时任务"]
+
+[tool.automation_cancel]
+aliases = ["取消任务", "取消定时"]
+
+[tool.automation_pause]
+aliases = ["暂停任务"]
