@@ -1456,11 +1456,11 @@ async def test_user_message_turn_can_create_self_memory_from_current_event(
 
 
 @pytest.mark.asyncio
-async def test_autonomous_group_turn_cannot_change_memory(database: Database) -> None:
+async def test_autonomous_group_turn_can_change_memory_like_user(database: Database) -> None:
     mutations, facts, ledger, _processor = _service(database, self_memory_enabled=True)
     event = await _event(
         ledger,
-        message_id="autonomous-group-no-write",
+        message_id="autonomous-group-can-write",
         sender_user_id="1001",
         group_id="3001",
         content="请把刚才的讨论记下来",
@@ -1495,8 +1495,8 @@ async def test_autonomous_group_turn_cannot_change_memory(database: Database) ->
         current_group_id=event.group_id,
         origin=TurnOrigin.AUTONOMOUS_GROUP,
     )
-    assert "memory_change" not in {tool.name for tool in tools.definitions(runtime)}
-    rejected = json.loads(
+    assert "memory_change" in {tool.name for tool in tools.definitions(runtime)}
+    response = json.loads(
         await tools.execute(
             "memory_change",
             json.dumps(
@@ -1504,19 +1504,21 @@ async def test_autonomous_group_turn_cannot_change_memory(database: Database) ->
                     "operation": "create",
                     "target": {"subject_ref": "self", "scope_type": "self"},
                     "visibility": "current_scope",
-                    "new_content": "自主群聊不应写入记忆",
-                    "memory_key": "episode:should_not_write",
+                    "new_content": "自主群聊与 @ 同一套可写权威",
+                    "memory_key": "episode:autonomous-can-write",
                     "category": "self_episode",
                     "kind": "episode",
-                    "reason": "autonomous write must stay denied",
+                    "reason": "admitted autonomous turn may persist memory",
                 },
                 ensure_ascii=False,
             ),
             runtime,
         )
     )
-    assert not rejected["ok"]
-    assert rejected["error"] == "memory_change_unavailable"
+    assert response["ok"]
+    fact = await facts.get_fact(response["data"]["new_fact_id"])
+    assert fact is not None
+    assert fact.scope_type is MemoryScopeType.SELF
 
 
 @pytest.mark.asyncio

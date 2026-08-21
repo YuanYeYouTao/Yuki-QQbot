@@ -289,6 +289,39 @@ def test_read_only_origin_hides_destructive_and_writes() -> None:
     assert [item.model_name for item in visible] == ["web_search"]
 
 
+def test_destructive_is_visible_for_user_and_autonomous_not_plugin() -> None:
+    destructive = _descriptor(
+        "admin_execute_action",
+        namespace="admin.action.write",
+        effect=CapabilityEffect.WRITE_STATE,
+        risk=CapabilityRisk.DESTRUCTIVE,
+        permissions=frozenset({"superuser"}),
+    )
+    engine = CapabilityPolicyEngine()
+    context = {
+        "authority": AuthorityContext(
+            actor_user_id="u1",
+            is_superuser=True,
+            permissions=frozenset({"superuser"}),
+        )
+    }
+    user = engine.visible(
+        (destructive,),
+        CapabilityPolicyContext(**context, origin=TurnOrigin.USER_MESSAGE),
+    )
+    autonomous = engine.visible(
+        (destructive,),
+        CapabilityPolicyContext(**context, origin=TurnOrigin.AUTONOMOUS_GROUP),
+    )
+    plugin = engine.visible(
+        (destructive,),
+        CapabilityPolicyContext(**context, origin=TurnOrigin.PLUGIN_BACKGROUND),
+    )
+    assert [item.model_name for item in user] == ["admin_execute_action"]
+    assert [item.model_name for item in autonomous] == ["admin_execute_action"]
+    assert plugin == ()
+
+
 def test_catalog_entry_round_trip_for_security_fixtures() -> None:
     catalog = UnifiedToolCatalog(
         entries=(_entry(_descriptor("web_search", namespace="web.search")),),

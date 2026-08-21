@@ -22,7 +22,7 @@ from qq_ai_bot.capabilities.search_aliases import merge_search_terms
 from qq_ai_bot.domain.messages import ChatTool
 
 _ALL_ORIGINS = frozenset(TurnOrigin)
-_DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE})
+_DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 _AUTONOMOUS_ORIGIN = frozenset({TurnOrigin.AUTONOMOUS_GROUP})
 _REPLY_LAYOUT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {

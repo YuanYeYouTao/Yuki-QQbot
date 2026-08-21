@@ -392,7 +392,7 @@ def test_host_priority_does_not_pin_origin_or_message_tools() -> None:
     autonomous = replace(
         _runtime(),
         origin=TurnOrigin.AUTONOMOUS_GROUP,
-        read_only=True,
+        read_only=False,
         reply_target_control=control,
     )
     _, scheduled_backend = _backend(_registry([]), scheduled)
@@ -421,7 +421,7 @@ def test_host_priority_uses_config_pins_not_origin() -> None:
             web=SimpleNamespace(max_calls_per_turn=3),
         ),
     )
-    autonomous = replace(runtime, origin=TurnOrigin.AUTONOMOUS_GROUP, read_only=True)
+    autonomous = replace(runtime, origin=TurnOrigin.AUTONOMOUS_GROUP, read_only=False)
     plugin = replace(
         runtime,
         origin=TurnOrigin.PLUGIN_BACKGROUND,
@@ -495,7 +495,7 @@ def test_user_autonomous_and_plugin_declare_the_same_pinned_tools() -> None:
             web=SimpleNamespace(max_calls_per_turn=3),
         ),
     )
-    autonomous = replace(runtime, origin=TurnOrigin.AUTONOMOUS_GROUP, read_only=True)
+    autonomous = replace(runtime, origin=TurnOrigin.AUTONOMOUS_GROUP, read_only=False)
     plugin = replace(
         runtime,
         origin=TurnOrigin.PLUGIN_BACKGROUND,
@@ -519,6 +519,104 @@ def test_user_autonomous_and_plugin_declare_the_same_pinned_tools() -> None:
     assert set(pins) <= user_names
     assert "decline_reply" not in user_names
     assert "admin_execute_action" not in user_names
+    user_callable = set(user_backend._callable_tool_names)
+    autonomous_callable = set(autonomous_backend._callable_tool_names)
+    assert user_callable == autonomous_callable
+    assert set(pins) <= user_callable
+    assert "decline_reply" not in autonomous_callable
+
+
+@pytest.mark.asyncio
+async def test_autonomous_can_execute_declared_writes_plugin_stays_closed() -> None:
+    calls: list[str] = []
+    pins = ("memory_change", "send_emoji")
+    registry = _registry(calls)
+
+    async def execute_write(name: str, _arguments: str, _runtime: object) -> object:
+        calls.append(name)
+        return {"ok": True, "data": {"called": name}}
+
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core-writes",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: (
+                _tool("memory_change", "改记忆"),
+                _tool("send_emoji", "发表情"),
+            ),
+            execute=execute_write,
+        )
+    )
+    runtime = replace(
+        _runtime(),
+        runtime_config=SimpleNamespace(
+            tooling=SimpleNamespace(
+                first_round_pin_ids=pins,
+                first_round_hard_cap=16,
+                schema_token_budget=12_000,
+                result_token_budget=8_000,
+                result_item_limit=32,
+                result_artifact_enabled=False,
+                result_artifact_retention_seconds=86400,
+            ),
+            mcp=None,
+            agent=SimpleNamespace(tool_result_max_characters=32_000),
+            web=SimpleNamespace(max_calls_per_turn=3),
+        ),
+        reply_effects=[],
+    )
+    autonomous = replace(runtime, origin=TurnOrigin.AUTONOMOUS_GROUP, read_only=False)
+    plugin = replace(
+        runtime,
+        origin=TurnOrigin.PLUGIN_BACKGROUND,
+        tools_closed=True,
+        read_only=True,
+        align_conversation_prefix_tools=True,
+        reply_effects=None,
+    )
+    agent_runtime = SimpleNamespace()
+    _, user_backend = _backend(registry, runtime)
+    _, autonomous_backend = _backend(registry, autonomous)
+    _, plugin_backend = _backend(registry, plugin)
+    user_backend.definitions(agent_runtime, web_was_used=False)
+    autonomous_backend.definitions(agent_runtime, web_was_used=False)
+    plugin_backend.definitions(agent_runtime, web_was_used=False)
+
+    arguments = "{}"
+    call = ToolCall(
+        id="memory-write",
+        function=ToolFunction(name="memory_change", arguments=arguments),
+    )
+    autonomous_backend.begin_batch((call,), agent_runtime)
+    written = json.loads(
+        await autonomous_backend.execute("memory_change", arguments, agent_runtime)
+    )
+    assert written["ok"] is True, json.dumps(written, ensure_ascii=False)
+    assert "memory_change" in calls
+
+    user_backend.begin_batch(
+        (
+            ToolCall(
+                id="user-write", function=ToolFunction(name="memory_change", arguments=arguments)
+            ),
+        ),
+        agent_runtime,
+    )
+    user_written = json.loads(await user_backend.execute("memory_change", arguments, agent_runtime))
+    assert user_written["ok"] is True
+
+    plugin_backend.begin_batch(
+        (
+            ToolCall(
+                id="plugin-write",
+                function=ToolFunction(name="memory_change", arguments=arguments),
+            ),
+        ),
+        agent_runtime,
+    )
+    rejected = json.loads(await plugin_backend.execute("memory_change", arguments, agent_runtime))
+    assert rejected["ok"] is False
+    assert rejected["error"] == "tools_closed"
 
 
 @pytest.mark.asyncio
@@ -560,7 +658,7 @@ async def test_autonomous_first_round_matches_user_and_loads_decline_via_request
     autonomous_runtime = replace(
         user_runtime,
         origin=TurnOrigin.AUTONOMOUS_GROUP,
-        read_only=True,
+        read_only=False,
     )
     agent_runtime = SimpleNamespace()
     _, user_backend = _backend(registry, user_runtime)
@@ -781,22 +879,26 @@ def test_mutation_access_exposes_only_memory_write_capability_initially() -> Non
     _service, backend = _backend(registry, exclusive)
 
     names = {tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)}
+    callable_ids = set(backend._callable_tool_names)
 
     assert "memory_change" in names
+    assert "memory_change" in callable_ids
     assert "get_my_capabilities" not in names
     assert "get_person_memories" not in names
-    assert "admin_execute_action" not in names
-    assert "web_search" not in names
+    assert "admin_execute_action" not in callable_ids
+    assert "web_search" not in callable_ids
 
     locator = replace(exclusive, memory_session=_exclusive_session(locator_open=True))
     _ignored, locator_backend = _backend(registry, locator)
     locator_names = {
         tool.name for tool in locator_backend.definitions(SimpleNamespace(), web_was_used=False)
     }
+    locator_callable = set(locator_backend._callable_tool_names)
     assert "memory_change" in locator_names
     assert "get_person_memories" in locator_names
-    assert "admin_execute_action" not in locator_names
-    assert "web_search" not in locator_names
+    assert "get_person_memories" in locator_callable
+    assert "admin_execute_action" not in locator_callable
+    assert "web_search" not in locator_callable
 
     read_backend = _ChatAgentBackend(  # type: ignore[arg-type]
         _Service(registry),

@@ -1900,8 +1900,7 @@ class ChatService:
             ) = await self._run_effect(turn_snapshot, build_messages)
             exclusive_write = memory_session is not None and memory_session.exclusive_write
             scheduled_automation_intent = bool(
-                not autonomous
-                and not visual_input_present
+                not visual_input_present
                 and self._automation_tools is not None
                 and any(
                     tool.name == "automation_create"
@@ -1960,16 +1959,12 @@ class ChatService:
                 inbound=inbound,
                 gateway=gateway,
                 allow_generic_onebot=(
-                    not autonomous
-                    and not visual_input_present
-                    and inbound.sender.user_id in self._settings.superusers
+                    not visual_input_present and inbound.sender.user_id in self._settings.superusers
                 ),
                 allow_admin_actions=(
-                    not autonomous
-                    and not visual_input_present
-                    and inbound.sender.user_id in self._settings.superusers
+                    not visual_input_present and inbound.sender.user_id in self._settings.superusers
                 ),
-                allow_automation=(not autonomous and not visual_input_present),
+                allow_automation=not visual_input_present,
                 conversation_key=identity.key,
                 trigger_message_id=inbound.message_id,
                 source_display_requested=source_display_requested,
@@ -1979,7 +1974,7 @@ class ChatService:
                 mentioned_user_ids=inbound.mentioned_user_ids,
                 runtime_config=runtime_config,
                 origin=turn_origin,
-                read_only=autonomous,
+                read_only=False,
                 turn_token=turn_token,
                 turn_snapshot=turn_snapshot,
                 reply_effects=reply_effects,

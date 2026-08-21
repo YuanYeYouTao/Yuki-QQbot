@@ -36,7 +36,7 @@ class VoicePreferenceService:
         if (
             change is None
             or change.duration is not VoicePreferenceDuration.PERSISTENT
-            or origin is not TurnOrigin.USER_MESSAGE
+            or origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
         ):
             return None
         return await self._repository.set(
@@ -53,9 +53,9 @@ class VoicePreferenceService:
         source_message_id: str,
         origin: TurnOrigin,
     ) -> PersonSpeechPreference | None:
-        """Write a long-lived preference only from a real user-message tool call."""
+        """Write a long-lived preference from a user @ or admitted autonomous turn."""
 
-        if origin is not TurnOrigin.USER_MESSAGE:
+        if origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}:
             return None
         return await self._repository.set(
             user_id,

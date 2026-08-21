@@ -92,7 +92,8 @@ class CapabilityPolicyEngine:
             if descriptor.model_name == "set_reply_target" and not context.reply_target_available:
                 continue
             if descriptor.risk is CapabilityRisk.DESTRUCTIVE and context.origin not in {
-                TurnOrigin.USER_MESSAGE
+                TurnOrigin.USER_MESSAGE,
+                TurnOrigin.AUTONOMOUS_GROUP,
             }:
                 continue
             visible.append(descriptor)
