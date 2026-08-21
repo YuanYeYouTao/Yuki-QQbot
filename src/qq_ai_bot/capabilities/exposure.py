@@ -229,13 +229,6 @@ class AuthorityFirstExposurePlanner:
         ) | frozenset(tool.name for tool in kernel_tools)
         if memory_view is not None and memory_view.exclusive_namespace:
             callable_ids = _restrict_exclusive_write(selected, kernel_tools, memory_view)
-            selected = [
-                item
-                for item in selected
-                if item.descriptor.model_name in callable_ids
-                or item.descriptor.namespace_id in memory_view.eager_namespaces
-            ]
-            selected_ids = {item.descriptor.model_name for item in selected}
         omitted = sum(
             1 for item in catalog.entries if item.descriptor.model_name not in selected_ids
         )

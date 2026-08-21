@@ -139,10 +139,10 @@ class TestOriginAndAuthority:
         assert decision.contract.write_policy is MemoryWritePolicy.DISABLED
         assert decision.reason is MemoryAccessReason.ORIGIN_RESTRICTED
 
-    def test_autonomous_group_cannot_persist_write(self) -> None:
+    def test_autonomous_group_can_persist_write_like_user(self) -> None:
         decision = resolve_memory_access(
             authority=_authority(TurnOrigin.AUTONOMOUS_GROUP),
             scene=_scene(),
         )
-        assert decision.contract.write_transition is MemoryWriteTransition.DENIED
-        assert decision.reason is MemoryAccessReason.ORIGIN_WRITE_DENIED
+        assert decision.reason is MemoryAccessReason.ORDINARY_NATURAL_LANGUAGE
+        assert decision.contract.write_transition is MemoryWriteTransition.REQUESTABLE

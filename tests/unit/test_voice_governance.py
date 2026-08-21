@@ -86,6 +86,32 @@ async def test_persistent_voice_preference_is_person_scoped_and_cascades(
     assert await repository.get("1001") is None
 
 
+@pytest.mark.asyncio
+async def test_autonomous_turn_can_write_voice_preference(database: Database) -> None:
+    people = PeopleRepository(database)
+    repository = VoicePreferenceRepository(database)
+    service = VoicePreferenceService(repository)
+    await people.observe(user_id="1001", nickname="测试用户")
+
+    saved = await service.set_persistent(
+        user_id="1001",
+        mode=VoicePreferenceMode.PREFER_VOICE,
+        source_message_id="auto-pref",
+        origin=TurnOrigin.AUTONOMOUS_GROUP,
+    )
+    assert saved is not None
+    assert saved.mode is VoicePreferenceMode.PREFER_VOICE
+
+    denied = await service.set_persistent(
+        user_id="1001",
+        mode=VoicePreferenceMode.TEXT_ONLY,
+        source_message_id="plugin-pref",
+        origin=TurnOrigin.PLUGIN_BACKGROUND,
+    )
+    assert denied is None
+    assert (await repository.get("1001")).mode is VoicePreferenceMode.PREFER_VOICE
+
+
 def test_voice_ledger_separates_spoken_text_from_internal_metadata() -> None:
     technical_summary = "Yuki 发送了一条语音，声线：roxy，风格：happy，语言：jp"
     media_only = OutboundMessage(

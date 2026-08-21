@@ -91,7 +91,7 @@ _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
 _HISTORY_TEXT_MAX = 4000
 _HISTORY_SEGMENT_MAX = 100
-_MEMORY_CHANGE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE})
+_MEMORY_CHANGE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 _MEMORY_INTENT_PROPERTIES = {
     "purpose": {
         "type": "string",
@@ -767,7 +767,7 @@ class AgentToolService:
         if (
             self._voice_available_for_turn(runtime)
             and not runtime.read_only
-            and runtime.origin is TurnOrigin.USER_MESSAGE
+            and runtime.origin in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
         ):
             tools.append(
                 ChatTool(
@@ -1032,7 +1032,10 @@ class AgentToolService:
         arguments: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
-        if runtime.origin is not TurnOrigin.USER_MESSAGE or runtime.read_only:
+        if (
+            runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+            or runtime.read_only
+        ):
             return self._result(error="voice_preference_forbidden", detail="本轮不能修改语音偏好")
         if self._voice_preferences is None:
             return self._result(error="speech_unavailable", detail="语音偏好服务不可用")
