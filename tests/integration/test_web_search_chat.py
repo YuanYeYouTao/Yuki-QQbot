@@ -425,6 +425,7 @@ async def test_chat_completions_profile_uses_tavily_fallback_before_request(
         web_enabled=False,
         web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
         tavily_api_key="test-placeholder",
+        tooling_first_round_pin_ids_csv="",
     )
     llm = NativeSourceFailureThenTavilyLLM()
     harness = build_harness(
@@ -467,6 +468,7 @@ async def test_explicit_domain_rule_routes_directly_to_tavily(
         web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
         tavily_api_key="test-placeholder",
         web_tavily_domains_csv="github.com",
+        tooling_first_round_pin_ids_csv="",
     )
     llm = DomainRoutedTavilyLLM(target_url)
     web = FakeWebSearchProvider(extracted={target_url: source})
@@ -496,6 +498,7 @@ async def test_tavily_keyword_without_verb_routes_directly_to_tavily(
         web_enabled=False,
         web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
         tavily_api_key="test-placeholder",
+        tooling_first_round_pin_ids_csv="",
     )
     llm = WebToolLLM()
     web = FakeWebSearchProvider(response=web_response())
@@ -534,6 +537,7 @@ async def test_chat_completions_url_read_uses_read_webpage(
         web_enabled=False,
         web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
         tavily_api_key="test-placeholder",
+        tooling_first_round_pin_ids_csv="",
     )
     llm = TargetMissThenTavilyLLM(target_url)
     web = FakeWebSearchProvider(extracted={target_url: source})
@@ -734,6 +738,7 @@ def _native_first_settings(database: Database):
         web_enabled=True,
         web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
         tavily_api_key="test-placeholder",
+        tooling_first_round_pin_ids_csv="",
     )
 
 

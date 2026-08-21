@@ -165,7 +165,11 @@ async def test_future_mcd_query_is_persisted_instead_of_executed_immediately(
 async def test_future_task_success_claim_is_blocked_without_create_tool_result(
     database: Database,
 ) -> None:
-    settings = make_settings(database.url, automation_enabled=True)
+    settings = make_settings(
+        database.url,
+        automation_enabled=True,
+        tooling_first_round_pin_ids_csv="",
+    )
 
     def responder(request: ChatRequest) -> ChatResponse:
         names = {tool.name for tool in request.tools}
@@ -229,6 +233,7 @@ async def test_automation_hint_keeps_web_search_available(database: Database) ->
         web_enabled=True,
         web_mode=WebMode.TAVILY,
         tavily_api_key="test-placeholder",
+        tooling_first_round_pin_ids_csv="",
     )
     web = FakeWebSearchProvider(
         response=WebSearchResponse(
