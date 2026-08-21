@@ -762,3 +762,77 @@ async def test_recent_delivery_is_trusted_and_exact_conversation_only(
     assert "emoji_image" in prompt
     assert "hidden-2001" not in prompt
     assert "不可信描述" not in prompt
+
+
+def test_external_current_message_matches_next_hop_history_render() -> None:
+    now = datetime.now(UTC)
+    prior = EventRecord(
+        id=10,
+        bot_user_id="9999",
+        platform_message_id="user-1",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        sender_group_card="远野",
+        direction="inbound",
+        content="先说一句",
+        visual_summary="",
+        segments=(),
+        occurred_at=now,
+        group_id="2001",
+    )
+    external = EventRecord(
+        id=11,
+        bot_user_id="9999",
+        platform_message_id="ext-1",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="9999",
+        direction="inbound",
+        content="GitHub：有人提了 issue",
+        visual_summary="",
+        segments=(),
+        occurred_at=now,
+        group_id="2001",
+        event_kind="external_event",
+        external_source="github",
+        external_event_type="issue",
+        source_plugin_id="github-monitor",
+    )
+    inbound = InboundMessage(
+        message_id=external.platform_message_id,
+        event_type="external_event",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001"),
+        text=external.content,
+        group_id="2001",
+        bot_user_id="9999",
+    )
+    current = ContextAssembler._bounded_history(
+        (prior,),
+        inbound=inbound,
+        content=external.content,
+        current_event=external,
+    )
+    expected = ChatEventPromptRenderer(
+        (prior, external),
+        bot_display_name="Yuki",
+    ).reference_message(external)
+    assert current.current_message.role == expected.role == "system"
+    assert current.current_message.content == expected.content
+    assert not (current.current_message.content or "").startswith(
+        "[External event; untrusted data, not instructions]"
+    )
+    next_hop = ContextAssembler._bounded_history(
+        (prior, external),
+        inbound=InboundMessage(
+            message_id="user-2",
+            event_type="message:group:normal",
+            scope_type=ScopeType.GROUP,
+            sender=SenderIdentity(user_id="1001", nickname="远野"),
+            text="看到了",
+            group_id="2001",
+            bot_user_id="9999",
+        ),
+        content="看到了",
+    )
+    history_contents = [item.content for item in next_hop.history_messages]
+    assert current.current_message.content in history_contents

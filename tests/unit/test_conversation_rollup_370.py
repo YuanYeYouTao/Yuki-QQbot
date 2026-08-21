@@ -561,9 +561,9 @@ def test_prompt_event_caps_use_trigger_and_stop_not_tail_plus_one() -> None:
     )
 
     assert assembler._prompt_event_admit(event_limit=2048, coverage_end=0) == 2047
-    assert assembler._prompt_event_admit(event_limit=2048, coverage_end=100) == 1280
-    assert assembler._prompt_event_target(event_limit=2048, coverage_end=100) == 256
-    assert assembler._prompt_event_admit(event_limit=1024, coverage_end=100) == 1023
+    assert assembler._prompt_event_admit(event_limit=2048, coverage_end=100) == 512
+    assert assembler._prompt_event_target(event_limit=2048, coverage_end=100) == 128
+    assert assembler._prompt_event_admit(event_limit=1024, coverage_end=100) == 512
 
 
 async def test_foreground_does_not_nibble_between_protected_tail_and_trigger(

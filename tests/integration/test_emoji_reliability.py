@@ -200,7 +200,7 @@ async def test_group_emoji_fast_path_sends_records_and_marks_usage(
 
     assert result.sent_messages == 1
     assert len(sender.messages) == 1 and sender.messages[0].media
-    assert len(provider.requests) == 3
+    assert len(provider.requests) == 2
     recent = await EventLedgerRepository(database).list_scope_recent(
         ConversationScope.group("9000", "2001"),
         limit=10,

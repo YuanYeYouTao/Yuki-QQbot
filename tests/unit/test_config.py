@@ -298,9 +298,9 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.context_metadata_budget_ratio == 0.04
     assert settings.memory_context_limit_per_entity == 4
     assert settings.memory_automatic_recall_continuation_limit == 2
-    assert settings.conversation_rollup_raw_tail_events == 256
+    assert settings.conversation_rollup_raw_tail_events == 128
     assert settings.conversation_rollup_raw_tail_characters == 20_480
-    assert settings.conversation_rollup_trigger_events == 1024
+    assert settings.conversation_rollup_trigger_events == 384
     assert settings.conversation_rollup_trigger_characters == 81_920
     assert settings.conversation_rollup_stop_events == 0
     assert settings.conversation_rollup_stop_characters == 0
@@ -312,6 +312,17 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.conversation_rollup_retry_max_seconds == 960
     assert settings.conversation_rollup_lease_heartbeat_seconds == 60
     assert settings.tooling_selected_tool_limit == 32
+    assert settings.tooling_first_round_hard_cap == 16
+    assert settings.tooling_first_round_pin_ids == (
+        "memory_change",
+        "get_person_memories",
+        "search_chat_history",
+        "get_relationship",
+        "get_self_memories",
+        "web_search",
+        "automation_create",
+        "send_emoji",
+    )
     assert settings.tooling_schema_token_budget == 12000
     assert settings.mcp_selected_tool_limit == 16
     assert settings.mcp_schema_token_budget == 8000

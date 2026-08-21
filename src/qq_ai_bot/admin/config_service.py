@@ -39,7 +39,7 @@ from qq_ai_bot.admin.models import (
     VisionRuntimeConfig,
     WebRuntimeConfig,
 )
-from qq_ai_bot.config import Settings
+from qq_ai_bot.config import Settings, _csv_tuple
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
 
@@ -1192,6 +1192,8 @@ class RuntimeConfigService:
                     if value("tooling.selected_tool_limit") is not None
                     else None
                 ),
+                first_round_hard_cap=int(cast(int, value("tooling.first_round_hard_cap"))),
+                first_round_pin_ids=_csv_tuple(str(value("tooling.first_round_pin_ids") or "")),
                 schema_token_budget=(
                     int(cast(int, value("tooling.schema_token_budget")))
                     if value("tooling.schema_token_budget") is not None

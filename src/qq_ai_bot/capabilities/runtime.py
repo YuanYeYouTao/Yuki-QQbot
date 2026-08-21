@@ -17,12 +17,14 @@ from qq_ai_bot.capabilities.catalog import (
     UnifiedToolCatalogEntry,
 )
 from qq_ai_bot.capabilities.exposure import (
+    DEFAULT_FIRST_ROUND_HARD_CAP,
     NO_LONGER_AUTHORIZED,
     SCHEMA_REVISION_CONFLICT,
     AuthorityFirstExposurePlanner,
     DeclaredSchemaLedger,
     ExposurePlan,
     is_memory_write_entry,
+    is_prefix_declarable,
 )
 from qq_ai_bot.capabilities.models import CapabilityDescriptor
 from qq_ai_bot.capabilities.namespace import is_valid_namespace_id, lookup_namespace
@@ -104,6 +106,7 @@ class TurnCapabilityRuntime:
         schema_token_budget: int | None = None,
         mcp_schema_token_budget: int | None = None,
         mcp_tool_limit: int | None = None,
+        first_round_hard_cap: int | None = None,
         ensure_metadata: EnsureMetadata | None = None,
         refresh_registry: RefreshRegistry | None = None,
         on_searched: OnCapabilitySearched | None = None,
@@ -116,6 +119,11 @@ class TurnCapabilityRuntime:
         self._policy_context = policy_context
         self._policy = CapabilityPolicyEngine()
         self._planner = AuthorityFirstExposurePlanner(
+            first_round_hard_cap=(
+                first_round_hard_cap
+                if first_round_hard_cap is not None
+                else DEFAULT_FIRST_ROUND_HARD_CAP
+            ),
             schema_token_budget=schema_token_budget,
             mcp_schema_token_budget=mcp_schema_token_budget,
             mcp_tool_limit=mcp_tool_limit,
@@ -446,7 +454,7 @@ class TurnCapabilityRuntime:
             entries=tuple(
                 entry
                 for entry in self._registry.catalog.entries
-                if entry.descriptor.model_name in visible_names
+                if entry.descriptor.model_name in visible_names or is_prefix_declarable(entry)
             ),
             scopes=self._registry.catalog.scopes,
             revision=self._registry.revision,

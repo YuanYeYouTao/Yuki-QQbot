@@ -42,6 +42,18 @@ def _csv_tuple(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+DEFAULT_FIRST_ROUND_PIN_IDS = (
+    "memory_change",
+    "get_person_memories",
+    "search_chat_history",
+    "get_relationship",
+    "get_self_memories",
+    "web_search",
+    "automation_create",
+    "send_emoji",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class BotIdentity:
     """Human-facing identity shared by deterministic bot subsystems."""
@@ -299,6 +311,11 @@ class Settings(BaseSettings):
     # request_tools can still load additional actor-authorized capabilities on demand.
     tooling_max_parallel_calls: int = 8
     tooling_selected_tool_limit: int | None = 32
+    tooling_first_round_hard_cap: int = 16
+    tooling_first_round_pin_ids_csv: str = Field(
+        default=",".join(DEFAULT_FIRST_ROUND_PIN_IDS),
+        validation_alias="TOOLING_FIRST_ROUND_PIN_IDS",
+    )
     tooling_schema_token_budget: int | None = 12000
     tooling_result_token_budget: int | None = None
     tooling_result_item_limit: int | None = None
@@ -331,9 +348,9 @@ class Settings(BaseSettings):
     conversation_rollup_poll_seconds: float = Field(default=1.0, gt=0)
     conversation_rollup_lease_seconds: int = Field(default=180, gt=0)
     conversation_rollup_model_timeout_seconds: float = Field(default=60.0, gt=0)
-    conversation_rollup_raw_tail_events: int = Field(default=256, ge=1)
+    conversation_rollup_raw_tail_events: int = Field(default=128, ge=1)
     conversation_rollup_raw_tail_characters: int = Field(default=20_480, ge=1)
-    conversation_rollup_trigger_events: int = Field(default=1024, ge=2)
+    conversation_rollup_trigger_events: int = Field(default=384, ge=2)
     conversation_rollup_trigger_characters: int = Field(default=81_920, ge=1)
     conversation_rollup_stop_events: int = Field(default=0, ge=0)
     conversation_rollup_stop_characters: int = Field(default=0, ge=0)
@@ -891,6 +908,10 @@ class Settings(BaseSettings):
     @cached_property
     def tooling(self) -> ToolingSettings:
         return ToolingSettings.model_validate(self)
+
+    @cached_property
+    def tooling_first_round_pin_ids(self) -> tuple[str, ...]:
+        return _csv_tuple(self.tooling_first_round_pin_ids_csv)
 
     @cached_property
     def mcp(self) -> MCPSettings:

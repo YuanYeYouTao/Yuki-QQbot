@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalogEntry
 from qq_ai_bot.capabilities.models import (
     CapabilityDescriptor,
@@ -21,7 +22,7 @@ CONDITIONAL_KERNEL_TOOLS = frozenset(
 )
 DEFAULT_LEXICAL_CANDIDATE_LIMIT = 10
 DEFAULT_NON_RESIDENT_LIMIT = 8
-DEFAULT_FIRST_ROUND_HARD_CAP = 12
+DEFAULT_FIRST_ROUND_HARD_CAP = 16
 SCHEMA_REVISION_CONFLICT = "capability_schema_revision_conflict"
 NO_LONGER_AUTHORIZED = "capability_no_longer_authorized"
 BUNDLE_EXCEEDS_BUDGET = "bundle_exceeds_schema_budget"
@@ -162,10 +163,10 @@ class AuthorityFirstExposurePlanner:
         selected: list[UnifiedToolCatalogEntry] = []
         selected_ids: set[str] = set()
 
-        def add(entry: UnifiedToolCatalogEntry | None) -> None:
+        def add(entry: UnifiedToolCatalogEntry | None, *, require_requestable: bool = True) -> None:
             if entry is None or entry.descriptor.model_name in selected_ids:
                 return
-            if entry.descriptor.model_name not in requestable_ids:
+            if require_requestable and entry.descriptor.model_name not in requestable_ids:
                 return
             if _is_synthetic(entry) or _elevated_capability(entry):
                 return
@@ -193,7 +194,10 @@ class AuthorityFirstExposurePlanner:
             add(candidate)
 
         for name in priority_ids:
-            add(by_id.get(name))
+            candidate = by_id.get(name)
+            if candidate is None or not is_prefix_declarable(candidate):
+                continue
+            add(candidate, require_requestable=False)
 
         reason = "ready"
         selected, selected_ids, rejected = _expand_selected_bundles(
@@ -218,9 +222,11 @@ class AuthorityFirstExposurePlanner:
                 entry.descriptor.model_name for entry in selected if entry.descriptor.bundle_scopes
             },
         )
-        callable_ids = frozenset(item.descriptor.model_name for item in selected) | frozenset(
-            tool.name for tool in kernel_tools
-        )
+        callable_ids = frozenset(
+            item.descriptor.model_name
+            for item in selected
+            if item.descriptor.model_name in requestable_ids
+        ) | frozenset(tool.name for tool in kernel_tools)
         if memory_view is not None and memory_view.exclusive_namespace:
             callable_ids = _restrict_exclusive_write(selected, kernel_tools, memory_view)
             selected = [
@@ -320,6 +326,16 @@ def _elevated_capability(entry: UnifiedToolCatalogEntry) -> bool:
     descriptor = entry.descriptor
     return bool(descriptor.required_permissions) or (
         descriptor.trust_source is CapabilityTrustSource.ADMIN
+    )
+
+
+def is_prefix_declarable(entry: UnifiedToolCatalogEntry) -> bool:
+    """True when a tool may occupy the shared first-round tools[] prefix."""
+
+    return (
+        not _is_synthetic(entry)
+        and not _elevated_capability(entry)
+        and TurnOrigin.USER_MESSAGE in entry.descriptor.allowed_origins
     )
 
 
