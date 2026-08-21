@@ -150,9 +150,7 @@ class FtsCapabilitySearchIndex:
         for alias, capability_ids in self._aliases.items():
             if alias and alias in query_terms:
                 for capability_id in capability_ids:
-                    ranked[capability_id] = max(
-                        ranked.get(capability_id, 0.0), _alias_score(alias)
-                    )
+                    ranked[capability_id] = max(ranked.get(capability_id, 0.0), _alias_score(alias))
         if self._connection is not None:
             match = _fts_match_expression(cleaned)
             if match:

@@ -600,9 +600,7 @@ class _ChatAgentBackend(AgentToolBackend):
             schema_token_budget=tooling.schema_token_budget if tooling is not None else None,
             mcp_schema_token_budget=mcp.schema_token_budget if mcp is not None else None,
             mcp_tool_limit=mcp.selected_tool_limit if mcp is not None else None,
-            first_round_hard_cap=(
-                tooling.first_round_hard_cap if tooling is not None else None
-            ),
+            first_round_hard_cap=(tooling.first_round_hard_cap if tooling is not None else None),
             ensure_metadata=ensure_metadata,
             refresh_registry=self._refresh_capability_registry,
             on_searched=self._publish_capability_searched,
