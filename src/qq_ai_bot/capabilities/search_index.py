@@ -27,6 +27,7 @@ QUERY_TERM_LIMIT = 64
 FTS_CANDIDATE_LIMIT = 48
 EXACT_NAME_SCORE = 10_000.0
 EXACT_ALIAS_SCORE = 8_000.0
+ALIAS_LENGTH_BONUS = 20.0
 NAMESPACE_BONUS = 120.0
 PARAMETER_BONUS = 40.0
 AFFINITY_BONUS = 25.0
@@ -144,12 +145,14 @@ class FtsCapabilitySearchIndex:
             if exact_id is not None:
                 ranked[exact_id] = max(ranked.get(exact_id, 0.0), EXACT_NAME_SCORE)
             for alias_id in self._aliases.get(key, ()):
-                ranked[alias_id] = max(ranked.get(alias_id, 0.0), EXACT_ALIAS_SCORE)
+                ranked[alias_id] = max(ranked.get(alias_id, 0.0), _alias_score(key))
         query_terms = set(_query_terms(cleaned))
         for alias, capability_ids in self._aliases.items():
             if alias and alias in query_terms:
                 for capability_id in capability_ids:
-                    ranked[capability_id] = max(ranked.get(capability_id, 0.0), EXACT_ALIAS_SCORE)
+                    ranked[capability_id] = max(
+                        ranked.get(capability_id, 0.0), _alias_score(alias)
+                    )
         if self._connection is not None:
             match = _fts_match_expression(cleaned)
             if match:
@@ -203,6 +206,10 @@ class FtsCapabilitySearchIndex:
 
     def document(self, capability_id: str) -> CapabilitySearchDocument | None:
         return self._documents.get(capability_id)
+
+
+def _alias_score(alias: str) -> float:
+    return EXACT_ALIAS_SCORE + min(len(alias.strip()), 24) * ALIAS_LENGTH_BONUS
 
 
 def _compact(value: str) -> str:

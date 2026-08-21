@@ -83,6 +83,11 @@ def _runtime(catalog) -> TurnCapabilityRuntime:
         "automation-create",
         "请求 automation create",
         "你去请求automation create",
+        "定时任务能力",
+        "请求定时任务",
+        "两分钟后提醒我洗澡",
+        "一分钟后提醒我喝水",
+        "创建定时任务",
     ),
 )
 def test_spaced_automation_create_outranks_read_and_cancel_tools(query: str) -> None:
@@ -120,3 +125,28 @@ async def test_request_tools_loads_automation_create_from_spaced_name() -> None:
     loaded = {item["name"] for item in payload["data"]["loaded_tools"]}
     assert "automation_create" in loaded
     assert "automation_create" in runtime.callable_capability_ids()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    (
+        "定时任务能力",
+        "两分钟后提醒我洗澡",
+        "一分钟后提醒我喝水",
+    ),
+)
+async def test_request_tools_loads_automation_create_from_chinese_alias(query: str) -> None:
+    runtime = _runtime(_automation_catalog())
+    runtime.initial_exposure(
+        CapabilityQuery(text="你好", origin=TurnOrigin.USER_MESSAGE, limit=4)
+    )
+    assert "automation_create" not in runtime.callable_capability_ids()
+
+    payload = await runtime.request_tools(
+        CapabilityQuery(text=query, origin=TurnOrigin.USER_MESSAGE, limit=4)
+    )
+
+    assert payload["ok"] is True
+    loaded = {item["name"] for item in payload["data"]["loaded_tools"]}
+    assert "automation_create" in loaded
