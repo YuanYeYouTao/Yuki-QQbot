@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
@@ -14,6 +16,7 @@ from qq_ai_bot.domain.messages import (
     ResponseCitation,
 )
 from qq_ai_bot.model_runtime.models import ModelCapability, ModelProtocol
+from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.web.models import WebMode
 from qq_ai_bot.web.native_sources import recover_native_web_response
@@ -32,6 +35,18 @@ def test_web_mode_preserves_legacy_behavior_and_native_needs_no_tavily_key() -> 
     )
     assert native.web.mode is WebMode.NATIVE
     assert native.web_configured
+
+
+def test_prefix_web_capabilities_follow_web_mode_only() -> None:
+    disabled = SimpleNamespace(web=SimpleNamespace(mode=WebMode.DISABLED))
+    native = SimpleNamespace(web=SimpleNamespace(mode=WebMode.NATIVE))
+    hybrid = SimpleNamespace(web=SimpleNamespace(mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK))
+    tavily = SimpleNamespace(web=SimpleNamespace(mode=WebMode.TAVILY))
+
+    assert ChatService._prefix_web_capabilities(disabled) == frozenset()  # type: ignore[arg-type]
+    assert ChatService._prefix_web_capabilities(native) == frozenset({"web", "web_search"})  # type: ignore[arg-type]
+    assert ChatService._prefix_web_capabilities(hybrid) == frozenset({"web", "web_search"})  # type: ignore[arg-type]
+    assert ChatService._prefix_web_capabilities(tavily) == frozenset({"web", "web_search"})  # type: ignore[arg-type]
 
 
 def test_native_binder_intersects_scope_mode_protocol_and_capability() -> None:

@@ -40,7 +40,7 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
 )
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
-from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.model_runtime.models import ModelCapability, ModelProtocol, ModelTask
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.time.models import TimeContext
@@ -161,15 +161,12 @@ class AgentRunner:
         reusable_tool_results: dict[tuple[str, str], str] = {}
         finalization_prompt_added = False
         web_route = runtime.web_route
-        tavily_fallback = bool(
-            runtime.force_tavily_fallback
-            or (web_route is not None and web_route.provider is WebProvider.TAVILY)
-        )
         deployment_tavily = (
             web_route is not None
             and web_route.provider is WebProvider.TAVILY
             and web_route.reason is WebRouteReason.MODE
         )
+        tavily_fallback = bool(runtime.force_tavily_fallback or deployment_tavily)
         if (runtime.force_tavily_fallback or deployment_tavily) and tools is not None:
             enable_fallback = getattr(tools, "enable_native_web_fallback", None)
             if callable(enable_fallback):
@@ -200,14 +197,12 @@ class AgentRunner:
                 not tavily_fallback
                 and web_search_selected
                 and web_mode is WebMode.NATIVE_WITH_TAVILY_FALLBACK
-                and web_route is not None
-                and web_route.provider is WebProvider.NATIVE
                 and not native_definitions
+                and not self._native_web_bindable()
                 and tools is not None
             ):
-                # A Chat-Completions-only profile cannot accept native tools.
-                # Treat that as an unavailable native route before the first
-                # request, so the authorized Tavily fallback is actually shown.
+                # Only protocol/profile gaps count as native-unavailable.
+                # An empty allowed_capabilities set is not a bind failure.
                 enable_fallback = getattr(tools, "enable_native_web_fallback", None)
                 if callable(enable_fallback):
                     enable_fallback()
@@ -1025,6 +1020,12 @@ class AgentRunner:
             citations=tuple(citations),
             response_status=response_status,
             web_route=web_route,
+        )
+
+    def _native_web_bindable(self) -> bool:
+        return (
+            self._models.protocol(self._task) is ModelProtocol.RESPONSES
+            and ModelCapability.NATIVE_WEB_SEARCH in self._models.capabilities(self._task)
         )
 
     @staticmethod

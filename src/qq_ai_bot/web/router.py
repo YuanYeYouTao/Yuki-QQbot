@@ -40,6 +40,11 @@ class WebProviderRouter:
         self._fallback_on_access_denied = fallback_on_access_denied
         self._fallback_on_target_miss = fallback_on_target_miss
 
+    def deployment_route(self, mode: WebMode | str) -> WebRouteDecision | None:
+        """First-hop web shape from WEB_MODE only, ignoring the current sentence."""
+
+        return self.select("", mode)
+
     def select(self, message: str, mode: WebMode | str) -> WebRouteDecision | None:
         """Choose the initial provider from deployment mode and current user input."""
 

@@ -174,3 +174,21 @@ def test_router_ignores_private_urls_and_can_disable_outcome_fallbacks() -> None
         ),
     )
     assert router.native_terminal_failure(decision, events=failed, citations=()) is None
+
+
+def test_deployment_route_ignores_sentence_url_and_override() -> None:
+    router = WebProviderRouter(tavily_domains=frozenset({"github.com"}))
+    sentence = router.select(
+        "Tavily搜索 https://github.com/example/project",
+        WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+    )
+    prefix = router.deployment_route(WebMode.NATIVE_WITH_TAVILY_FALLBACK)
+    tavily_mode = router.deployment_route(WebMode.TAVILY)
+
+    assert sentence is not None
+    assert sentence.provider is WebProvider.TAVILY
+    assert prefix is not None
+    assert prefix.provider is WebProvider.NATIVE
+    assert tavily_mode is not None
+    assert tavily_mode.provider is WebProvider.TAVILY
+    assert tavily_mode.reason is WebRouteReason.MODE

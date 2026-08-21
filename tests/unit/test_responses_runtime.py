@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -515,3 +516,75 @@ async def test_native_timeout_falls_back_once_without_exposing_both_web_tools() 
     assert executor.requests[0].native_tools and not executor.requests[0].tools
     assert executor.requests[1].tools and not executor.requests[1].native_tools
     assert backend.enabled
+
+
+class _PinningFallbackBackend(_FallbackBackend):
+    def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
+        del runtime, web_was_used
+        tools = [ChatTool(name="web_search", description="search", parameters={})]
+        if self.enabled:
+            tools.append(ChatTool(name="read_webpage", description="read", parameters={}))
+        return tuple(tools)
+
+
+@pytest.mark.asyncio
+async def test_empty_allowed_capabilities_do_not_trigger_first_hop_tavily() -> None:
+    executor = _ResponsesExecutor(
+        [ChatResponse(content="ok", latency_seconds=0)],
+    )
+    backend = _PinningFallbackBackend()
+    await AgentRunner(
+        cast(TaskModelExecutor, executor),
+        ConcurrencyManager(1),
+    ).run(
+        (ChatMessage(role="user", content="search"),),
+        _runtime(
+            max_requests=2,
+            web_mode="native_with_tavily_fallback",
+            allowed=frozenset(),
+        ),
+        backend,
+    )
+
+    first = executor.requests[0]
+    assert {tool.name for tool in first.tools} == {"web_search"}
+    assert not first.native_tools
+    assert backend.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_first_hop_tools_and_native_match_across_message_origins() -> None:
+    shapes: list[tuple[frozenset[str], tuple[str, ...]]] = []
+    for origin in (
+        TurnOrigin.USER_MESSAGE,
+        TurnOrigin.AUTONOMOUS_GROUP,
+        TurnOrigin.PLUGIN_BACKGROUND,
+    ):
+        executor = _ResponsesExecutor(
+            [ChatResponse(content="ok", latency_seconds=0)],
+        )
+        runtime = _runtime(
+            max_requests=2,
+            web_mode="native_with_tavily_fallback",
+            allowed=frozenset({"web", "web_search"}),
+        )
+        runtime = replace(runtime, origin=origin)
+        await AgentRunner(
+            cast(TaskModelExecutor, executor),
+            ConcurrencyManager(1),
+        ).run(
+            (ChatMessage(role="user", content="search"),),
+            runtime,
+            _FallbackBackend(),
+        )
+        first = executor.requests[0]
+        shapes.append(
+            (
+                frozenset(tool.name for tool in first.tools),
+                tuple(tool.type.value for tool in first.native_tools),
+            )
+        )
+
+    assert shapes[0] == shapes[1] == shapes[2]
+    assert shapes[0][0] == frozenset()
+    assert shapes[0][1] == ("web_search",)

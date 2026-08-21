@@ -155,7 +155,7 @@ from qq_ai_bot.speech.reply_effect import (
 )
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
-from qq_ai_bot.web.models import WebProvider, WebRouteReason
+from qq_ai_bot.web.models import WebMode, WebProvider, WebRouteReason
 from qq_ai_bot.web.native_sources import recover_native_web_response
 from qq_ai_bot.web.router import WebProviderRouter
 from yuki_plugin_sdk.events import EventName
@@ -1938,17 +1938,18 @@ class ChatService:
             reply_effects: list[ReplyEffect] = []
             if self._memory_context is not None and memory_session is not None:
                 self._memory_context.metrics.record_runtime_access(memory_session.contract)
-            web_route = self._web_router.select(content, runtime_config.web.mode)
-            if web_route is not None:
+            logged_web_route = self._web_router.select(content, runtime_config.web.mode)
+            web_route = self._web_router.deployment_route(runtime_config.web.mode)
+            if logged_web_route is not None:
                 logger.info(
                     "web_route_selected conversation_hash=%s provider=%s reason=%s "
                     "matched_domain=%s attempt=%d fallback_allowed=%s",
                     identifier_hash(identity.key) or "missing",
-                    web_route.provider.value,
-                    web_route.reason.value,
-                    web_route.matched_domain or "none",
-                    web_route.attempt,
-                    web_route.fallback_allowed,
+                    logged_web_route.provider.value,
+                    logged_web_route.reason.value,
+                    logged_web_route.matched_domain or "none",
+                    logged_web_route.attempt,
+                    logged_web_route.fallback_allowed,
                 )
             voice_spontaneous_allowed = await self._voice_spontaneous_allowed(
                 identity.key,
@@ -2786,6 +2787,15 @@ class ChatService:
         )
         return resolution.platform_message_id
 
+    @staticmethod
+    def _prefix_web_capabilities(config: RuntimeConfigSnapshot) -> frozenset[str]:
+        """Prefix native-web binding follows WEB_MODE, not origin or tools_closed."""
+
+        mode = config.web.mode
+        if mode is WebMode.DISABLED:
+            return frozenset()
+        return frozenset({"web", "web_search"})
+
     async def _run_agent(
         self,
         conversation_key: str,
@@ -2827,11 +2837,7 @@ class ChatService:
                 gateway=runtime.gateway,
                 runtime_config=config,
                 current_time=current_time,
-                allowed_capabilities=(
-                    frozenset({"web", "web_search"})
-                    if not runtime.tools_closed and not runtime.read_only
-                    else frozenset()
-                ),
+                allowed_capabilities=self._prefix_web_capabilities(config),
                 max_tool_calls=config.agent.max_tool_calls,
                 max_model_requests=(
                     min(
@@ -2975,7 +2981,7 @@ class ChatService:
             turn_snapshot=turn_snapshot,
             reply_target_control=ReplyTargetControl(visible_event_ids=context.visible_event_ids),
             selection_query=event.content,
-            web_route=self._web_router.select("", runtime.web.mode),
+            web_route=self._web_router.deployment_route(runtime.web.mode),
             max_model_requests_override=min(2, runtime.agent.max_model_requests),
             prompt_diagnostics=PromptRequestDiagnostics(
                 conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
