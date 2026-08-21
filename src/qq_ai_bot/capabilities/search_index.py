@@ -22,6 +22,7 @@ from qq_ai_bot.capabilities.search_document import (
 _ASCII_TERM = re.compile(r"[a-z0-9_.-]{2,}")
 _CJK_RUN = re.compile(r"[\u3400-\u9fff]{2,}")
 _FTS_SPECIAL = re.compile(r'["\'*:^]')
+_NAME_SEPARATORS = re.compile(r"[-_\s]+")
 QUERY_TERM_LIMIT = 64
 FTS_CANDIDATE_LIMIT = 48
 EXACT_NAME_SCORE = 10_000.0
@@ -30,6 +31,7 @@ NAMESPACE_BONUS = 120.0
 PARAMETER_BONUS = 40.0
 AFFINITY_BONUS = 25.0
 SCHEMA_COST_PENALTY_PER_TOKEN = 0.02
+SCHEMA_COST_PENALTY_CAP = 8.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,15 +82,23 @@ class FtsCapabilitySearchIndex:
         stored: dict[str, CapabilitySearchDocument] = {}
         for document in documents:
             stored[document.capability_id] = document
-            exact_names[document.model_name.casefold()] = document.capability_id
-            exact_names[document.canonical_name.casefold()] = document.capability_id
+            _register_name_keys(
+                exact_names,
+                document.model_name,
+                document.capability_id,
+                primary=True,
+            )
+            _register_name_keys(
+                exact_names,
+                document.canonical_name,
+                document.capability_id,
+                primary=True,
+            )
             for alias in document.aliases:
-                key = alias.casefold()
-                if not key:
-                    continue
-                existing = aliases.get(key, ())
-                if document.capability_id not in existing:
-                    aliases[key] = (*existing, document.capability_id)
+                for key in _name_lookup_keys(alias):
+                    existing = aliases.get(key, ())
+                    if document.capability_id not in existing:
+                        aliases[key] = (*existing, document.capability_id)
             connection.execute(
                 """
                 INSERT INTO capability_fts(
@@ -99,7 +109,7 @@ class FtsCapabilitySearchIndex:
                     document.capability_id,
                     _fts_document_text(document.namespace_id, document.namespace_description),
                     _fts_document_text(document.canonical_name),
-                    _fts_document_text(document.model_name),
+                    _fts_document_text(*_model_name_search_parts(document.model_name)),
                     _fts_document_text(*document.aliases, *document.tags),
                     _fts_document_text(
                         document.description,
@@ -129,11 +139,12 @@ class FtsCapabilitySearchIndex:
             return ()
         folded = cleaned.casefold()
         ranked: dict[str, float] = {}
-        exact_id = self._exact_names.get(folded)
-        if exact_id is not None:
-            ranked[exact_id] = EXACT_NAME_SCORE
-        for alias_id in self._aliases.get(folded, ()):
-            ranked[alias_id] = max(ranked.get(alias_id, 0.0), EXACT_ALIAS_SCORE)
+        for key in _query_name_keys(cleaned):
+            exact_id = self._exact_names.get(key)
+            if exact_id is not None:
+                ranked[exact_id] = max(ranked.get(exact_id, 0.0), EXACT_NAME_SCORE)
+            for alias_id in self._aliases.get(key, ()):
+                ranked[alias_id] = max(ranked.get(alias_id, 0.0), EXACT_ALIAS_SCORE)
         query_terms = set(_query_terms(cleaned))
         for alias, capability_ids in self._aliases.items():
             if alias and alias in query_terms:
@@ -169,7 +180,10 @@ class FtsCapabilitySearchIndex:
                 adjusted += PARAMETER_BONUS
             if any(term in folded for term in document.namespace_path):
                 adjusted += NAMESPACE_BONUS
-            adjusted -= document.estimated_schema_tokens * SCHEMA_COST_PENALTY_PER_TOKEN
+            adjusted -= min(
+                document.estimated_schema_tokens * SCHEMA_COST_PENALTY_PER_TOKEN,
+                SCHEMA_COST_PENALTY_CAP,
+            )
             hits.append(
                 CapabilitySearchHit(
                     capability_id=document.capability_id,
@@ -193,6 +207,57 @@ class FtsCapabilitySearchIndex:
 
 def _compact(value: str) -> str:
     return "".join(character for character in value.casefold() if character.isalnum())
+
+
+def _query_name_keys(query: str) -> tuple[str, ...]:
+    """Exact-name keys for the whole query and any consecutive ASCII tool-name span."""
+
+    keys = list(_name_lookup_keys(query))
+    ascii_terms = _ASCII_TERM.findall(query.casefold())
+    for start in range(len(ascii_terms)):
+        for end in range(start + 1, len(ascii_terms) + 1):
+            for key in _name_lookup_keys("_".join(ascii_terms[start:end])):
+                if key not in keys:
+                    keys.append(key)
+    return tuple(keys)
+
+
+def _name_lookup_keys(value: str) -> tuple[str, ...]:
+    """Treat spaces, hyphens and underscores as the same tool-name spelling."""
+
+    folded = value.casefold().strip()
+    if not folded:
+        return ()
+    keys = [folded]
+    underscored = _NAME_SEPARATORS.sub("_", folded).strip("_")
+    spaced = _NAME_SEPARATORS.sub(" ", folded).strip()
+    compact = _compact(folded)
+    for item in (underscored, spaced, compact):
+        if item and item not in keys:
+            keys.append(item)
+    return tuple(keys)
+
+
+def _register_name_keys(
+    exact_names: dict[str, str],
+    raw_name: str,
+    capability_id: str,
+    *,
+    primary: bool,
+) -> None:
+    for index, key in enumerate(_name_lookup_keys(raw_name)):
+        if primary and index == 0:
+            exact_names[key] = capability_id
+            continue
+        exact_names.setdefault(key, capability_id)
+
+
+def _model_name_search_parts(name: str) -> tuple[str, ...]:
+    parts = [name]
+    for token in _NAME_SEPARATORS.split(name):
+        if len(token) >= 2 and token not in parts:
+            parts.append(token)
+    return tuple(parts)
 
 
 def _query_terms(query: str) -> tuple[str, ...]:
@@ -261,6 +326,7 @@ def _fts_match_expression(query: str) -> str:
 
 __all__ = [
     "AFFINITY_BONUS",
+    "SCHEMA_COST_PENALTY_CAP",
     "TOKENIZER_VERSION",
     "CapabilitySearchHit",
     "FtsCapabilitySearchIndex",
