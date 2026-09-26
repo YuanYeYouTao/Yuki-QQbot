@@ -93,6 +93,12 @@ async def test_health_uses_bounded_facts_without_text_or_identifiers(database, t
             }
         )
         state.observer_checkpoint["health"]["failures"] = 2
+        state.observer_checkpoint["last_failure"] = {
+            "category": "authentication",
+            "status": 401,
+            "source": "private-failure-marker",
+            "at": 0,
+        }
         report = await host.health()
         facts = report["diagnostics"]
         assert facts["selector"]["fallbacks"]["other"] == 1
@@ -108,6 +114,8 @@ async def test_health_uses_bounded_facts_without_text_or_identifiers(database, t
         assert provider["input_tokens_known_sum"] == 17
         assert provider["output_tokens_known_sum"] is None
         assert provider["consecutive_failures_sum"] == 2
+        assert provider["last_failure_categories"] == {"authentication": 1}
+        assert provider["last_failure_http_statuses"] == {"401": 1}
         assert provider["latency_seconds"] is provider["accuracy"] is None
         encoded = json.dumps(report)
         for secret in (*identities, item.scene.conversation_id, "private-", "secret-"):

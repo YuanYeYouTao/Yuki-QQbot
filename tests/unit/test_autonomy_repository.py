@@ -49,9 +49,7 @@ def _event(number: int = 1, revision: str = "v1") -> tuple[InitiativeSource, ...
 
 async def _enable(repository: AutonomyRepository, scene: Scene) -> AutonomyBinding:
     current = await repository.ensure_binding(scene.conversation, 1)
-    return await repository.transition(
-        current, master_enabled=True, external_enabled=True, semantic_ready=True
-    )
+    return await repository.transition(current, master_enabled=True, external_enabled=True)
 
 
 async def _accept(repository, scene, binding, proposal="p1", sources=None):
@@ -73,17 +71,11 @@ async def test_selector_defaults_off_and_cas_fences_stale_provider_recovery(data
     assert initial.effective_owner is AutonomyOwner.OFF
     assert not initial.master_enabled and not initial.external_enabled
     semantic = await _enable(repository, scene)
-    off = await repository.transition(
-        semantic, master_enabled=False, external_enabled=True, semantic_ready=False
-    )
+    off = await repository.transition(semantic, master_enabled=False, external_enabled=True)
     with pytest.raises(AutonomyConflict, match="autonomy_binding_changed"):
-        await repository.transition(
-            semantic, master_enabled=True, external_enabled=True, semantic_ready=True
-        )
+        await repository.transition(semantic, master_enabled=True, external_enabled=True)
     assert await repository.get_binding(scene.conversation, 1) == off
-    recovered = await repository.transition(
-        off, master_enabled=False, external_enabled=True, semantic_ready=True
-    )
+    recovered = await repository.transition(off, master_enabled=False, external_enabled=True)
     assert recovered == off
     assert (await _accept(repository, scene, semantic)).outcome == "disabled"
 
@@ -93,12 +85,8 @@ async def test_parallel_selector_updates_have_one_winner(database):
     repository = AutonomyRepository(database)
     initial = await repository.ensure_binding(scene.conversation, 1)
     results = await asyncio.gather(
-        repository.transition(
-            initial, master_enabled=True, external_enabled=True, semantic_ready=True
-        ),
-        repository.transition(
-            initial, master_enabled=True, external_enabled=False, semantic_ready=False
-        ),
+        repository.transition(initial, master_enabled=True, external_enabled=True),
+        repository.transition(initial, master_enabled=True, external_enabled=False),
         return_exceptions=True,
     )
     assert sum(isinstance(result, AutonomyBinding) for result in results) == 1
@@ -146,9 +134,7 @@ async def test_mode_switch_preserves_accepted_work_and_cross_owner_source_dedup(
     repository = AutonomyRepository(database)
     binding = await _enable(repository, scene)
     accepted = await _accept(repository, scene, binding)
-    legacy = await repository.transition(
-        binding, master_enabled=True, external_enabled=False, semantic_ready=False
-    )
+    legacy = await repository.transition(binding, master_enabled=True, external_enabled=False)
     assert (await _accept(repository, scene, binding, "late", _event(2))).outcome == "stale_binding"
     assert (await _accept(repository, scene, binding)).run.run_id == accepted.run.run_id
     assert (await _accept(repository, scene, legacy, "fresh", _event(2))).outcome == "busy"
@@ -170,9 +156,7 @@ async def test_memory_only_source_and_feedback_survive_connection_restart_and_ma
     binding = await _enable(repository, scene)
     memory = (InitiativeSource(InitiativeSourceKind.MEMORY, "42", "fact-revision:3"),)
     accepted = await _accept(repository, scene, binding, sources=memory)
-    await repository.transition(
-        binding, master_enabled=False, external_enabled=False, semantic_ready=False
-    )
+    await repository.transition(binding, master_enabled=False, external_enabled=False)
     await database.engine.dispose()
     reopened = Database(database.url)
     try:

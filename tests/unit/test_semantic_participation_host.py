@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
 from sqlalchemy import func, select, update
 from tests.unit.test_memory_mutation import _event
@@ -180,7 +181,8 @@ async def test_model_profile_hot_reload_preserves_state_and_last_good_value(data
         before_state = item.controller.state.model_dump_json()
         before_rate = item.controller.intrinsic_opportunity(item.controller.state.now)
 
-        profile.write_text('{"intrinsic_interval_seconds":7200}', encoding="utf-8")
+        interval = item.controller.parameters.intrinsic_interval_seconds / 2
+        profile.write_text(json.dumps({"intrinsic_interval_seconds": interval}), encoding="utf-8")
         host._refresh_model_parameters()
         assert item.controller.intrinsic_opportunity(item.controller.state.now) == pytest.approx(
             before_rate * 2
@@ -334,16 +336,16 @@ async def test_real_route_admission_dispatch_and_reconcile_create_one_actorless_
 
 
 @pytest.mark.parametrize("master", [False, True])
-async def test_missing_key_uses_legacy_only_while_master_enabled(database, tmp_path, master):
+async def test_missing_key_retains_explicit_semantic_policy(database, tmp_path, master):
     host, policy = await _host(database, tmp_path, observer=False)
     policy.autonomous_enabled = master
     try:
         event = await _event_and_route(database, host.app.ledger)
-        assert await host.legacy_allowed(_message(event)) is master
-        assert await host.accept_legacy(_message(event)) is master
+        assert not await host.legacy_allowed(_message(event))
+        assert not await host.accept_legacy(_message(event))
         binding = await host.repository.get_binding(event.canonical_conversation_id, 1)
-        assert binding.effective_owner is (AutonomyOwner.LEGACY if master else AutonomyOwner.OFF)
-        assert len(await _runs(host)) == int(master)
+        assert binding.effective_owner is (AutonomyOwner.SEMANTIC if master else AutonomyOwner.OFF)
+        assert not await _runs(host)
     finally:
         await host.close()
 
@@ -361,6 +363,42 @@ async def test_valid_unknown_is_semantic_health_not_legacy_fallback(database, tm
         assert not await host.legacy_allowed(_message(event))
         assert not await host.accept_legacy(_message(event))
         assert not await _runs(host)
+    finally:
+        await host.close()
+
+
+async def test_observer_outage_does_not_disable_intrinsic_or_switch_owner(
+    database, tmp_path, monkeypatch
+):
+    host, _ = await _host(database, tmp_path)
+    try:
+        event = await _event_and_route(database, host.app.ledger)
+        item = await _item(host, event)
+
+        async def unavailable(snapshot):
+            raise httpx.ConnectError("synthetic")
+
+        host._observer.evaluate = unavailable
+        item.observation.health.failures = 3
+        item.observation.health.degraded = True
+        state = item.controller.state.model_dump_json()
+        binding = await host._binding(item)
+        assert binding.effective_owner is AutonomyOwner.SEMANTIC
+        assert item.controller.state.model_dump_json() == state
+        epoch = binding.controller_epoch
+
+        monkeypatch.setattr(item.controller, "_sample", lambda _sequence, _stream: 0.0)
+        # First advance synchronizes the binding epoch; second samples a real
+        # intrinsic proposal and exercises Host admission during the outage.
+        await host._advance_scene(item)
+        await host._advance_scene(item)
+        (run,) = await _runs(host)
+        assert run.trigger_kind == "intrinsic" and run.owner == AutonomyOwner.SEMANTIC.value
+        assert run.sources_json == "[]"
+        assert item.observation.last_error == "transport"
+        assert (await host._binding(item)).controller_epoch == epoch
+        assert not await host.legacy_allowed(_message(event))
+        assert not await host.accept_legacy(_message(event))
     finally:
         await host.close()
 

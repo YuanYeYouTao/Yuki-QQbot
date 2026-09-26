@@ -69,9 +69,7 @@ async def social_scene(database):
 
 async def test_self_send_receipt_is_run_bound_and_master_off_does_not_revoke(database):
     env = await social_scene(database)
-    await env.admissions.transition(
-        env.binding, master_enabled=False, external_enabled=True, semantic_ready=False
-    )
+    await env.admissions.transition(env.binding, master_enabled=False, external_enabled=True)
     result = await env.service.execute("send_message", {"text": "想到一个问题"}, env.context)
     repeated = await env.service.execute("send_message", {"text": "想到一个问题"}, env.context)
     assert result == repeated and result["status"] == "succeeded"
