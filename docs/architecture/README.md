@@ -10,6 +10,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [Canonical runtime](canonical-runtime.md) | Yuki、Person、Space、Presence、Conversation 和网关边界 |
 | [主 Agent 执行与恢复](main-agent-runtime.md) | 公共执行器、来源授权、恢复所有者与预算 |
 | [Provider 输出边界](provider-output-boundary.md) | 思考与正文通道、显式发送及上游异常的验收范围 |
+| [模型供应商与协议](model-providers.md) | Chat/Responses/Claude/Gemini、供应商方言、能力边界与私有状态恢复 |
 | [持久工作者](persistent-subagents.md) | 子 Agent 生命周期、权限、根预算和缓存 |
 | [Conversation Rollup](conversation-rollup.md) | 原始事件、历史投影、压缩与 generation |
 | [聊天媒体与发送合同](chat-media-workspace.md) | 会话内媒体索引、24 小时缓存、工作区提升、切换重置与定时 Social 发送 |

@@ -81,6 +81,10 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 从 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4) 下载部署包，解压后可以手动填写 `.env` 和模型配置，也可以使用配置向导。
 
+开发主线增加 Claude Messages、Gemini GenerateContent 和常见 Chat 供应商方言。
+多个供应商可按任务显式配置；能力与恢复边界见[模型协议说明](docs/architecture/model-providers.md)
+及[多供应商示例](config/model_profiles.providers.example.toml)。这不是既有 3.8.4 部署包的能力声明。
+
 Linux：
 
 ```bash

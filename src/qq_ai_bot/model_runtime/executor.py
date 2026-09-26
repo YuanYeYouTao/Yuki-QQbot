@@ -719,15 +719,26 @@ class TaskModelExecutor:
     def profile_revision(self, task: ModelTask) -> str:
         """Fingerprint routing/serialization settings without exposing configuration."""
         route, profile = self._router.route(task)
+        excluded = set()
+        if profile.max_output_tokens_limit is None:
+            excluded.add("max_output_tokens_limit")
+        if profile.wire_options is None:
+            excluded.add("wire_options")
+        if not profile.headers:
+            excluded.add("headers")
+        serialized = profile.model_dump(mode="json", exclude=excluded)
+        if profile.protocol is not ModelProtocol.RESPONSES:
+            from qq_ai_bot.llm.vendor_policy import wire_options
+
+            # Chat's changed vendor dialect deliberately establishes a new chain;
+            # unchanged Responses defaults retain the previous persisted revision.
+            serialized["wire_options"] = wire_options(
+                profile.provider.casefold(), profile.wire_options
+            ).model_dump(mode="json")
         return _json_hash(
             {
                 "route": route.model_dump(mode="json"),
-                "profile": profile.model_dump(
-                    mode="json",
-                    exclude={"max_output_tokens_limit"}
-                    if profile.max_output_tokens_limit is None
-                    else set(),
-                ),
+                "profile": serialized,
             }
         )
 
@@ -745,10 +756,14 @@ class TaskModelExecutor:
 
     def capabilities(self, task: ModelTask) -> frozenset[ModelCapability]:
         _route, profile = self._router.route(task)
-        # This adapter disables native web declarations for every DeepSeek profile.
-        # External search remains an explicit WebModule backend configuration;
-        # this capability mask does not route a request or select a fallback.
-        if profile.provider.casefold() == "deepseek":
+        from qq_ai_bot.llm.vendor_policy import supports_native_search
+
+        if not supports_native_search(
+            profile.provider.casefold(),
+            profile.protocol.value,
+            profile.wire_options,
+            has_functions=ModelCapability.TOOLS in profile.capabilities,
+        ):
             return profile.capabilities - {ModelCapability.NATIVE_WEB_SEARCH}
         return profile.capabilities
 

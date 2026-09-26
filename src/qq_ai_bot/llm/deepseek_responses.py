@@ -69,9 +69,11 @@ class DeepSeekResponsesProvider(LLMProvider):
         timeout_seconds: float,
         max_retries: int,
         client: httpx.AsyncClient | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self._wire_observer = WireRequestObserver()
         self._api_key = api_key
+        self._headers = dict(headers or {})
         self._max_retries = max_retries
         self._owns_client = client is None
         self._timeout = httpx.Timeout(
@@ -356,7 +358,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         await check_model_dispatch()
         response = await self._client.post(
             "/responses",
-            headers={"Authorization": f"Bearer {self._api_key}"},
+            headers={**self._headers, "Authorization": f"Bearer {self._api_key}"},
             json=payload,
             timeout=self._timeout,
         )

@@ -8,6 +8,11 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from qq_ai_bot.domain.messages import ReasoningEffort, minimum_reasoning_effort
+from qq_ai_bot.llm.vendor_policy import (
+    CHAT_VENDORS,
+    RESPONSES_VENDORS,
+    ChatWireOptions,
+)
 
 
 class ModelTask(StrEnum):
@@ -54,6 +59,8 @@ class ModelProtocol(StrEnum):
 
     CHAT_COMPLETIONS = "chat_completions"
     RESPONSES = "responses"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
+    GEMINI = "gemini"
 
 
 class StructuredOutputMode(StrEnum):
@@ -86,6 +93,8 @@ class ModelProfile(_FrozenModel):
     reasoning_effort: ReasoningEffort | None = ReasoningEffort.LOW
     structured_output_mode: StructuredOutputMode = StructuredOutputMode.FUNCTION_TOOL
     capabilities: frozenset[ModelCapability] = frozenset()
+    wire_options: ChatWireOptions | None = None
+    headers: dict[str, str] = Field(default_factory=dict, repr=False)
 
     @field_validator("thinking_enabled")
     @classmethod
@@ -100,6 +109,57 @@ class ModelProfile(_FrozenModel):
 
     @model_validator(mode="after")
     def _validate_endpoint(self) -> ModelProfile:
+        vendor = self.provider.casefold()
+        allowed = (
+            CHAT_VENDORS
+            if self.protocol is ModelProtocol.CHAT_COMPLETIONS
+            else RESPONSES_VENDORS
+            if self.protocol is ModelProtocol.RESPONSES
+            else {"anthropic"}
+            if self.protocol is ModelProtocol.ANTHROPIC_MESSAGES
+            else {"gemini"}
+        )
+        if vendor != "fake" and vendor not in allowed:
+            raise ValueError(f"provider {self.provider} does not support {self.protocol.value}")
+        if self.wire_options is not None:
+            options = self.wire_options
+            if self.protocol is ModelProtocol.RESPONSES:
+                raise ValueError("wire_options configure Chat/native protocols, not Responses")
+            if self.protocol is ModelProtocol.ANTHROPIC_MESSAGES:
+                fields = {"reasoning", "thinking_budget_tokens", "effort_levels"}
+                modes = {"effort", "budget"}
+            elif self.protocol is ModelProtocol.GEMINI:
+                fields = {
+                    "reasoning",
+                    "thinking_budget_tokens",
+                    "effort_levels",
+                    "send_temperature",
+                }
+                modes = {"gemini", "budget"}
+            else:
+                fields = set(ChatWireOptions.model_fields)
+                modes = {"effort", "thinking", "enable_thinking", "openrouter", "builtin"}
+            if options.model_fields_set - fields:
+                raise ValueError("wire option is not supported by the selected protocol")
+            if "reasoning" in options.model_fields_set and options.reasoning not in modes:
+                raise ValueError("reasoning wire dialect does not match the selected protocol")
+        reserved = {
+            "authorization",
+            "api-key",
+            "x-api-key",
+            "x-goog-api-key",
+            "host",
+            "content-length",
+        }
+        if any(
+            name.casefold() in reserved
+            or "\n" in name
+            or "\r" in name
+            or "\n" in value
+            or "\r" in value
+            for name, value in self.headers.items()
+        ):
+            raise ValueError("headers cannot override authentication or contain line breaks")
         if self.provider.casefold() != "fake" and not self.base_url:
             raise ValueError("base_url is required for non-fake model profiles")
         if self.provider.casefold() != "fake" and not self.api_key_env:
@@ -108,13 +168,6 @@ class ModelProfile(_FrozenModel):
             raise ValueError(
                 "all generation profiles require the reasoning capability (minimum low)"
             )
-        if self.protocol is ModelProtocol.RESPONSES and self.provider.casefold() not in {
-            "deepseek",
-            "openai",
-            "openai_compatible",
-            "fake",
-        }:
-            raise ValueError("responses protocol requires a supported Responses provider")
         return self
 
 

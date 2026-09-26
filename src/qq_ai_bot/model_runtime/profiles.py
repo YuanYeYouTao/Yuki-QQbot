@@ -15,6 +15,7 @@ from qq_ai_bot.domain.messages import ReasoningEffort
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelProfile,
+    ModelProtocol,
     ModelRoute,
     ModelTask,
     StructuredOutputMode,
@@ -111,6 +112,10 @@ def load_model_profile_catalog(
         profile = ModelProfile(
             id="main",
             provider=legacy_provider,
+            protocol={
+                "anthropic": ModelProtocol.ANTHROPIC_MESSAGES,
+                "gemini": ModelProtocol.GEMINI,
+            }.get(legacy_provider.casefold(), ModelProtocol.CHAT_COMPLETIONS),
             base_url=legacy_base_url,
             api_key_env="LLM_API_KEY" if legacy_provider.casefold() != "fake" else "",
             model=legacy_model or "fake",
