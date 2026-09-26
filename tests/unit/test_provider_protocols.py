@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from pydantic import ValidationError
 from tests.conftest import build_harness, make_settings
 
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
@@ -677,3 +678,30 @@ async def test_runtime_module_compatibility_uses_declared_vendor(
             assert payload["enable_thinking"] is True and "reasoning_effort" not in payload
     finally:
         await bundle.executor.close()
+
+
+@pytest.mark.parametrize(
+    "vendor,protocol,options",
+    [
+        ("openai", "responses", {"send_temperature": True}),
+        ("anthropic", "anthropic_messages", {"send_temperature": True}),
+        ("gemini", "gemini", {"token_field": "max_tokens"}),
+        ("qwen", "chat_completions", {"reasoning": "gemini"}),
+    ],
+)
+def test_configuration_never_ignores_options_from_another_protocol(vendor, protocol, options):
+    with pytest.raises(ValidationError):
+        ModelProfile(
+            id="main",
+            provider=vendor,
+            protocol=protocol,
+            base_url="https://wire.invalid",
+            api_key_env="UNUSED",
+            model="thinking-model",
+            timeout_seconds=1,
+            max_retries=0,
+            default_temperature=0.7,
+            default_max_output_tokens=8192,
+            capabilities={ModelCapability.REASONING},
+            wire_options=options,
+        )

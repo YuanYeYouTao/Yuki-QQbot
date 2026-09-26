@@ -121,6 +121,28 @@ class ModelProfile(_FrozenModel):
         )
         if vendor != "fake" and vendor not in allowed:
             raise ValueError(f"provider {self.provider} does not support {self.protocol.value}")
+        if self.wire_options is not None:
+            options = self.wire_options
+            if self.protocol is ModelProtocol.RESPONSES:
+                raise ValueError("wire_options configure Chat/native protocols, not Responses")
+            if self.protocol is ModelProtocol.ANTHROPIC_MESSAGES:
+                fields = {"reasoning", "thinking_budget_tokens", "effort_levels"}
+                modes = {"effort", "budget"}
+            elif self.protocol is ModelProtocol.GEMINI:
+                fields = {
+                    "reasoning",
+                    "thinking_budget_tokens",
+                    "effort_levels",
+                    "send_temperature",
+                }
+                modes = {"gemini", "budget"}
+            else:
+                fields = set(ChatWireOptions.model_fields)
+                modes = {"effort", "thinking", "enable_thinking", "openrouter", "builtin"}
+            if options.model_fields_set - fields:
+                raise ValueError("wire option is not supported by the selected protocol")
+            if "reasoning" in options.model_fields_set and options.reasoning not in modes:
+                raise ValueError("reasoning wire dialect does not match the selected protocol")
         reserved = {
             "authorization",
             "api-key",
