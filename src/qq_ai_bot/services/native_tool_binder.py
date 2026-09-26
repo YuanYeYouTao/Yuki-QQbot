@@ -27,12 +27,15 @@ class NativeToolBinder:
         web_approved = bool({"web", "web_search"}.intersection(allowed_capabilities))
         if not web_approved or web_mode in {WebMode.DISABLED, WebMode.TAVILY}:
             return ()
-        if protocol is not ModelProtocol.RESPONSES:
+        if protocol not in {ModelProtocol.RESPONSES, ModelProtocol.CHAT_COMPLETIONS}:
             logger.warning(
                 "native_tool_binding_skipped reason=protocol web_mode=%s protocol=%s",
                 web_mode.value,
                 protocol.value,
             )
+            return ()
+        if protocol is ModelProtocol.CHAT_COMPLETIONS and ModelCapability.TOOLS in capabilities:
+            # Chat search models cannot honor the Main Agent's fixed function contract.
             return ()
         if ModelCapability.NATIVE_WEB_SEARCH not in capabilities:
             logger.warning(

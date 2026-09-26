@@ -14,6 +14,8 @@ SELF 自主证据扩展已有定向验证；T20 真实 QQ 社交效果仍须单�
 配置方案为 `json_schema`、low reasoning、180 秒、32768 输出 tokens。实际生产 profile
 须核对部署配置，本文不替代该检查；其他模型任务与主 Agent 工具声明不因此变化。
 Responses 通用适配器将 Chat 风格的嵌套 schema 展开为 `text.format`。
+任务可显式绑定支持 JSON Schema 的 Chat、Claude 或 Gemini Profile，仍使用同一范围、
+mutation、请求预算和恢复合同；协议转换见[模型供应商合同](model-providers.md)。
 
 返回值须完整、零工具调用、单个 JSON object，并通过 Pydantic、引用、范围、所有权与
 原有 mutation 校验。截断或输出达到预算时报 `output_budget_exhausted`，不自动加预算。

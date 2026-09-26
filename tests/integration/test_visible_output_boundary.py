@@ -11,8 +11,10 @@ from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, InboundMessage, SenderIdentity
+from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
@@ -37,7 +39,7 @@ _ANSWER = "我在，刚才检查好了。"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("protocol", [ModelProtocol.RESPONSES, ModelProtocol.CHAT_COMPLETIONS])
+@pytest.mark.parametrize("protocol", list(ModelProtocol))
 @pytest.mark.parametrize("explicit_send", [False, True])
 async def test_provider_text_requires_explicit_delivery(
     database, tmp_path, protocol, explicit_send
@@ -86,6 +88,41 @@ async def test_provider_text_requires_explicit_delivery(
                 )
             outputs.append(output)
             body = {"id": f"response-{index}", "status": "completed", "output": output}
+        elif protocol is ModelProtocol.ANTHROPIC_MESSAGES:
+            blocks = [
+                {"type": "thinking", "thinking": _REASONING, "signature": "signed-state"},
+                {"type": "text", "text": _PLANNING},
+            ]
+            if should_send:
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": "send-answer",
+                        "name": "send_message",
+                        "input": {"text": _ANSWER},
+                    }
+                )
+            outputs.append({"role": "assistant", "content": blocks})
+            body = {"content": blocks, "stop_reason": "tool_use" if should_send else "end_turn"}
+        elif protocol is ModelProtocol.GEMINI:
+            parts = [
+                {"text": _REASONING, "thought": True, "thoughtSignature": "signed-state"},
+                {"text": _PLANNING},
+            ]
+            if should_send:
+                parts.append(
+                    {
+                        "functionCall": {
+                            "id": "send-answer",
+                            "name": "send_message",
+                            "args": {"text": _ANSWER},
+                        },
+                        "thoughtSignature": "tool-signature",
+                    }
+                )
+            model_content = {"role": "model", "parts": parts}
+            outputs.append(model_content)
+            body = {"candidates": [{"content": model_content, "finishReason": "STOP"}]}
         else:
             message = {
                 "role": "assistant",
@@ -111,11 +148,12 @@ async def test_provider_text_requires_explicit_delivery(
     async with httpx.AsyncClient(
         base_url="https://wire.invalid", transport=httpx.MockTransport(transport)
     ) as client:
-        provider_type = (
-            DeepSeekResponsesProvider
-            if protocol is ModelProtocol.RESPONSES
-            else OpenAICompatibleProvider
-        )
+        provider_type = {
+            ModelProtocol.RESPONSES: DeepSeekResponsesProvider,
+            ModelProtocol.CHAT_COMPLETIONS: OpenAICompatibleProvider,
+            ModelProtocol.ANTHROPIC_MESSAGES: AnthropicMessagesProvider,
+            ModelProtocol.GEMINI: GeminiProvider,
+        }[protocol]
         provider = provider_type(
             base_url="https://wire.invalid",
             api_key="synthetic-key",
@@ -129,7 +167,12 @@ async def test_provider_text_requires_explicit_delivery(
         chat = harness.processor._chat
         profile = ModelProfile(
             id="boundary",
-            provider="deepseek" if protocol is ModelProtocol.RESPONSES else "openai_compatible",
+            provider={
+                ModelProtocol.RESPONSES: "deepseek",
+                ModelProtocol.CHAT_COMPLETIONS: "openai_compatible",
+                ModelProtocol.ANTHROPIC_MESSAGES: "anthropic",
+                ModelProtocol.GEMINI: "gemini",
+            }[protocol],
             protocol=protocol,
             base_url="https://wire.invalid",
             api_key_env="UNUSED_SYNTHETIC_KEY",
@@ -176,7 +219,13 @@ async def test_provider_text_requires_explicit_delivery(
         )
 
     assert len(requests) == (3 if explicit_send else 2)
-    sequence_key = "input" if protocol is ModelProtocol.RESPONSES else "messages"
+    sequence_key = (
+        "input"
+        if protocol is ModelProtocol.RESPONSES
+        else "contents"
+        if protocol is ModelProtocol.GEMINI
+        else "messages"
+    )
     for previous, following in pairwise(requests):
         previous_input = previous[sequence_key]
         assert following[sequence_key][: len(previous_input)] == previous_input

@@ -7,14 +7,17 @@ from collections.abc import Mapping
 
 import httpx
 
+from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.base import LLMConfigurationError, LLMProvider
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.llm.openai_responses import (
     OpenAICompatibleResponsesProvider,
     OpenAIResponsesProvider,
 )
+from qq_ai_bot.llm.vendor_policy import CHAT_VENDORS
 from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
 
 
@@ -44,7 +47,7 @@ class ModelClientPool:
             return existing
         if profile.provider.casefold() == "fake":
             provider: LLMProvider = FakeLLMProvider()
-        elif profile.provider.casefold() in {"openai", "openai_compatible", "deepseek"}:
+        elif profile.provider.casefold() in CHAT_VENDORS | {"anthropic", "gemini"}:
             api_key = self._secret_overrides.get(profile.api_key_env)
             if api_key is None:
                 api_key = os.getenv(profile.api_key_env, "")
@@ -72,6 +75,24 @@ class ModelClientPool:
                     timeout_seconds=profile.timeout_seconds,
                     max_retries=profile.max_retries,
                     client=connection_pool,
+                    provider_name=profile.provider.casefold(),
+                    options=profile.wire_options,
+                    headers=profile.headers,
+                )
+            elif profile.protocol in {ModelProtocol.ANTHROPIC_MESSAGES, ModelProtocol.GEMINI}:
+                native_provider = (
+                    AnthropicMessagesProvider
+                    if profile.protocol is ModelProtocol.ANTHROPIC_MESSAGES
+                    else GeminiProvider
+                )
+                provider = native_provider(
+                    base_url=profile.base_url,
+                    api_key=api_key,
+                    timeout_seconds=profile.timeout_seconds,
+                    max_retries=profile.max_retries,
+                    client=connection_pool,
+                    options=profile.wire_options,
+                    headers=profile.headers,
                 )
             elif profile.provider.casefold() == "deepseek":
                 provider = DeepSeekResponsesProvider(
@@ -80,6 +101,7 @@ class ModelClientPool:
                     timeout_seconds=profile.timeout_seconds,
                     max_retries=profile.max_retries,
                     client=connection_pool,
+                    headers=profile.headers,
                 )
             else:
                 response_provider = (
@@ -93,6 +115,7 @@ class ModelClientPool:
                     timeout_seconds=profile.timeout_seconds,
                     max_retries=profile.max_retries,
                     client=connection_pool,
+                    headers=profile.headers,
                 )
         else:
             raise LLMConfigurationError(

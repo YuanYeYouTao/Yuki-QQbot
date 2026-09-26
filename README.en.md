@@ -74,6 +74,10 @@ Chat, plugin wakeups, automation, and task resumption use the same main agent wi
 
 Basic deployment requires Linux amd64 or Windows Docker Desktop running Linux containers, Docker Engine with Compose v2, a configured model service using one of the supported Chat Completions or Responses integrations, and a logged-in NapCat or SnowLuma QQ gateway.
 
+The development branch adds native Claude Messages, Gemini GenerateContent, and common Chat vendor dialects.
+Providers can be explicitly assigned to tasks; see the [protocol contract](docs/architecture/model-providers.md)
+and [multi-provider example](config/model_profiles.providers.example.toml). These additions do not describe the existing 3.8.4 deployment archive.
+
 Download the deployment bundle from the [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4). After extraction, fill in `.env` and model configuration manually or use the guided setup.
 
 Linux:

@@ -2,6 +2,8 @@ schema_version = 3
 
 # Copy to config/model_profiles.toml to opt in to explicit task routing.
 # Secrets stay in environment variables; this file only names them.
+# Other vendors and native Claude/Gemini: see model_profiles.providers.example.toml
+# and docs/architecture/model-providers.md. Vendor settings never select models by content.
 
 [profiles.pro]
 # For deepseek-flash (V4.1). Remove image_input for a text-only model.

@@ -22,6 +22,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot import __version__
 from qq_ai_bot.config import Settings
+from qq_ai_bot.llm.vendor_policy import supports_native_search
 from qq_ai_bot.mcp.config import MCPConfigurationError, load_mcp_config
 from qq_ai_bot.mcp.models import MCPConfigFile
 from qq_ai_bot.model_runtime import ModelCapability, ModelTask, load_model_profile_catalog
@@ -217,10 +218,23 @@ class EnvironmentDocument:
         return "\n".join(output).rstrip() + "\n", tuple(applied), tuple(deleted)
 
 
-def build_model_profiles(*, main_protocol: str, flash_enabled: bool) -> str:
-    if main_protocol not in {"chat_completions", "responses"}:
+def build_model_profiles(
+    *,
+    main_protocol: str,
+    flash_enabled: bool,
+    main_provider: str | None = None,
+) -> str:
+    if main_protocol not in {"chat_completions", "responses", "anthropic_messages", "gemini"}:
         raise SetupValidationError("主模型协议无效")
-    provider = "deepseek" if main_protocol == "responses" else "openai_compatible"
+    provider = (
+        main_provider
+        or {
+            "responses": "deepseek",
+            "chat_completions": "openai_compatible",
+            "anthropic_messages": "anthropic",
+            "gemini": "gemini",
+        }[main_protocol]
+    )
     main_capabilities = ["tools", "structured_output", "long_context", "reasoning"]
     # Protocol alone proves neither native web search nor image support.
     # image_input is an explicit profile capability, enabled after model validation.
@@ -269,7 +283,7 @@ def build_model_profiles(*, main_protocol: str, flash_enabled: bool) -> str:
             (
                 "",
                 "[profiles.self_reflection]",
-                'provider = "deepseek"',
+                f'provider = "{provider}"',
                 'protocol = "responses"',
                 'base_url_env = "LLM_BASE_URL"',
                 'api_key_env = "LLM_API_KEY"',
@@ -302,12 +316,21 @@ def infer_main_protocol(profile_path: Path, environment: Mapping[str, str]) -> s
             profiles = payload.get("profiles", {})
             if isinstance(profiles, dict):
                 main = profiles.get("main", profiles.get("pro", {}))
-                if isinstance(main, dict) and main.get("protocol") == "responses":
-                    return "responses"
+                if isinstance(main, dict) and main.get("protocol") in {
+                    "responses",
+                    "chat_completions",
+                    "anthropic_messages",
+                    "gemini",
+                }:
+                    return str(main["protocol"])
         except (OSError, UnicodeError, ValueError):
             pass
     if environment.get("LLM_PROVIDER", "").casefold() == "deepseek":
         return "responses"
+    if environment.get("LLM_PROVIDER", "").casefold() == "anthropic":
+        return "anthropic_messages"
+    if environment.get("LLM_PROVIDER", "").casefold() == "gemini":
+        return "gemini"
     return "chat_completions"
 
 
@@ -448,15 +471,19 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
                 environment=environment,
             )
             chat_profile = catalog.profiles[catalog.routes[ModelTask.CHAT_AGENT].profile_id]
-            if (
-                settings.web.mode
-                in {
-                    WebMode.NATIVE,
-                    WebMode.BOTH,
-                }
-                and ModelCapability.NATIVE_WEB_SEARCH not in chat_profile.capabilities
+            if settings.web.mode in {
+                WebMode.NATIVE,
+                WebMode.BOTH,
+            } and (
+                ModelCapability.NATIVE_WEB_SEARCH not in chat_profile.capabilities
+                or not supports_native_search(
+                    chat_profile.provider.casefold(),
+                    chat_profile.protocol.value,
+                    chat_profile.wire_options,
+                    has_functions=ModelCapability.TOOLS in chat_profile.capabilities,
+                )
             ):
-                raise SetupValidationError("模型原生搜索只支持 DeepSeek Responses 主模型")
+                raise SetupValidationError("当前主模型 Profile 未声明可用的模型原生搜索能力")
             if settings.mcp_enabled:
                 sanitized = sanitize_mcp_document(configuration.mcp_document, dict(environment))
                 if sanitized != configuration.mcp_document:

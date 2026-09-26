@@ -42,6 +42,12 @@ class WireFingerprint:
         if protocol == "responses":
             instructions = payload.get("instructions")
             inputs = payload.get("input", [])
+        elif protocol == "anthropic_messages":
+            instructions = payload.get("system")
+            inputs = payload.get("messages", [])
+        elif protocol == "gemini":
+            instructions = payload.get("systemInstruction")
+            inputs = payload.get("contents", [])
         else:
             messages = payload.get("messages", [])
             boundary = 0
@@ -54,7 +60,16 @@ class WireFingerprint:
         settings = {
             k: v
             for k, v in payload.items()
-            if k not in {"instructions", "input", "messages", "tools"}
+            if k
+            not in {
+                "instructions",
+                "input",
+                "messages",
+                "tools",
+                "system",
+                "systemInstruction",
+                "contents",
+            }
         }
         # tool_choice is a per-request execution restriction. It must remain
         # observable, but auto -> none does not redefine the declared contract.

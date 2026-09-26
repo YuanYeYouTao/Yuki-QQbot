@@ -21,8 +21,11 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.llm.gemini import GeminiProvider
+from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_control import WorkControl
@@ -103,6 +106,122 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
     await again.restore(TurnTranscript((fresh_task,)), compaction_brief=fresh_task)
     twice = await again.compact("A second bounded summary")
     assert twice.request().messages[:2] == (fresh_system, task)
+    await control.repository.release(control.lease)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_type", [OpenAICompatibleProvider, AnthropicMessagesProvider, GeminiProvider]
+)
+async def test_native_checkpoint_replays_exact_http_after_sqlite_restart(
+    database, tmp_path, provider_type
+):
+    control = await _control(database, tmp_path)
+    task = ChatMessage("user", "original task")
+    first = WorkSession(control, "unchanged-profile")
+    transcript = await first.restore(
+        TurnTranscript((ChatMessage("system", "fixed"), task)), compaction_brief=task
+    )
+    if provider_type is AnthropicMessagesProvider:
+        tail = (
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "private", "signature": "original-signature"},
+                    {"type": "tool_use", "id": "original-call", "name": "read", "input": {}},
+                ],
+            },
+        )
+        answer = {"content": [{"type": "text", "text": "done"}], "stop_reason": "end_turn"}
+    elif provider_type is GeminiProvider:
+        tail = (
+            {
+                "role": "model",
+                "parts": [
+                    {
+                        "functionCall": {"name": "read", "args": {}},
+                        "thoughtSignature": "original-signature",
+                    }
+                ],
+                "_call_ids": ["original-call"],
+            },
+        )
+        answer = {
+            "candidates": [
+                {"finishReason": "STOP", "content": {"role": "model", "parts": [{"text": "done"}]}}
+            ]
+        }
+    else:
+        tail = (
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_details": [
+                    {"type": "reasoning.encrypted", "data": "original-signature"}
+                ],
+                "tool_calls": [
+                    {
+                        "id": "original-call",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": "{}"},
+                    }
+                ],
+            },
+        )
+        answer = {"choices": [{"finish_reason": "stop", "message": {"content": "done"}}]}
+    transcript.accept(
+        ProviderContinuation(provider_type.provider_name, provider_type.protocol, tail)
+    )
+    transcript.append_result("original-call", '{"ok":true,"execution_id":"original-execution"}')
+    transcript.append(ChatMessage("user", "redirect after receipt"))
+    await control.repository.checkpoint(
+        control.lease, control.current["id"], None, models=3, tools=1
+    )
+    control.current = await control.repository.get(control.current["id"])
+    captured = []
+
+    def transport(req):
+        captured.append(req.content)
+        return httpx.Response(200, json=answer)
+
+    async with httpx.AsyncClient(
+        base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
+    ) as client:
+        adapter = provider_type(
+            base_url="https://wire.invalid/v1/",
+            api_key="synthetic",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+
+        async def capture(value):
+            sequence = value.request()
+            await adapter.complete(
+                ChatRequest(
+                    messages=sequence.messages,
+                    continuation=sequence.continuation,
+                    continuation_items=sequence.items,
+                    model="thinking-model",
+                    tools=(ChatTool("read", "Read", {"type": "object"}),),
+                    thinking_enabled=True,
+                    max_output_tokens=8192,
+                    request_chain_id=value.chain_id,
+                )
+            )
+
+        await capture(transcript)
+        await first.save("paired")
+        restored = await WorkSession(control, "unchanged-profile").restore(
+            TurnTranscript((ChatMessage("user", "new wakeup"),))
+        )
+        assert restored.chain_id == transcript.chain_id
+        await capture(restored)
+    assert captured[0] == captured[1]
+    assert b"original-signature" in captured[1] and b"original-execution" in captured[1]
+    assert b"new wakeup" not in captured[1]
+    row = await control.repository.get(control.current["id"])
+    assert row["model_requests"] == 3 and row["tool_calls"] == 1
     await control.repository.release(control.lease)
 
 

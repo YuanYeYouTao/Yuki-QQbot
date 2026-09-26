@@ -7,7 +7,8 @@
 
 - Responses 的 `reasoning` item 与 `message/output_text` 分别解析；推理保留在独立字段和
   Provider continuation 中，不拼成最终正文。Chat Completions 同样保留独立的
-  `reasoning_content`。
+  `reasoning_content`；Chat 的 reasoning_details/encrypted_content、Claude 签名块与 Gemini
+  thoughtSignature 同样保存在私有检查点，协议边界见[模型供应商合同](model-providers.md)。
 - 主 Agent 普通聊天、主动轮、自动化和插件主入口只通过显式 `send_message` 调用交付正文。
   最终正文是内部结果，不能自动发送；附带工具调用的正文也不是发送指令。
 - DeepSeek 现有 DSML 兼容路径可把整段合法工具标记转换为声明内的 function call，再经过
@@ -40,7 +41,7 @@ Issue #55 记录了 `reasoning.effort=none` 时，Provider 把内部规划作为
 ## 回归与关闭条件
 
 `tests/integration/test_visible_output_boundary.py` 使用合成响应和 MockTransport，贯穿
-真实协议适配器、Runner、发送工具、假 QQ 网关及隔离 SQLite 账本。两种协议分别验证：
+真实协议适配器、Runner、发送工具、假 QQ 网关及隔离 SQLite 账本。四种协议分别验证：
 
 1. 最终正文包含规划文字时只在原链追加一次未送达反馈；重复遗漏不会把正文发送出去。
 2. 显式发送与规划正文同时存在时，只发送工具中的目标文本；后续最终正文不重复发送。

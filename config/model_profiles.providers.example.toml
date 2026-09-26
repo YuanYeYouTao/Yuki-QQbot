@@ -1,0 +1,71 @@
+schema_version = 3
+
+# Optional multi-provider example; do not overwrite a deployment's routes blindly.
+# Models must actually support the declared capabilities and reasoning controls.
+# ANTHROPIC_BASE_URL=https://api.anthropic.com/v1
+# GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+# LLM_FLASH_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# Put keys/model names in the named environment variables, not this file.
+
+[profiles.main]
+provider = "anthropic"
+protocol = "anthropic_messages"
+base_url_env = "ANTHROPIC_BASE_URL"
+api_key_env = "ANTHROPIC_API_KEY"
+model_env = "ANTHROPIC_MODEL"
+timeout_seconds = 120.0
+max_retries = 2
+default_temperature = 0.7
+default_max_output_tokens = 8192
+thinking_mode = "enabled"
+reasoning_effort = "low"
+structured_output_mode = "json_schema"
+capabilities = ["tools", "structured_output", "reasoning", "image_input", "long_context"]
+# Adaptive-capable Claude required. Older models: wire_options.reasoning = "budget".
+
+[profiles.flash]
+provider = "qwen"
+protocol = "chat_completions"
+base_url_env = "LLM_FLASH_BASE_URL"
+api_key_env = "LLM_FLASH_API_KEY"
+model_env = "LLM_FLASH_MODEL"
+timeout_seconds = 60.0
+max_retries = 1
+default_temperature = 0.1
+default_max_output_tokens = 8192
+thinking_mode = "enabled"
+reasoning_effort = "low"
+structured_output_mode = "function_tool"
+capabilities = ["structured_output", "reasoning"]
+# Select a Qwen model that supports non-streaming thinking and function calling.
+
+[profiles.self_reflection]
+provider = "gemini"
+protocol = "gemini"
+base_url_env = "GEMINI_BASE_URL"
+api_key_env = "GEMINI_API_KEY"
+model_env = "GEMINI_MODEL"
+timeout_seconds = 180.0
+max_retries = 1
+default_temperature = 0.1
+default_max_output_tokens = 32768
+thinking_mode = "enabled"
+reasoning_effort = "low"
+structured_output_mode = "json_schema"
+capabilities = ["structured_output", "reasoning"]
+# Gemini 3 thinkingLevel dialect. Gemini 2.5: wire_options.reasoning = "budget".
+
+[routes]
+chat_agent = "main"
+automation_agent = "main"
+plugin_agent_session = "main"
+memory_extraction = "flash"
+memory_self_reflection = "self_reflection"
+memory_consolidation = "flash"
+memory_dream = "flash"
+memory_attribution = "flash"
+relationship_evaluation = "flash"
+emoji_replacement = "flash"
+automation_text_generation = "flash"
+utility_structured = "flash"
+conversation_compaction = "flash"

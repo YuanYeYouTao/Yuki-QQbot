@@ -38,6 +38,7 @@ from qq_ai_bot.deployment_setup.service import (
     verify_health,
 )
 from qq_ai_bot.deployment_setup.terminal import BackRequested, QuitRequested, TerminalUI
+from qq_ai_bot.llm.vendor_policy import CHAT_VENDORS, RESPONSES_VENDORS
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
@@ -318,17 +319,29 @@ def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
         "主模型接入类型",
         (
             ("chat_completions", "OpenAI-compatible Chat Completions"),
-            ("responses", "DeepSeek Responses（支持模型原生搜索）"),
+            ("responses", "Responses API"),
+            ("anthropic_messages", "Claude 原生 Messages"),
+            ("gemini", "Gemini 原生 GenerateContent"),
         ),
         default=draft.protocol,
     )
-    environment["LLM_PROVIDER"] = (
-        "deepseek" if draft.protocol == "responses" else "openai_compatible"
-    )
-    if draft.protocol == "responses":
-        ui.info("DeepSeek Responses 可使用原生搜索；请求不会发送 tool_choice 字段。")
+    default_provider = {
+        "responses": "deepseek",
+        "chat_completions": "openai_compatible",
+        "anthropic_messages": "anthropic",
+        "gemini": "gemini",
+    }[draft.protocol]
+    if draft.protocol in {"responses", "chat_completions"}:
+        providers = RESPONSES_VENDORS if draft.protocol == "responses" else CHAT_VENDORS
+        existing = environment.get("LLM_PROVIDER", default_provider)
+        environment["LLM_PROVIDER"] = ui.choose(
+            "主模型供应商",
+            tuple((value, value) for value in sorted(providers)),
+            default=existing if existing in providers else default_provider,
+        )
     else:
-        ui.warning("主模型必须支持 Function Calling 才能运行 Agent 工具。")
+        environment["LLM_PROVIDER"] = default_provider
+    ui.info("主模型必须支持思考和 Function Calling；原生搜索取决于供应商与模型能力。")
     environment["LLM_BASE_URL"] = ui.ask(
         "主模型 Base URL",
         default=_real_value(environment.get("LLM_BASE_URL", "")),
@@ -600,6 +613,7 @@ def _review_and_commit(
         profiles = build_model_profiles(
             main_protocol=draft.protocol,
             flash_enabled=draft.flash_enabled,
+            main_provider=draft.environment.get("LLM_PROVIDER"),
         )
     else:
         try:

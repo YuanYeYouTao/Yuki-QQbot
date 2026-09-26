@@ -168,6 +168,10 @@ class MainAgentTurnService:
                     sequence.messages[len(composition.messages) :]
                 )
                 if sequence.continuation is not None:
+                    if sequence.continuation.protocol != "responses":
+                        # Signed native reasoning stays in the private Work journal.
+                        # A new conversation turn establishes its own projection boundary.
+                        raise ProjectionConflict("opaque native checkpoint requires a boundary")
                     provider = {
                         "deepseek": DeepSeekResponsesProvider,
                         "openai": OpenAIResponsesProvider,
