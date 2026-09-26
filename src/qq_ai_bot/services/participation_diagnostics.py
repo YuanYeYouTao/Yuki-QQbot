@@ -21,6 +21,15 @@ from qq_ai_bot.persistence.database import Database
 _WINDOW = 128
 _FEEDBACK_WINDOW = 1024
 _FALLBACKS = {"provider_unavailable", "missing_configuration", "semantic_not_ready"}
+_OBSERVER_ERRORS = {
+    "authentication",
+    "request_validation",
+    "rate_limit",
+    "provider_http",
+    "response_invalid",
+    "transport",
+    "partial_required_dimensions_invalid",
+}
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:
@@ -38,6 +47,8 @@ def _controller_facts(states: Sequence[State], *, now: float) -> dict[str, objec
     candidates: Counter[str] = Counter()
     observations: list[StoredObservation] = []
     pending = inflight = consecutive_failures = degraded = local_rejections = 0
+    errors: Counter[str] = Counter()
+    statuses: Counter[str] = Counter()
     for state in states[:32]:
         for candidate in state.candidates.values():
             candidates[candidate.kind.value] += 1
@@ -55,6 +66,15 @@ def _controller_facts(states: Sequence[State], *, now: float) -> dict[str, objec
         if isinstance(health, dict):
             consecutive_failures += int(health.get("failures", 0))
             degraded += bool(health.get("degraded", False))
+        failure = checkpoint.get("last_failure")
+        if isinstance(failure, dict):
+            category = failure.get("category")
+            errors[
+                category if isinstance(category, str) and category in _OBSERVER_ERRORS else "other"
+            ] += 1
+            status = failure.get("status")
+            if isinstance(status, int) and 400 <= status < 600:
+                statuses[str(status)] += 1
         rejected = checkpoint.get("local_rejections", ())
         if isinstance(rejected, (tuple, list)):
             local_rejections += len(rejected)
@@ -93,6 +113,8 @@ def _controller_facts(states: Sequence[State], *, now: float) -> dict[str, objec
             "unknown_winning_ratio": _ratio(unknown, len(observations)),
             "consecutive_failures_sum": consecutive_failures,
             "degraded_scopes": degraded,
+            "last_failure_categories": dict(sorted(errors.items())),
+            "last_failure_http_statuses": dict(sorted(statuses.items())),
             "local_rejections_retained": local_rejections,
             "lifetime_requests": None,
             "lifetime_failures": None,

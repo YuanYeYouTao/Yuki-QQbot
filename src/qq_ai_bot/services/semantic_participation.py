@@ -329,15 +329,9 @@ class SemanticParticipationService:
         prior = await self.repository.get_binding(scene.conversation_id, scene.generation)
         if prior is None:
             prior = await self.repository.ensure_binding(scene.conversation_id, scene.generation)
-        ready = item.observation is not None and not item.observation.health.fallback_required(
-            time.time(),
-            pending=bool(item.observation.queue.pending),
-        )
         desired = prior.transition(
             master_enabled=scene.enabled and scene.autonomous_enabled and policy.autonomous_enabled,
             external_enabled=policy.semantic_participation_enabled,
-            semantic_ready=ready,
-            fallback_reason="provider_unavailable" if item.observation else "missing_configuration",
         )
 
         if desired == prior:
@@ -346,8 +340,6 @@ class SemanticParticipationService:
             prior,
             master_enabled=desired.master_enabled,
             external_enabled=desired.external_enabled,
-            semantic_ready=ready,
-            fallback_reason=desired.fallback_reason,
         )
 
     def _event(self, row: EventRecord, item: _Session) -> ScopedEvent | None:

@@ -138,15 +138,11 @@ class AutonomyRepository:
         *,
         master_enabled: bool,
         external_enabled: bool,
-        semantic_ready: bool,
-        fallback_reason: str | None = None,
     ) -> AutonomyBinding:
-        """CAS includes configuration changes, so provider recovery cannot undo manual OFF."""
+        """CAS fences concurrent policy changes, including manual OFF."""
         desired = expected.transition(
             master_enabled=master_enabled,
             external_enabled=external_enabled,
-            semantic_ready=semantic_ready,
-            fallback_reason=fallback_reason,
         )
         async with self._database.immediate_session() as session:
             conversation = await session.get(CanonicalConversationModel, expected.conversation_id)

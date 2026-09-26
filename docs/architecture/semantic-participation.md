@@ -20,8 +20,9 @@ Conversation/generation 保存控制器快照。来源是带版本的内部 even
 不补采停机期间的机会，也不延续旧代次待接纳 proposal。
 
 `AutonomyBinding` 持久保存 master/external 开关、唯一有效 owner、controller_epoch 和
-revision。有效 owner 只有 off、legacy、semantic：总开关关闭始终 off；外部控制器关闭
-或持续不可用时恢复 legacy；配置、观测和健康就绪后 semantic 才能接纳新机会。
+revision。有效 owner 只有 off、legacy、semantic：总开关关闭始终 off；显式关闭
+外部控制器时使用 legacy；开启时由 semantic 接纳新机会。Jev 健康只控制观测退避，
+不切换 proposer 或阻断无来源苏醒；缺凭据时没有新观测，仍可使用真实活动与已有反馈。
 暂时评分失败、合法 unknown 和群聊安静不是同一种状态。
 
 原 `AutonomousGroupService` 保留本地机会评分，经同一 selector 和 `accept_legacy`
@@ -44,7 +45,7 @@ controller_epoch 不是已接纳 Work 的执行授权版本。
 
 `intrinsic` 是无 event/memory 来源的独立提议类型，不伪造 Jev 观测或真人消息；
 已核验的本群互动、实际自主 Work 密度和回应共同决定机会率。极久沉寂时机会率
-很低但非零，不等待累积门槛，也不将静默转成真人来源。
+随真人活动与沉默情境持续趋近零，无真人活动证据时为零；不等待累积门槛，也不将静默转成真人来源。
 宿主只在 semantic owner、有效群授权和无活动 Work 下接纳，并拒绝提议之后出现真人发言、
 Yuki 发言或未解除的全群停止边界的待接纳提议。已接纳 run 仍按原执行身份恢复。
 获准群记忆可在没有近期真人消息时形成 recall 候选；无来源机会由主 SELF 决定行动或沉默。
@@ -122,8 +123,8 @@ Jev 密钥不得写入公开配置、提示词或验收记录。
 | 配置 | 默认值 / 含义 |
 | --- | --- |
 | `conversation.autonomous_enabled` / `CONVERSATION_AUTONOMOUS_ENABLED` | 保留原自主总开关；还要满足群 Space 的 enabled/autonomous_enabled。关闭后不能被 fallback 反启 |
-| `conversation.semantic_participation_enabled` / `CONVERSATION_SEMANTIC_PARTICIPATION_ENABLED` | 默认 false；开启并就绪后 semantic 接纳，关闭保留 legacy |
-| `SEMANTIC_PARTICIPATION_API_KEY` | 默认空；Jev 观测凭据，未配置不能成为就绪的 semantic owner |
+| `conversation.semantic_participation_enabled` / `CONVERSATION_SEMANTIC_PARTICIPATION_ENABLED` | 默认 false；开启使用 semantic，显式关闭使用 legacy；观测故障不自动回退 |
+| `SEMANTIC_PARTICIPATION_API_KEY` | 默认空；Jev 观测凭据；未配置时不产生新语义观测，不改变 proposer 归属 |
 | `SEMANTIC_PARTICIPATION_MODEL` | 默认 `jev-1.13.0` |
 | `SEMANTIC_PARTICIPATION_STATE_PATH` | 默认 `data/participation.sqlite3`，控制器快照；不代替 Host 的 run/Work/回执数据库 |
 
@@ -157,3 +158,5 @@ observed/predicted 支持分别计数；NO_REPLY 比例以选中 run 为分母�
 比例返回未知。token 只汇总保留观测里 Provider 明确提供的值，另报样本覆盖；延迟、
 全生命周期失败率和独立人工准确率没有持久事实时返回未知。此健康诊断不能代替 T19
 标注验收，不输出正文、人物、会话 ID 或原始异常文本，也不改变控制器状态。
+观测最近失败按有限错误类别和 HTTP 状态聚合；这是快照保留的历史事实，
+不代表当前仍故障或全生命周期错误率。成功后的健康和连续失败数独立清零。

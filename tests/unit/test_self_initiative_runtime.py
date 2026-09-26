@@ -43,9 +43,7 @@ async def self_source(database):
         )
     repository = AutonomyRepository(database)
     binding = await repository.ensure_binding(conversation.conversation_id, 1)
-    binding = await repository.transition(
-        binding, master_enabled=True, external_enabled=True, semantic_ready=True
-    )
+    binding = await repository.transition(binding, master_enabled=True, external_enabled=True)
     result = await repository.accept_host_proposal(
         proposal_id="self-memory",
         binding=binding,
@@ -137,9 +135,7 @@ async def test_memory_origin_recovers_without_any_chat_event_and_survives_master
     assert before.actor_user_id == "" and before.trigger().run_id == source["initiative_run_id"]
     async with database.sessions() as db:
         assert not list(await db.scalars(select(ChatEventModel.id)))
-    await admissions.transition(
-        binding, master_enabled=False, external_enabled=True, semantic_ready=False
-    )
+    await admissions.transition(binding, master_enabled=False, external_enabled=True)
     assert (
         await recover_execution_source(
             database, source["conversation_id"], source, request_id="execution"

@@ -30,9 +30,7 @@ async def setup(database, *, owner=AutonomyOwner.SEMANTIC):
     repository = AutonomyRepository(database)
     binding = await _enable(repository, scene)
     if owner is AutonomyOwner.LEGACY:
-        binding = await repository.transition(
-            binding, master_enabled=True, external_enabled=False, semantic_ready=False
-        )
+        binding = await repository.transition(binding, master_enabled=True, external_enabled=False)
     run = (await _accept(repository, scene, binding)).run
     now = time.time()
     scope = Scope(conversation_id=scene.conversation, generation=1)

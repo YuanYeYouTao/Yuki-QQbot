@@ -28,9 +28,7 @@ from qq_ai_bot.workspace.short_state import ShortState
 async def self_actor(database, env):
     admissions = AutonomyRepository(database)
     binding = await admissions.ensure_binding(env.context.conversation_id, 1)
-    binding = await admissions.transition(
-        binding, master_enabled=True, external_enabled=True, semantic_ready=True
-    )
+    binding = await admissions.transition(binding, master_enabled=True, external_enabled=True)
     accepted = await admissions.accept_host_proposal(
         proposal_id="self-daily-agent",
         binding=binding,

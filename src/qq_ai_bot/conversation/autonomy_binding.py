@@ -70,19 +70,13 @@ class AutonomyBinding:
         *,
         master_enabled: bool,
         external_enabled: bool,
-        semantic_ready: bool,
-        fallback_reason: str | None = None,
     ) -> AutonomyBinding:
-        """Readiness includes configuration, current observations and adapter availability.
-
-        Provider success alone is insufficient. Legal unknown and quiet groups must not
-        be supplied as provider failures. Manual external disable always wins over recovery.
-        """
+        """Explicit policy selects the proposer; observer health never changes ownership."""
         owner = (
             AutonomyOwner.OFF
             if not master_enabled
             else AutonomyOwner.SEMANTIC
-            if external_enabled and semantic_ready
+            if external_enabled
             else AutonomyOwner.LEGACY
         )
         changed = (
@@ -90,21 +84,14 @@ class AutonomyBinding:
             or external_enabled != self.external_enabled
             or owner != self.effective_owner
         )
-        reason = (
-            fallback_reason or "semantic_not_ready"
-            if master_enabled and external_enabled and not semantic_ready
-            else None
-        )
-        if reason is not None and (len(reason) > 128 or reason != reason.strip()):
-            raise ValueError("autonomy_fallback_reason_invalid")
         return replace(
             self,
             master_enabled=master_enabled,
             external_enabled=external_enabled,
             effective_owner=owner,
             controller_epoch=self.controller_epoch + int(changed),
-            fallback_reason=reason,
-            revision=self.revision + int(changed or reason != self.fallback_reason),
+            fallback_reason=None,
+            revision=self.revision + int(changed or self.fallback_reason is not None),
         )
 
     def accepts(
