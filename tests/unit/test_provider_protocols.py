@@ -11,6 +11,8 @@ import httpx
 import pytest
 from tests.conftest import build_harness, make_settings
 
+from qq_ai_bot.application.lifecycle import LifecycleRegistry
+from qq_ai_bot.application.modules.model_runtime import ModelRuntimeModule
 from qq_ai_bot.deployment_setup.service import build_model_profiles
 from qq_ai_bot.domain.messages import (
     ChatImage,
@@ -639,3 +641,39 @@ async def test_gemini_parallel_receipts_keep_signature_and_call_order():
             json.loads(part["functionResponse"]["response"]["output"])["index"] for part in receipts
         ] == [1, 2]
         assert all("_call_ids" not in item for item in payload["contents"])
+
+
+@pytest.mark.parametrize(
+    "vendor,protocol",
+    [
+        ("qwen", "chat_completions"),
+        ("anthropic", "anthropic_messages"),
+        ("gemini", "gemini"),
+        ("fake", "chat_completions"),
+    ],
+)
+async def test_runtime_module_compatibility_uses_declared_vendor(
+    database, tmp_path, vendor, protocol
+):
+    settings = make_settings(
+        database.url,
+        llm_provider=vendor,
+        llm_base_url="https://wire.invalid/v1",
+        llm_api_key="synthetic-key",
+        llm_model="thinking-model",
+        model_profiles_file=tmp_path / "absent.toml",
+    )
+    bundle = ModelRuntimeModule(
+        settings.model_runtime, database, lifecycle=LifecycleRegistry()
+    ).build()
+    try:
+        assert bundle.profiles.compatibility_mode
+        assert getattr(bundle.chat_provider, "provider_name", "fake") == vendor
+        assert bundle.executor.protocol(ModelTask.CHAT_AGENT).value == protocol
+        assert bundle.chat_provider is bundle.clients.get(bundle.profiles.profiles["main"])
+        assert not bundle.clients._injected_profiles
+        if vendor == "qwen":
+            payload = bundle.chat_provider._build_payload(request())
+            assert payload["enable_thinking"] is True and "reasoning_effort" not in payload
+    finally:
+        await bundle.executor.close()

@@ -6,8 +6,6 @@ from dataclasses import dataclass
 
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.llm.base import LLMProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.model_runtime import (
     ModelClientPool,
     ModelInvocationRepository,
@@ -68,13 +66,11 @@ class ModelRuntimeModule:
                 "LLM_FLASH_MODEL": settings.llm_flash_model,
             },
         )
-        legacy_provider = _build_legacy_provider(settings) if profiles.compatibility_mode else None
         clients = ModelClientPool(
             secret_overrides={
                 "LLM_API_KEY": settings.llm_api_key,
                 "LLM_FLASH_API_KEY": settings.llm_flash_api_key,
             },
-            injected_profiles=({"main": legacy_provider} if legacy_provider is not None else {}),
         )
         invocations = ModelInvocationRepository(self._database)
         router = ModelRouter(profiles)
@@ -98,14 +94,3 @@ class ModelRuntimeModule:
             executor,
             clients.get(chat_profile),
         )
-
-
-def _build_legacy_provider(settings: ModelRuntimeSettings) -> LLMProvider:
-    if settings.llm_provider.casefold() == "fake":
-        return FakeLLMProvider()
-    return OpenAICompatibleProvider(
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        timeout_seconds=settings.llm_timeout_seconds,
-        max_retries=settings.llm_max_retries,
-    )

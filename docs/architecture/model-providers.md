@@ -80,6 +80,10 @@ Claude 思考开启时不支持强制调用特定工具，适配为 auto；结�
 `headers` 支持 OpenRouter 的站点标识、Anthropic beta 等非鉴权 Header；不能覆盖认证字段，
 不能放换行或把密钥写入 TOML。密钥只从 `api_key_env` 获取；客户端不跨供应商或密钥来源共享。
 新增供应商示例见 [多供应商配置](../../config/model_profiles.providers.example.toml)。
+无 TOML 的兼容配置也使用同一个客户端池；显式 `LLM_PROVIDER=anthropic/gemini`
+分别采用对应原生协议，其他兼容供应商保持 Chat。额外命名的 endpoint/model/key 变量需要
+存在于进程环境；Docker Compose 的 env_file 会加载 `.env`。本地 CLI 若只使用 Settings
+读取 `.env`，其默认 LLM/LLM_FLASH 字段可用，额外变量须先导出，不会偷偷扫描其他密钥文件。
 
 ## 私有状态与恢复
 
